@@ -1,0 +1,6 @@
+{
+  "name": "SisPu.JP 2.0",
+  "description": "Reconstrução unificada do Sistema Público de Despesas. Apresenta simulações fidedignas das interfaces Desktop (PySide6) e Web (FastAPI), integradas por um backend robusto com auditoria e Central de Documentos (CELESC/CASAN) com inteligência artificial Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

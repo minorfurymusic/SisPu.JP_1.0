@@ -1,0 +1,184 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Base custom classes to match desktop and web styling in Elegant Dark Fusion */
+.pyside-window {
+  box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.7), 0 8px 16px -6px rgba(0, 0, 0, 0.7);
+  background-color: #0f0f0f;
+  color: #e5e7eb;
+}
+
+.pyside-menu-bar {
+  background-color: #0a0a0a;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  color: #9ca3af;
+}
+
+.pyside-status-bar {
+  background-color: #0a0a0a;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  color: #9ca3af;
+}
+
+.pyside-button {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  transition: all 0.15s ease-in-out;
+}
+
+.pyside-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.pyside-button:active {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.pyside-input {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background-color: rgba(255, 255, 255, 0.03);
+  color: #ffffff;
+  transition: all 0.15s ease-in-out;
+}
+
+.pyside-input:focus {
+  border-color: #3b82f6;
+  background-color: rgba(255, 255, 255, 0.05);
+  outline: none;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a0a0a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Elegant Dark Overrides for simulated client views (Desktop & Web) */
+.pyside-window, #web-portal {
+  /* Forms & Card containers */
+  .bg-white, .bg-slate-50, .bg-slate-100 {
+    background-color: #0f0f0f !important;
+    border-color: rgba(255, 255, 255, 0.1) !important;
+    color: #e5e7eb !important;
+  }
+
+  /* Inner elements with light BG */
+  div[class*="bg-white"], div[class*="bg-slate-"], div[class*="bg-indigo-50"], div[class*="bg-emerald-50"], div[class*="bg-amber-50"], div[class*="bg-blue-50"] {
+    background-color: #0f0f0f !important;
+    border-color: rgba(255, 255, 255, 0.1) !important;
+  }
+
+  /* Text overrides */
+  .text-slate-900, .text-slate-800, .text-slate-700, .text-indigo-950, .text-indigo-900 {
+    color: #ffffff !important;
+  }
+  
+  .text-slate-600, .text-slate-500, .text-indigo-900 {
+    color: #9ca3af !important;
+  }
+
+  .text-slate-400 {
+    color: #6b7280 !important;
+  }
+
+  /* Border overrides */
+  .border-slate-200, .border-slate-100, .border-[#cccccc], .border-[#acacac], .border-indigo-100 {
+    border-color: rgba(255, 255, 255, 0.1) !important;
+  }
+
+  /* Buttons inside forms */
+  .pyside-button, button[class*="pyside-button"], button[class*="bg-indigo-600"] {
+    background: rgba(255, 255, 255, 0.05) !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    color: #ffffff !important;
+  }
+
+  .pyside-button:hover, button[class*="pyside-button"]:hover, button[class*="bg-indigo-600"]:hover {
+    background: rgba(255, 255, 255, 0.1) !important;
+    border-color: rgba(255, 255, 255, 0.2) !important;
+  }
+
+  /* Input fields & Select elements */
+  input, select, textarea {
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    background-color: rgba(255, 255, 255, 0.03) !important;
+    color: #ffffff !important;
+  }
+
+  input:focus, select:focus, textarea:focus {
+    border-color: #3b82f6 !important;
+    background-color: rgba(255, 255, 255, 0.05) !important;
+    outline: none !important;
+  }
+
+  option {
+    background-color: #0f0f0f !important;
+    color: #ffffff !important;
+  }
+
+  /* Table overrides */
+  table {
+    border-color: rgba(255, 255, 255, 0.1) !important;
+  }
+
+  thead {
+    background-color: #0a0a0a !important;
+    color: #ffffff !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+  }
+
+  thead tr th {
+    color: #ffffff !important;
+    border-color: rgba(255, 255, 255, 0.1) !important;
+  }
+
+  tbody tr {
+    background-color: #0f0f0f !important;
+  }
+
+  tbody tr:nth-child(even) {
+    background-color: rgba(255, 255, 255, 0.01) !important;
+  }
+
+  tbody tr:hover {
+    background-color: rgba(255, 255, 255, 0.04) !important;
+  }
+
+  tbody td {
+    color: #d1d5db !important;
+    border-color: rgba(255, 255, 255, 0.1) !important;
+  }
+
+  /* Highlight text and values inside tables */
+  .text-slate-900, .text-slate-800, .text-slate-700, .text-indigo-600, .text-indigo-700, .text-slate-600 {
+    color: #ffffff !important;
+  }
+
+  /* Modals and dialog wrappers */
+  .fixed.inset-0 {
+    background-color: rgba(0, 0, 0, 0.8) !important;
+    backdrop-filter: blur(4px) !important;
+  }
+}
+
