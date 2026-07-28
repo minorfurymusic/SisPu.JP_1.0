@@ -1,20 +1,47 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import dotenv from "dotenv";
+import session from "express-session";
+import bcrypt from "bcryptjs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
-import { 
-  Usuario, Secretaria, Unidade, Despesa, ItemDespesa, 
-  Lancamento, Pessoa, ContatoEmail, LogError, AuditoriaRegistro, 
-  DocumentoProcessado 
+import {
+  Usuario, Secretaria, Unidade, Despesa, ItemDespesa,
+  Lancamento, Pessoa, ContatoEmail, LogError, AuditoriaRegistro,
+  DocumentoProcessado
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
 
 dotenv.config();
 
+declare module "express-session" {
+  interface SessionData {
+    userId?: string;
+  }
+}
+
+declare global {
+  namespace Express {
+    interface Request {
+      currentUser?: Usuario;
+    }
+  }
+}
+
 const app = express();
 const PORT = 3000;
+
+// A Gemini API key is required for AI-assisted invoice parsing. Without one, every
+// call falls back to the local heuristic parser (see heuristicExtractFatura below).
+const GEMINI_CONFIGURED = !!process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "MY_GEMINI_API_KEY";
+if (!GEMINI_CONFIGURED) {
+  console.warn(
+    "[SisPu.JP] GEMINI_API_KEY não configurada (ou é o valor de exemplo). " +
+    "A extração de faturas por IA ficará indisponível e o sistema usará somente o parser heurístico local."
+  );
+}
 
 // Initialize Gemini SDK with telemetry header as required by instructions
 const ai = new GoogleGenAI({
@@ -26,8 +53,29 @@ const ai = new GoogleGenAI({
   }
 });
 
+const SESSION_SECRET = process.env.SESSION_SECRET;
+if (!SESSION_SECRET) {
+  console.warn(
+    "[SisPu.JP] SESSION_SECRET não definida no .env — usando um segredo temporário gerado " +
+    "para esta execução (todas as sessões serão invalidadas ao reiniciar o servidor). " +
+    "Defina SESSION_SECRET em produção."
+  );
+}
+
 // JSON Middleware
 app.use(express.json({ limit: '10mb' }));
+app.use(session({
+  secret: SESSION_SECRET || crypto.randomUUID(),
+  name: "sispujp.sid",
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 1000 * 60 * 60 * 8 // 8 hours
+  }
+}));
 
 // In-Memory/JSON File Database State (Simulating PostgreSQL with triggers)
 const DB_FILE = path.join(process.cwd(), "sispu_db.json");
@@ -46,11 +94,17 @@ interface DatabaseState {
   documentos_processados: DocumentoProcessado[];
 }
 
+// Default password assigned to any user that doesn't yet have one (fresh seed, or an
+// existing sispu_db.json migrated from a pre-auth version of the system). Must be changed
+// on first login.
+const DEFAULT_PASSWORD = process.env.SENHA_PADRAO_INICIAL || "TrocarSenha123!";
+const DEFAULT_PASSWORD_HASH = bcrypt.hashSync(DEFAULT_PASSWORD, 10);
+
 // Initial Seed Data
 const initialDBState: DatabaseState = {
   usuarios: [
-    { id: "1", login: "admin", nome: "Administrador", ativo: true, criado_em: new Date().toISOString() },
-    { id: "2", login: "joao", nome: "João Silva", ativo: true, criado_em: new Date().toISOString() }
+    { id: "1", login: "admin", nome: "Administrador", senha_hash: DEFAULT_PASSWORD_HASH, role: "admin", ativo: true, criado_em: new Date().toISOString() },
+    { id: "2", login: "joao", nome: "João Silva", senha_hash: DEFAULT_PASSWORD_HASH, role: "operador", ativo: true, criado_em: new Date().toISOString() }
   ],
   secretarias: [
     { id: "1", codigo_legado: 10, nome: "SECRETARIA DE ADMINISTRAÇÃO", ativo: true, criado_em: "2026-01-10T10:00:00Z", atualizado_em: "2026-01-10T10:00:00Z" },
@@ -232,13 +286,175 @@ function saveDB(state: DatabaseState) {
   }
 }
 
+// Backfills senha_hash/role on any usuario that predates the authentication system
+// (e.g. a sispu_db.json created before auth existed). Every migrated user gets the
+// default password and must change it on first login.
+function migrateUsuariosSeguranca(state: DatabaseState): boolean {
+  let migrated = false;
+  state.usuarios.forEach(u => {
+    if (!u.role) {
+      u.role = u.login === "admin" ? "admin" : "operador";
+      migrated = true;
+    }
+    if (!u.senha_hash) {
+      u.senha_hash = DEFAULT_PASSWORD_HASH;
+      migrated = true;
+    }
+  });
+  return migrated;
+}
+
 // Global DB instance
 const db = loadDB();
+if (migrateUsuariosSeguranca(db)) {
+  console.warn(
+    `[SisPu.JP] Um ou mais usuários não tinham senha cadastrada e foram migrados com a senha padrão "${DEFAULT_PASSWORD}". ` +
+    "Troque essa senha imediatamente após o primeiro login."
+  );
+  saveDB(db);
+}
+
+function sanitizeUsuario(u: Usuario) {
+  const { senha_hash, ...rest } = u;
+  return rest;
+}
+
+// Optimistic concurrency check: the client must send back the `atualizado_em` it last
+// read for this record. If it no longer matches, someone else saved a change in between,
+// so we reject the write instead of silently overwriting it. Requests that omit
+// atualizado_em (older/legacy callers) skip the check rather than being blocked outright.
+function checkNaoDesatualizado(res: express.Response, registroAtual: { atualizado_em: string }, atualizadoEmRecebido: unknown): boolean {
+  if (atualizadoEmRecebido === undefined || atualizadoEmRecebido === null || atualizadoEmRecebido === "") {
+    return true;
+  }
+  if (atualizadoEmRecebido !== registroAtual.atualizado_em) {
+    res.status(409).json({
+      error: "Este registro foi alterado por outro usuário enquanto você o editava. Recarregue os dados e tente novamente.",
+      code: "STALE_WRITE"
+    });
+    return false;
+  }
+  return true;
+}
+
+function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const userId = req.session.userId;
+  const user = userId ? db.usuarios.find(u => u.id === userId && u.ativo) : undefined;
+  if (!user) {
+    return res.status(401).json({ error: "Não autenticado. Faça login para continuar." });
+  }
+  req.currentUser = user;
+  next();
+}
+
+function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (req.currentUser?.role !== "admin") {
+    return res.status(403).json({ error: "Apenas administradores podem realizar esta ação." });
+  }
+  next();
+}
+
+// --- AUTENTICAÇÃO ---
+app.post("/api/auth/login", (req, res) => {
+  const { login, senha } = req.body || {};
+  if (!login || !senha) {
+    return res.status(400).json({ error: "Informe login e senha." });
+  }
+
+  const user = db.usuarios.find(u => u.login === login);
+  if (!user || !user.ativo || !bcrypt.compareSync(senha, user.senha_hash)) {
+    return res.status(401).json({ error: "Login ou senha inválidos." });
+  }
+
+  req.session.userId = user.id;
+  res.json({ user: sanitizeUsuario(user) });
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.clearCookie("sispujp.sid");
+    res.json({ message: "Sessão encerrada." });
+  });
+});
+
+app.get("/api/auth/me", requireAuth, (req, res) => {
+  res.json({ user: sanitizeUsuario(req.currentUser!) });
+});
+
+app.get("/api/system/status", requireAuth, (req, res) => {
+  res.json({ geminiConfigured: GEMINI_CONFIGURED });
+});
+
+// Every /api route below requires an authenticated session.
+app.use("/api", requireAuth);
+
+// --- USUÁRIOS (gestão de acesso — somente administradores) ---
+app.get("/api/usuarios", requireAdmin, (req, res) => {
+  res.json(db.usuarios.map(sanitizeUsuario));
+});
+
+app.post("/api/usuarios", requireAdmin, (req, res) => {
+  const { login, nome, senha, role } = req.body || {};
+  const cleanLogin = (login || "").trim().toLowerCase();
+  if (!cleanLogin || !nome || !senha) {
+    return res.status(400).json({ error: "Informe login, nome e senha." });
+  }
+  if (senha.length < 8) {
+    return res.status(400).json({ error: "A senha deve ter ao menos 8 caracteres." });
+  }
+  if (db.usuarios.find(u => u.login === cleanLogin)) {
+    return res.status(400).json({ error: "Já existe um usuário com este login." });
+  }
+
+  const newId = (Math.max(...db.usuarios.map(u => parseInt(u.id)), 0) + 1).toString();
+  const newUser: Usuario = {
+    id: newId,
+    login: cleanLogin,
+    nome,
+    senha_hash: bcrypt.hashSync(senha, 10),
+    role: role === "admin" ? "admin" : "operador",
+    ativo: true,
+    criado_em: new Date().toISOString()
+  };
+  db.usuarios.push(newUser);
+  saveDB(db);
+  logAudit("usuarios", newId, "INSERT", req.currentUser!.login, null, sanitizeUsuario(newUser));
+
+  res.status(201).json(sanitizeUsuario(newUser));
+});
+
+app.put("/api/usuarios/:id", requireAdmin, (req, res) => {
+  const { id } = req.params;
+  const { nome, role, ativo, senha } = req.body || {};
+
+  const index = db.usuarios.findIndex(u => u.id === id);
+  if (index === -1) {
+    return res.status(404).json({ error: "Usuário não encontrado." });
+  }
+  if (ativo === false && id === req.currentUser!.id) {
+    return res.status(400).json({ error: "Você não pode desativar o próprio usuário." });
+  }
+
+  const oldVal = sanitizeUsuario(db.usuarios[index]);
+  if (nome !== undefined) db.usuarios[index].nome = nome;
+  if (role === "admin" || role === "operador") db.usuarios[index].role = role;
+  if (ativo !== undefined) db.usuarios[index].ativo = !!ativo;
+  if (senha) {
+    if (senha.length < 8) {
+      return res.status(400).json({ error: "A senha deve ter ao menos 8 caracteres." });
+    }
+    db.usuarios[index].senha_hash = bcrypt.hashSync(senha, 10);
+  }
+  saveDB(db);
+  logAudit("usuarios", id, "UPDATE", req.currentUser!.login, oldVal, sanitizeUsuario(db.usuarios[index]));
+
+  res.json(sanitizeUsuario(db.usuarios[index]));
+});
 
 // Simulated PostgreSQL Trigger-based Auditor
 function logAudit(tabela: string, pk: string, acao: 'INSERT' | 'UPDATE' | 'DELETE', usuario: string, antigo: any, novo: any) {
   const auditRow: AuditoriaRegistro = {
-    id: (db.auditoria_registros.length + 1).toString(),
+    id: (Math.max(...db.auditoria_registros.map(a => parseInt(a.id)), 0) + 1).toString(),
     tabela,
     registro_pk: pk,
     acao,
@@ -254,7 +470,7 @@ function logAudit(tabela: string, pk: string, acao: 'INSERT' | 'UPDATE' | 'DELET
 // Error Logger Utility
 function logTechnicalError(origem: string, mensagem: string, arquivo: string, linha: string) {
   const logRow: LogError = {
-    id: (db.logs_erros.length + 1).toString(),
+    id: (Math.max(...db.logs_erros.map(l => parseInt(l.id)), 0) + 1).toString(),
     origem,
     mensagem,
     ocorrido_em: new Date().toISOString(),
@@ -267,11 +483,7 @@ function logTechnicalError(origem: string, mensagem: string, arquivo: string, li
 }
 
 // REST API DEFINITIONS - Mirroring PySide6 repositories and FastAPI routes
-
-// --- USUARIOS ---
-app.get("/api/usuarios", (req, res) => {
-  res.json(db.usuarios);
-});
+// (usuários já definidos acima, junto com o middleware de autenticação)
 
 // --- SECRETARIAS ---
 app.get("/api/secretarias", (req, res) => {
@@ -287,7 +499,7 @@ app.get("/api/secretarias", (req, res) => {
 
 app.post("/api/secretarias", (req, res) => {
   const { codigo_legado, nome } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const usuario = req.currentUser!.login;
 
   const cleanNome = (nome || "").trim().toUpperCase();
   if (!cleanNome) {
@@ -321,13 +533,14 @@ app.post("/api/secretarias", (req, res) => {
 
 app.put("/api/secretarias/:id", (req, res) => {
   const { id } = req.params;
-  const { codigo_legado, nome, ativo } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const { codigo_legado, nome, ativo, atualizado_em } = req.body;
+  const usuario = req.currentUser!.login;
 
   const index = db.secretarias.findIndex(s => s.id === id);
   if (index === -1) {
     return res.status(404).json({ error: "Secretaria não encontrada." });
   }
+  if (!checkNaoDesatualizado(res, db.secretarias[index], atualizado_em)) return;
 
   const oldVal = { ...db.secretarias[index] };
   const cleanNome = (nome || "").trim().toUpperCase();
@@ -360,7 +573,7 @@ app.put("/api/secretarias/:id", (req, res) => {
 
 app.delete("/api/secretarias/:id", (req, res) => {
   const { id } = req.params;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const usuario = req.currentUser!.login;
 
   const index = db.secretarias.findIndex(s => s.id === id);
   if (index === -1) {
@@ -405,7 +618,7 @@ app.get("/api/unidades", (req, res) => {
 
 app.post("/api/unidades", (req, res) => {
   const { codigo_legado, secretaria_id, nome, endereco } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const usuario = req.currentUser!.login;
 
   const cleanNome = (nome || "").trim().toUpperCase();
   if (!cleanNome) {
@@ -443,13 +656,14 @@ app.post("/api/unidades", (req, res) => {
 
 app.put("/api/unidades/:id", (req, res) => {
   const { id } = req.params;
-  const { codigo_legado, secretaria_id, nome, endereco, ativo } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const { codigo_legado, secretaria_id, nome, endereco, ativo, atualizado_em } = req.body;
+  const usuario = req.currentUser!.login;
 
   const index = db.unidades.findIndex(u => u.id === id);
   if (index === -1) {
     return res.status(404).json({ error: "Unidade não encontrada." });
   }
+  if (!checkNaoDesatualizado(res, db.unidades[index], atualizado_em)) return;
 
   const oldVal = { ...db.unidades[index] };
   const cleanNome = (nome || "").trim().toUpperCase();
@@ -489,7 +703,7 @@ app.put("/api/unidades/:id", (req, res) => {
 
 app.delete("/api/unidades/:id", (req, res) => {
   const { id } = req.params;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const usuario = req.currentUser!.login;
 
   const index = db.unidades.findIndex(u => u.id === id);
   if (index === -1) {
@@ -525,7 +739,7 @@ app.get("/api/despesas", (req, res) => {
 
 app.post("/api/despesas", (req, res) => {
   const { codigo_legado, descricao } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const usuario = req.currentUser!.login;
 
   const cleanDesc = (descricao || "").trim().toUpperCase();
   if (!cleanDesc) {
@@ -557,13 +771,14 @@ app.post("/api/despesas", (req, res) => {
 
 app.put("/api/despesas/:id", (req, res) => {
   const { id } = req.params;
-  const { codigo_legado, descricao, ativo } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const { codigo_legado, descricao, ativo, atualizado_em } = req.body;
+  const usuario = req.currentUser!.login;
 
   const index = db.despesas.findIndex(d => d.id === id);
   if (index === -1) {
     return res.status(404).json({ error: "Despesa não encontrada." });
   }
+  if (!checkNaoDesatualizado(res, db.despesas[index], atualizado_em)) return;
 
   const oldVal = { ...db.despesas[index] };
   const cleanDesc = (descricao || "").trim().toUpperCase();
@@ -594,7 +809,7 @@ app.put("/api/despesas/:id", (req, res) => {
 
 app.delete("/api/despesas/:id", (req, res) => {
   const { id } = req.params;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const usuario = req.currentUser!.login;
 
   const index = db.despesas.findIndex(d => d.id === id);
   if (index === -1) {
@@ -642,7 +857,7 @@ app.get("/api/itens_despesas", (req, res) => {
 
 app.post("/api/itens_despesas", (req, res) => {
   const { codigo_numero, despesa_id, unidade_id, tipo_fone, medidor } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const usuario = req.currentUser!.login;
 
   const cleanCodigo = (codigo_numero || "").trim().toUpperCase();
   if (!cleanCodigo) {
@@ -684,13 +899,14 @@ app.post("/api/itens_despesas", (req, res) => {
 
 app.put("/api/itens_despesas/:id", (req, res) => {
   const { id } = req.params;
-  const { codigo_numero, despesa_id, unidade_id, tipo_fone, medidor, ativo } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const { codigo_numero, despesa_id, unidade_id, tipo_fone, medidor, ativo, atualizado_em } = req.body;
+  const usuario = req.currentUser!.login;
 
   const index = db.itens_despesas.findIndex(it => it.id === id);
   if (index === -1) {
     return res.status(404).json({ error: "Item de despesa não encontrado." });
   }
+  if (!checkNaoDesatualizado(res, db.itens_despesas[index], atualizado_em)) return;
 
   const oldVal = { ...db.itens_despesas[index] };
   const cleanCodigo = (codigo_numero || "").trim().toUpperCase();
@@ -719,7 +935,7 @@ app.put("/api/itens_despesas/:id", (req, res) => {
 
 app.delete("/api/itens_despesas/:id", (req, res) => {
   const { id } = req.params;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const usuario = req.currentUser!.login;
 
   const index = db.itens_despesas.findIndex(it => it.id === id);
   if (index === -1) {
@@ -786,7 +1002,7 @@ app.post("/api/lancamentos", (req, res) => {
     valor_celular, valor_internet, valor_diversos, valor_linha_privada, 
     valor_credito, data_lancamento 
   } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const usuario = req.currentUser!.login;
 
   if (!item_despesa_id) {
     return res.status(400).json({ error: "Selecione o item de despesa correspondente." });
@@ -849,16 +1065,17 @@ app.post("/api/lancamentos", (req, res) => {
 
 app.put("/api/lancamentos/:id", (req, res) => {
   const { id } = req.params;
-  const { 
-    consumo, valor_total, valor_imposto, valor_celular, valor_internet, 
-    valor_diversos, valor_linha_privada, valor_credito, data_lancamento 
+  const {
+    consumo, valor_total, valor_imposto, valor_celular, valor_internet,
+    valor_diversos, valor_linha_privada, valor_credito, data_lancamento, atualizado_em
   } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const usuario = req.currentUser!.login;
 
   const index = db.lancamentos.findIndex(l => l.id === id);
   if (index === -1) {
     return res.status(404).json({ error: "Lançamento não encontrado." });
   }
+  if (!checkNaoDesatualizado(res, db.lancamentos[index], atualizado_em)) return;
 
   const oldVal = { ...db.lancamentos[index] };
 
@@ -882,7 +1099,7 @@ app.put("/api/lancamentos/:id", (req, res) => {
 
 app.delete("/api/lancamentos/:id", (req, res) => {
   const { id } = req.params;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const usuario = req.currentUser!.login;
 
   const index = db.lancamentos.findIndex(l => l.id === id);
   if (index === -1) {
@@ -1010,13 +1227,14 @@ app.post("/api/documentos", (req, res) => {
 // Update Document fields (Tela de Conferência Editing)
 app.put("/api/documentos/:id", (req, res) => {
   const { id } = req.params;
-  const { dados_extraidos, observacoes, status } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const { dados_extraidos, observacoes, status, atualizado_em } = req.body;
+  const usuario = req.currentUser!.login;
 
   const index = db.documentos_processados.findIndex(d => d.id === id);
   if (index === -1) {
     return res.status(404).json({ error: "Documento não encontrado." });
   }
+  if (!checkNaoDesatualizado(res, db.documentos_processados[index], atualizado_em)) return;
 
   const doc = db.documentos_processados[index];
   const oldExtract = { ...doc.dados_extraidos };
@@ -1082,7 +1300,7 @@ app.put("/api/documentos/:id", (req, res) => {
 // Homologar Document (Persist directly to DB using Services / Repositories pattern equivalent)
 app.post("/api/documentos/:id/homologar", (req, res) => {
   const { id } = req.params;
-  const usuario = req.headers["x-user"] as string || "admin";
+  const usuario = req.currentUser!.login;
 
   const index = db.documentos_processados.findIndex(d => d.id === id);
   if (index === -1) {
