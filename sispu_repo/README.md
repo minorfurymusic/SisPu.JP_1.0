@@ -1,4 +1,12 @@
-# SisPubInt Python
+# SisPubInt Python (ARQUIVADO — não é mais o sistema ativo)
+
+> **Este diretório não está em uso.** O sistema em produção do SisPu.JP 2.0 é o
+> aplicativo web em `server.ts` + `src/` (React + Express), na raiz do repositório.
+> Este projeto Python/PySide6/PostgreSQL foi um protótipo inicial paralelo que nunca
+> chegou a compartilhar banco de dados ou código com a versão web, e é mantido aqui
+> apenas como referência histórica do levantamento funcional do sistema legado.
+> Antes de investir tempo aqui, confirme com a equipe se ele ainda tem utilidade —
+> caso contrário, este diretório é candidato a remoção.
 
 Recriação desktop do **Sistema Público Interno - Administração / Despesas** em Python, PySide6 e PostgreSQL.
 
