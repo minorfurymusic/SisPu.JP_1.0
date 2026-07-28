@@ -6,9 +6,14 @@ export interface Usuario {
   id: string;
   login: string;
   nome: string;
+  senha_hash: string;
+  role: 'admin' | 'operador';
   ativo: boolean;
   criado_em: string;
 }
+
+// Usuario as returned by the API (never includes the password hash)
+export type UsuarioPublico = Omit<Usuario, 'senha_hash'>;
 
 export interface Secretaria {
   id: string;
