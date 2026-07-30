@@ -66,7 +66,7 @@ export const extractTextFromPdfFile = async (
     // transform[5] = Y coordinate, transform[4] = X coordinate.
     items.sort((a, b) => {
       const yDiff = b.transform[5] - a.transform[5];
-      if (Math.abs(yDiff) > 5) {
+      if (Math.abs(yDiff) > 2.5) {
         return yDiff; // top-to-bottom
       }
       return a.transform[4] - b.transform[4]; // left-to-right
@@ -75,7 +75,7 @@ export const extractTextFromPdfFile = async (
     let lastY: number | undefined;
     let text = "";
     for (const item of items) {
-      if (lastY !== undefined && Math.abs(item.transform[5] - lastY) > 5) {
+      if (lastY !== undefined && Math.abs(item.transform[5] - lastY) > 2.5) {
         text += "\n";
       }
       text += item.str + " ";
@@ -191,3 +191,94 @@ export const convertTextToPaginas = (text: string): DocumentoPagina[] => {
   
   return pages;
 };
+
+export interface DocumentoPaginaComImagem extends DocumentoPagina {
+  imagemBase64?: string;
+}
+
+/**
+ * Converts a PDF file into high-DPI image base64 renderings per page alongside clean text
+ * enabling multimodal vision parsing with Gemini models.
+ */
+export const convertPdfToImagesAndText = async (
+  file: File,
+  onProgress?: (current: number, total: number) => void
+): Promise<DocumentoPaginaComImagem[]> => {
+  const pdfjsLib = await loadPdfJS();
+  const arrayBuffer = await file.arrayBuffer();
+  const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+  const pdf = await loadingTask.promise;
+  const numPages = pdf.numPages;
+  const pages: DocumentoPaginaComImagem[] = [];
+
+  for (let i = 1; i <= numPages; i++) {
+    if (onProgress) onProgress(i, numPages);
+    const page = await pdf.getPage(i);
+
+    // 1. Extract text items physically
+    const textContent = await page.getTextContent();
+    const items = textContent.items as any[];
+    items.sort((a, b) => {
+      const yDiff = b.transform[5] - a.transform[5];
+      if (Math.abs(yDiff) > 2.5) return yDiff;
+      return a.transform[4] - b.transform[4];
+    });
+
+    let lastY: number | undefined;
+    let text = "";
+    for (const item of items) {
+      if (lastY !== undefined && Math.abs(item.transform[5] - lastY) > 2.5) {
+        text += "\n";
+      }
+      text += item.str + " ";
+      lastY = item.transform[5];
+    }
+
+    // 2. Render page to Canvas element for Image Base64 (PNG/JPEG)
+    let imagemBase64: string | undefined = undefined;
+    try {
+      const scale = 1.8; // High resolution rendering for sharp text OCR
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      if (context) {
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        await page.render({
+          canvasContext: context,
+          viewport: viewport
+        }).promise;
+        imagemBase64 = canvas.toDataURL("image/png");
+      }
+    } catch (renderErr) {
+      console.warn(`Aviso: Não foi possível renderizar a página ${i} em canvas:`, renderErr);
+    }
+
+    pages.push({
+      numeroPagina: i,
+      textoLimpo: text.trim(),
+      imagemBase64,
+      imagens: [],
+      posicaoTexto: {},
+      metadados: {
+        width: page.view[2],
+        height: page.view[3]
+      }
+    });
+  }
+
+  return pages;
+};
+
+/**
+ * Utility to read any File into a base64 Data URL string
+ */
+export const fileToBase64 = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = error => reject(error);
+  });
+};
+

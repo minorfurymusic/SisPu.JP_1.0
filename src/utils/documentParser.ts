@@ -24,6 +24,10 @@ export interface ExtractedFaturaData {
   leitura_anterior?: number;
   leitura_atual?: number;
   data_vencimento?: string;
+  tarifa_unitaria?: number;
+  confianca?: number;
+  baixa_confianca?: boolean;
+  motivo_baixa_confianca?: string;
   
   municipio?: string;
   classe?: string;

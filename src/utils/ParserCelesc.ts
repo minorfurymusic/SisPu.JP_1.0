@@ -494,12 +494,10 @@ export class ParserCelesc {
 
     if (startIdx !== -1) {
       const rest = text.substring(startIdx);
-      // Cut off at the next major section title
+      // Cut off at the true document payment slip footer
       const endMatches = [
-        "HISTÓRICO", "HISTORICO", "COMPROVANTE DE PAGAMENTO", "COMPROVANTE",
-        "AUTENTICAÇÃO", "LINHA DIGITÁVEL", "CANHOTO", "TOTAL DA FATURA",
-        "INFORMAÇÕES IMPORTANTES", "INFORMACAO IMPORTANTE", "MENSAGENS", "AVISOS",
-        "DECLARAÇÃO", "DADOS PARA DEB"
+        "COMPROVANTE DE PAGAMENTO", "AUTENTICAÇÃO MECÂNICA", "AUTENTICACAO MECANICA",
+        "LINHA DIGITÁVEL", "LINHA DIGITAVEL", "CANHOTO DE RECEBIMENTO", "DADOS PARA DÉBITO AUTOMÁTICO"
       ];
       let endIdx = rest.length;
       for (const endM of endMatches) {
@@ -581,7 +579,8 @@ export class ParserCelesc {
     ];
 
     const lines = itemsBlock.split("\n");
-    for (const line of lines) {
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+      const line = lines[lineIdx];
       let trimmed = line.trim();
       if (!trimmed) continue;
 
@@ -633,8 +632,17 @@ export class ParserCelesc {
 
       if (!targetItemLine) continue;
 
-      // Match description up to first number (support optional leading minus/en-dash for negative quantities or values)
-      const descMatch = targetItemLine.match(/^([A-Za-z0-9\s/().ºª\-–+áéíóúàâêôãõçÁÉÍÓÚÀÂÊÔÃÕÇ#$%&*,:=]+?)\s+([-+–—]?\s*\d[\d,.]*.*)$/);
+      // Check if numbers are on the next line when targetItemLine contains no numbers
+      let descMatch = targetItemLine.match(/^([A-Za-z0-9\s/().ºª\-–+áéíóúàâêôãõçÁÉÍÓÚÀÂÊÔÃÕÇ#$%&*,:=]+?)\s+([-+–—]?\s*\d[\d,.]*.*)$/);
+      if (!descMatch && lineIdx + 1 < lines.length) {
+        const nextLine = lines[lineIdx + 1].trim();
+        if (/^[-+–—]?\s*\d[\d,.]*/.test(nextLine)) {
+          targetItemLine = targetItemLine + " " + nextLine;
+          lineIdx++; // advance loop to include the numbers line
+          descMatch = targetItemLine.match(/^([A-Za-z0-9\s/().ºª\-–+áéíóúàâêôãõçÁÉÍÓÚÀÂÊÔÃÕÇ#$%&*,:=]+?)\s+([-+–—]?\s*\d[\d,.]*.*)$/);
+        }
+      }
+
       if (descMatch) {
         const rawDesc = descMatch[1].trim();
         const restOfLine = descMatch[2].trim();
@@ -703,27 +711,20 @@ export class ParserCelesc {
       }
     }
 
-    // Calculate active consumption (kWh) accurately for CELESC
+    // Calculate active consumption (kWh) accurately for CELESC (strictly TE, excluding TUSD)
     let calcConsumo = 0;
     const teConsumoItems = itens_fatura.filter(it => 
-      /CONSUMO/i.test(it.descricao) && /\bTE\b/i.test(it.descricao) && !/INJETADA|REATIVA/i.test(it.descricao)
+      /CONSUMO/i.test(it.descricao) && /\bTE\b/i.test(it.descricao) && !/\bTUSD\b/i.test(it.descricao) && !/INJETADA|REATIVA/i.test(it.descricao)
     );
 
     if (teConsumoItems.length > 0) {
       calcConsumo = teConsumoItems.reduce((sum, it) => sum + (it.quantidade || 0), 0);
     } else {
-      const tusdConsumoItems = itens_fatura.filter(it => 
-        /CONSUMO/i.test(it.descricao) && /\bTUSD\b/i.test(it.descricao) && !/INJETADA|REATIVA/i.test(it.descricao)
+      const genericConsumoItems = itens_fatura.filter(it => 
+        /CONSUMO/i.test(it.descricao) && !/\bTUSD\b/i.test(it.descricao) && !/INJETADA|REATIVA|DEMANDA/i.test(it.descricao)
       );
-      if (tusdConsumoItems.length > 0) {
-        calcConsumo = tusdConsumoItems.reduce((sum, it) => sum + (it.quantidade || 0), 0);
-      } else {
-        const genericConsumoItems = itens_fatura.filter(it => 
-          /CONSUMO/i.test(it.descricao) && !/INJETADA|REATIVA|DEMANDA/i.test(it.descricao)
-        );
-        if (genericConsumoItems.length > 0) {
-          calcConsumo = genericConsumoItems.reduce((sum, it) => sum + (it.quantidade || 0), 0);
-        }
+      if (genericConsumoItems.length > 0) {
+        calcConsumo = genericConsumoItems.reduce((sum, it) => sum + (it.quantidade || 0), 0);
       }
     }
 
@@ -761,7 +762,7 @@ export class ParserCelesc {
       }
       // Geração Distribuída (Energia Injetada)
       if (descUpper.includes("INJETADA") || descUpper.includes("GERAÇÃO") || descUpper.includes("GERACAO")) {
-        // Handled below with deduplication across TE/TUSD
+        // Handled below strictly with TE items
       }
       // Demanda Contratada / DMCR
       if (descUpper.includes("DEMANDA") || descUpper.includes("DMCR")) {
@@ -777,32 +778,21 @@ export class ParserCelesc {
       }
     });
 
-    // Calculate deduplicated energia_injetada from itens_fatura (avoid double counting TE/TUSD)
+    // Calculate energia_injetada from itens_fatura (strictly TE, excluding TUSD)
     const injetadaItems = itens_fatura.filter(it => /INJETAD[AO]|GERAÇ[AÃ]O|GERAC[AÃ]O/i.test(it.descricao || ""));
     if (injetadaItems.length > 0) {
-      const teInjetada = injetadaItems.filter(it => /\bTE\b/i.test(it.descricao));
+      const teInjetada = injetadaItems.filter(it => /\bTE\b/i.test(it.descricao || "") && !/\bTUSD\b/i.test(it.descricao || ""));
       if (teInjetada.length > 0) {
         energia_injetada = teInjetada.reduce((sum, it) => sum + Math.abs(Number(it.quantidade || 0)), 0);
       } else {
-        const tusdInjetada = injetadaItems.filter(it => /\bTUSD\b/i.test(it.descricao));
-        if (tusdInjetada.length > 0) {
-          energia_injetada = tusdInjetada.reduce((sum, it) => sum + Math.abs(Number(it.quantidade || 0)), 0);
-        } else {
-          const seen = new Set<string>();
-          let sumInj = 0;
-          for (const it of injetadaItems) {
-            const qty = Math.abs(Number(it.quantidade || 0));
-            const descClean = (it.descricao || "").toLowerCase().replace(/\b(te|tusd)\b/gi, "").trim();
-            const key = `${descClean}_${qty.toFixed(3)}`;
-            if (!seen.has(key)) {
-              seen.add(key);
-              sumInj += qty;
-            }
-          }
-          energia_injetada = sumInj;
+        const nonTusdInjetada = injetadaItems.filter(it => !/\bTUSD\b/i.test(it.descricao || ""));
+        if (nonTusdInjetada.length > 0) {
+          energia_injetada = nonTusdInjetada.reduce((sum, it) => sum + Math.abs(Number(it.quantidade || 0)), 0);
         }
       }
-      energia_injetada = parseFloat(energia_injetada.toFixed(3));
+      if (energia_injetada !== null) {
+        energia_injetada = parseFloat(energia_injetada.toFixed(3));
+      }
     }
 
     if (sumRetencoes < 0 && valor_credito === 0) {
@@ -1219,16 +1209,15 @@ export class ParserCelesc {
 
     // Itens da Fatura
     if (idxItens !== -1) {
-      const validHist = (idxHistorico !== -1 && idxHistorico > idxItens) ? idxHistorico : -1;
       const validBoleto = (idxBoleto !== -1 && idxBoleto > idxItens) ? idxBoleto : -1;
-      const endIdx = validHist !== -1 ? validHist : (validBoleto !== -1 ? validBoleto : text.length);
+      const endIdx = validBoleto !== -1 ? validBoleto : text.length;
       result.itens_fatura = text.substring(idxItens, endIdx).trim();
       debugLogs.push({
         campo: "bloco_itens_fatura",
         valor: `Segmentado (${result.itens_fatura.length} carac.)`,
         bloco: "Geral",
         metodo: "Limite de Substring",
-        trecho_encontrado: `De 'Itens' até 'Histórico'`,
+        trecho_encontrado: `De 'Itens' até 'Boleto/Fim'`,
         confianca: 100
       });
     }

@@ -6,6 +6,55 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+/* Base custom classes to match desktop and web styling in Elegant Dark Fusion */
+.pyside-window {
+  box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.7), 0 8px 16px -6px rgba(0, 0, 0, 0.7);
+  background-color: #0f0f0f;
+  color: #e5e7eb;
+}
+
+.pyside-menu-bar {
+  background-color: #0a0a0a;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  color: #9ca3af;
+}
+
+.pyside-status-bar {
+  background-color: #0a0a0a;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  color: #9ca3af;
+}
+
+.pyside-button {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  transition: all 0.15s ease-in-out;
+}
+
+.pyside-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.pyside-button:active {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.pyside-input {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background-color: rgba(255, 255, 255, 0.03);
+  color: #ffffff;
+  transition: all 0.15s ease-in-out;
+}
+
+.pyside-input:focus {
+  border-color: #3b82f6;
+  background-color: rgba(255, 255, 255, 0.05);
+  outline: none;
+}
+
 /* Custom scrollbars */
 ::-webkit-scrollbar {
   width: 8px;
@@ -25,9 +74,8 @@
   background: rgba(255, 255, 255, 0.2);
 }
 
-/* Elegant Dark Overrides — forces the light-styled Tailwind utility classes used
-   throughout WebPortal (bg-white, text-slate-*, etc.) into the app's dark theme. */
-#web-portal {
+/* Elegant Dark Overrides for simulated client views (Desktop & Web) */
+.pyside-window, #web-portal {
   /* Forms & Card containers */
   .bg-white, .bg-slate-50, .bg-slate-100 {
     background-color: #0f0f0f !important;

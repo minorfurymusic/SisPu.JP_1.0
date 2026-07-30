@@ -1,47 +1,20 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import crypto from "crypto";
 import dotenv from "dotenv";
-import session from "express-session";
-import bcrypt from "bcryptjs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
-import {
-  Usuario, Secretaria, Unidade, Despesa, ItemDespesa,
-  Lancamento, Pessoa, ContatoEmail, LogError, AuditoriaRegistro,
-  DocumentoProcessado
+import { 
+  Usuario, Secretaria, Unidade, Despesa, ItemDespesa, 
+  Lancamento, Pessoa, ContatoEmail, LogError, AuditoriaRegistro, 
+  DocumentoProcessado 
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
 
 dotenv.config();
 
-declare module "express-session" {
-  interface SessionData {
-    userId?: string;
-  }
-}
-
-declare global {
-  namespace Express {
-    interface Request {
-      currentUser?: Usuario;
-    }
-  }
-}
-
 const app = express();
 const PORT = 3000;
-
-// A Gemini API key is required for AI-assisted invoice parsing. Without one, every
-// call falls back to the local heuristic parser (see heuristicExtractFatura below).
-const GEMINI_CONFIGURED = !!process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "MY_GEMINI_API_KEY";
-if (!GEMINI_CONFIGURED) {
-  console.warn(
-    "[SisPu.JP] GEMINI_API_KEY não configurada (ou é o valor de exemplo). " +
-    "A extração de faturas por IA ficará indisponível e o sistema usará somente o parser heurístico local."
-  );
-}
 
 // Initialize Gemini SDK with telemetry header as required by instructions
 const ai = new GoogleGenAI({
@@ -53,29 +26,8 @@ const ai = new GoogleGenAI({
   }
 });
 
-const SESSION_SECRET = process.env.SESSION_SECRET;
-if (!SESSION_SECRET) {
-  console.warn(
-    "[SisPu.JP] SESSION_SECRET não definida no .env — usando um segredo temporário gerado " +
-    "para esta execução (todas as sessões serão invalidadas ao reiniciar o servidor). " +
-    "Defina SESSION_SECRET em produção."
-  );
-}
-
 // JSON Middleware
 app.use(express.json({ limit: '10mb' }));
-app.use(session({
-  secret: SESSION_SECRET || crypto.randomUUID(),
-  name: "sispujp.sid",
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: 1000 * 60 * 60 * 8 // 8 hours
-  }
-}));
 
 // In-Memory/JSON File Database State (Simulating PostgreSQL with triggers)
 const DB_FILE = path.join(process.cwd(), "sispu_db.json");
@@ -94,17 +46,11 @@ interface DatabaseState {
   documentos_processados: DocumentoProcessado[];
 }
 
-// Default password assigned to any user that doesn't yet have one (fresh seed, or an
-// existing sispu_db.json migrated from a pre-auth version of the system). Must be changed
-// on first login.
-const DEFAULT_PASSWORD = process.env.SENHA_PADRAO_INICIAL || "TrocarSenha123!";
-const DEFAULT_PASSWORD_HASH = bcrypt.hashSync(DEFAULT_PASSWORD, 10);
-
 // Initial Seed Data
 const initialDBState: DatabaseState = {
   usuarios: [
-    { id: "1", login: "admin", nome: "Administrador", senha_hash: DEFAULT_PASSWORD_HASH, role: "admin", ativo: true, criado_em: new Date().toISOString() },
-    { id: "2", login: "joao", nome: "João Silva", senha_hash: DEFAULT_PASSWORD_HASH, role: "operador", ativo: true, criado_em: new Date().toISOString() }
+    { id: "1", login: "admin", nome: "Administrador", ativo: true, criado_em: new Date().toISOString() },
+    { id: "2", login: "joao", nome: "João Silva", ativo: true, criado_em: new Date().toISOString() }
   ],
   secretarias: [
     { id: "1", codigo_legado: 10, nome: "SECRETARIA DE ADMINISTRAÇÃO", ativo: true, criado_em: "2026-01-10T10:00:00Z", atualizado_em: "2026-01-10T10:00:00Z" },
@@ -286,175 +232,13 @@ function saveDB(state: DatabaseState) {
   }
 }
 
-// Backfills senha_hash/role on any usuario that predates the authentication system
-// (e.g. a sispu_db.json created before auth existed). Every migrated user gets the
-// default password and must change it on first login.
-function migrateUsuariosSeguranca(state: DatabaseState): boolean {
-  let migrated = false;
-  state.usuarios.forEach(u => {
-    if (!u.role) {
-      u.role = u.login === "admin" ? "admin" : "operador";
-      migrated = true;
-    }
-    if (!u.senha_hash) {
-      u.senha_hash = DEFAULT_PASSWORD_HASH;
-      migrated = true;
-    }
-  });
-  return migrated;
-}
-
 // Global DB instance
 const db = loadDB();
-if (migrateUsuariosSeguranca(db)) {
-  console.warn(
-    `[SisPu.JP] Um ou mais usuários não tinham senha cadastrada e foram migrados com a senha padrão "${DEFAULT_PASSWORD}". ` +
-    "Troque essa senha imediatamente após o primeiro login."
-  );
-  saveDB(db);
-}
-
-function sanitizeUsuario(u: Usuario) {
-  const { senha_hash, ...rest } = u;
-  return rest;
-}
-
-// Optimistic concurrency check: the client must send back the `atualizado_em` it last
-// read for this record. If it no longer matches, someone else saved a change in between,
-// so we reject the write instead of silently overwriting it. Requests that omit
-// atualizado_em (older/legacy callers) skip the check rather than being blocked outright.
-function checkNaoDesatualizado(res: express.Response, registroAtual: { atualizado_em: string }, atualizadoEmRecebido: unknown): boolean {
-  if (atualizadoEmRecebido === undefined || atualizadoEmRecebido === null || atualizadoEmRecebido === "") {
-    return true;
-  }
-  if (atualizadoEmRecebido !== registroAtual.atualizado_em) {
-    res.status(409).json({
-      error: "Este registro foi alterado por outro usuário enquanto você o editava. Recarregue os dados e tente novamente.",
-      code: "STALE_WRITE"
-    });
-    return false;
-  }
-  return true;
-}
-
-function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const userId = req.session.userId;
-  const user = userId ? db.usuarios.find(u => u.id === userId && u.ativo) : undefined;
-  if (!user) {
-    return res.status(401).json({ error: "Não autenticado. Faça login para continuar." });
-  }
-  req.currentUser = user;
-  next();
-}
-
-function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (req.currentUser?.role !== "admin") {
-    return res.status(403).json({ error: "Apenas administradores podem realizar esta ação." });
-  }
-  next();
-}
-
-// --- AUTENTICAÇÃO ---
-app.post("/api/auth/login", (req, res) => {
-  const { login, senha } = req.body || {};
-  if (!login || !senha) {
-    return res.status(400).json({ error: "Informe login e senha." });
-  }
-
-  const user = db.usuarios.find(u => u.login === login);
-  if (!user || !user.ativo || !bcrypt.compareSync(senha, user.senha_hash)) {
-    return res.status(401).json({ error: "Login ou senha inválidos." });
-  }
-
-  req.session.userId = user.id;
-  res.json({ user: sanitizeUsuario(user) });
-});
-
-app.post("/api/auth/logout", (req, res) => {
-  req.session.destroy(() => {
-    res.clearCookie("sispujp.sid");
-    res.json({ message: "Sessão encerrada." });
-  });
-});
-
-app.get("/api/auth/me", requireAuth, (req, res) => {
-  res.json({ user: sanitizeUsuario(req.currentUser!) });
-});
-
-app.get("/api/system/status", requireAuth, (req, res) => {
-  res.json({ geminiConfigured: GEMINI_CONFIGURED });
-});
-
-// Every /api route below requires an authenticated session.
-app.use("/api", requireAuth);
-
-// --- USUÁRIOS (gestão de acesso — somente administradores) ---
-app.get("/api/usuarios", requireAdmin, (req, res) => {
-  res.json(db.usuarios.map(sanitizeUsuario));
-});
-
-app.post("/api/usuarios", requireAdmin, (req, res) => {
-  const { login, nome, senha, role } = req.body || {};
-  const cleanLogin = (login || "").trim().toLowerCase();
-  if (!cleanLogin || !nome || !senha) {
-    return res.status(400).json({ error: "Informe login, nome e senha." });
-  }
-  if (senha.length < 8) {
-    return res.status(400).json({ error: "A senha deve ter ao menos 8 caracteres." });
-  }
-  if (db.usuarios.find(u => u.login === cleanLogin)) {
-    return res.status(400).json({ error: "Já existe um usuário com este login." });
-  }
-
-  const newId = (Math.max(...db.usuarios.map(u => parseInt(u.id)), 0) + 1).toString();
-  const newUser: Usuario = {
-    id: newId,
-    login: cleanLogin,
-    nome,
-    senha_hash: bcrypt.hashSync(senha, 10),
-    role: role === "admin" ? "admin" : "operador",
-    ativo: true,
-    criado_em: new Date().toISOString()
-  };
-  db.usuarios.push(newUser);
-  saveDB(db);
-  logAudit("usuarios", newId, "INSERT", req.currentUser!.login, null, sanitizeUsuario(newUser));
-
-  res.status(201).json(sanitizeUsuario(newUser));
-});
-
-app.put("/api/usuarios/:id", requireAdmin, (req, res) => {
-  const { id } = req.params;
-  const { nome, role, ativo, senha } = req.body || {};
-
-  const index = db.usuarios.findIndex(u => u.id === id);
-  if (index === -1) {
-    return res.status(404).json({ error: "Usuário não encontrado." });
-  }
-  if (ativo === false && id === req.currentUser!.id) {
-    return res.status(400).json({ error: "Você não pode desativar o próprio usuário." });
-  }
-
-  const oldVal = sanitizeUsuario(db.usuarios[index]);
-  if (nome !== undefined) db.usuarios[index].nome = nome;
-  if (role === "admin" || role === "operador") db.usuarios[index].role = role;
-  if (ativo !== undefined) db.usuarios[index].ativo = !!ativo;
-  if (senha) {
-    if (senha.length < 8) {
-      return res.status(400).json({ error: "A senha deve ter ao menos 8 caracteres." });
-    }
-    db.usuarios[index].senha_hash = bcrypt.hashSync(senha, 10);
-  }
-  saveDB(db);
-  logAudit("usuarios", id, "UPDATE", req.currentUser!.login, oldVal, sanitizeUsuario(db.usuarios[index]));
-
-  res.json(sanitizeUsuario(db.usuarios[index]));
-});
 
 // Simulated PostgreSQL Trigger-based Auditor
 function logAudit(tabela: string, pk: string, acao: 'INSERT' | 'UPDATE' | 'DELETE', usuario: string, antigo: any, novo: any) {
   const auditRow: AuditoriaRegistro = {
-    id: (Math.max(...db.auditoria_registros.map(a => parseInt(a.id)), 0) + 1).toString(),
+    id: (db.auditoria_registros.length + 1).toString(),
     tabela,
     registro_pk: pk,
     acao,
@@ -470,7 +254,7 @@ function logAudit(tabela: string, pk: string, acao: 'INSERT' | 'UPDATE' | 'DELET
 // Error Logger Utility
 function logTechnicalError(origem: string, mensagem: string, arquivo: string, linha: string) {
   const logRow: LogError = {
-    id: (Math.max(...db.logs_erros.map(l => parseInt(l.id)), 0) + 1).toString(),
+    id: (db.logs_erros.length + 1).toString(),
     origem,
     mensagem,
     ocorrido_em: new Date().toISOString(),
@@ -483,7 +267,11 @@ function logTechnicalError(origem: string, mensagem: string, arquivo: string, li
 }
 
 // REST API DEFINITIONS - Mirroring PySide6 repositories and FastAPI routes
-// (usuários já definidos acima, junto com o middleware de autenticação)
+
+// --- USUARIOS ---
+app.get("/api/usuarios", (req, res) => {
+  res.json(db.usuarios);
+});
 
 // --- SECRETARIAS ---
 app.get("/api/secretarias", (req, res) => {
@@ -499,7 +287,7 @@ app.get("/api/secretarias", (req, res) => {
 
 app.post("/api/secretarias", (req, res) => {
   const { codigo_legado, nome } = req.body;
-  const usuario = req.currentUser!.login;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const cleanNome = (nome || "").trim().toUpperCase();
   if (!cleanNome) {
@@ -533,14 +321,13 @@ app.post("/api/secretarias", (req, res) => {
 
 app.put("/api/secretarias/:id", (req, res) => {
   const { id } = req.params;
-  const { codigo_legado, nome, ativo, atualizado_em } = req.body;
-  const usuario = req.currentUser!.login;
+  const { codigo_legado, nome, ativo } = req.body;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.secretarias.findIndex(s => s.id === id);
   if (index === -1) {
     return res.status(404).json({ error: "Secretaria não encontrada." });
   }
-  if (!checkNaoDesatualizado(res, db.secretarias[index], atualizado_em)) return;
 
   const oldVal = { ...db.secretarias[index] };
   const cleanNome = (nome || "").trim().toUpperCase();
@@ -573,7 +360,7 @@ app.put("/api/secretarias/:id", (req, res) => {
 
 app.delete("/api/secretarias/:id", (req, res) => {
   const { id } = req.params;
-  const usuario = req.currentUser!.login;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.secretarias.findIndex(s => s.id === id);
   if (index === -1) {
@@ -618,7 +405,7 @@ app.get("/api/unidades", (req, res) => {
 
 app.post("/api/unidades", (req, res) => {
   const { codigo_legado, secretaria_id, nome, endereco } = req.body;
-  const usuario = req.currentUser!.login;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const cleanNome = (nome || "").trim().toUpperCase();
   if (!cleanNome) {
@@ -656,14 +443,13 @@ app.post("/api/unidades", (req, res) => {
 
 app.put("/api/unidades/:id", (req, res) => {
   const { id } = req.params;
-  const { codigo_legado, secretaria_id, nome, endereco, ativo, atualizado_em } = req.body;
-  const usuario = req.currentUser!.login;
+  const { codigo_legado, secretaria_id, nome, endereco, ativo } = req.body;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.unidades.findIndex(u => u.id === id);
   if (index === -1) {
     return res.status(404).json({ error: "Unidade não encontrada." });
   }
-  if (!checkNaoDesatualizado(res, db.unidades[index], atualizado_em)) return;
 
   const oldVal = { ...db.unidades[index] };
   const cleanNome = (nome || "").trim().toUpperCase();
@@ -703,7 +489,7 @@ app.put("/api/unidades/:id", (req, res) => {
 
 app.delete("/api/unidades/:id", (req, res) => {
   const { id } = req.params;
-  const usuario = req.currentUser!.login;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.unidades.findIndex(u => u.id === id);
   if (index === -1) {
@@ -739,7 +525,7 @@ app.get("/api/despesas", (req, res) => {
 
 app.post("/api/despesas", (req, res) => {
   const { codigo_legado, descricao } = req.body;
-  const usuario = req.currentUser!.login;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const cleanDesc = (descricao || "").trim().toUpperCase();
   if (!cleanDesc) {
@@ -771,14 +557,13 @@ app.post("/api/despesas", (req, res) => {
 
 app.put("/api/despesas/:id", (req, res) => {
   const { id } = req.params;
-  const { codigo_legado, descricao, ativo, atualizado_em } = req.body;
-  const usuario = req.currentUser!.login;
+  const { codigo_legado, descricao, ativo } = req.body;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.despesas.findIndex(d => d.id === id);
   if (index === -1) {
     return res.status(404).json({ error: "Despesa não encontrada." });
   }
-  if (!checkNaoDesatualizado(res, db.despesas[index], atualizado_em)) return;
 
   const oldVal = { ...db.despesas[index] };
   const cleanDesc = (descricao || "").trim().toUpperCase();
@@ -809,7 +594,7 @@ app.put("/api/despesas/:id", (req, res) => {
 
 app.delete("/api/despesas/:id", (req, res) => {
   const { id } = req.params;
-  const usuario = req.currentUser!.login;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.despesas.findIndex(d => d.id === id);
   if (index === -1) {
@@ -857,7 +642,7 @@ app.get("/api/itens_despesas", (req, res) => {
 
 app.post("/api/itens_despesas", (req, res) => {
   const { codigo_numero, despesa_id, unidade_id, tipo_fone, medidor } = req.body;
-  const usuario = req.currentUser!.login;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const cleanCodigo = (codigo_numero || "").trim().toUpperCase();
   if (!cleanCodigo) {
@@ -899,14 +684,13 @@ app.post("/api/itens_despesas", (req, res) => {
 
 app.put("/api/itens_despesas/:id", (req, res) => {
   const { id } = req.params;
-  const { codigo_numero, despesa_id, unidade_id, tipo_fone, medidor, ativo, atualizado_em } = req.body;
-  const usuario = req.currentUser!.login;
+  const { codigo_numero, despesa_id, unidade_id, tipo_fone, medidor, ativo } = req.body;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.itens_despesas.findIndex(it => it.id === id);
   if (index === -1) {
     return res.status(404).json({ error: "Item de despesa não encontrado." });
   }
-  if (!checkNaoDesatualizado(res, db.itens_despesas[index], atualizado_em)) return;
 
   const oldVal = { ...db.itens_despesas[index] };
   const cleanCodigo = (codigo_numero || "").trim().toUpperCase();
@@ -935,7 +719,7 @@ app.put("/api/itens_despesas/:id", (req, res) => {
 
 app.delete("/api/itens_despesas/:id", (req, res) => {
   const { id } = req.params;
-  const usuario = req.currentUser!.login;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.itens_despesas.findIndex(it => it.id === id);
   if (index === -1) {
@@ -1002,7 +786,7 @@ app.post("/api/lancamentos", (req, res) => {
     valor_celular, valor_internet, valor_diversos, valor_linha_privada, 
     valor_credito, data_lancamento 
   } = req.body;
-  const usuario = req.currentUser!.login;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   if (!item_despesa_id) {
     return res.status(400).json({ error: "Selecione o item de despesa correspondente." });
@@ -1065,17 +849,16 @@ app.post("/api/lancamentos", (req, res) => {
 
 app.put("/api/lancamentos/:id", (req, res) => {
   const { id } = req.params;
-  const {
-    consumo, valor_total, valor_imposto, valor_celular, valor_internet,
-    valor_diversos, valor_linha_privada, valor_credito, data_lancamento, atualizado_em
+  const { 
+    consumo, valor_total, valor_imposto, valor_celular, valor_internet, 
+    valor_diversos, valor_linha_privada, valor_credito, data_lancamento 
   } = req.body;
-  const usuario = req.currentUser!.login;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.lancamentos.findIndex(l => l.id === id);
   if (index === -1) {
     return res.status(404).json({ error: "Lançamento não encontrado." });
   }
-  if (!checkNaoDesatualizado(res, db.lancamentos[index], atualizado_em)) return;
 
   const oldVal = { ...db.lancamentos[index] };
 
@@ -1099,7 +882,7 @@ app.put("/api/lancamentos/:id", (req, res) => {
 
 app.delete("/api/lancamentos/:id", (req, res) => {
   const { id } = req.params;
-  const usuario = req.currentUser!.login;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.lancamentos.findIndex(l => l.id === id);
   if (index === -1) {
@@ -1227,14 +1010,13 @@ app.post("/api/documentos", (req, res) => {
 // Update Document fields (Tela de Conferência Editing)
 app.put("/api/documentos/:id", (req, res) => {
   const { id } = req.params;
-  const { dados_extraidos, observacoes, status, atualizado_em } = req.body;
-  const usuario = req.currentUser!.login;
+  const { dados_extraidos, observacoes, status } = req.body;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.documentos_processados.findIndex(d => d.id === id);
   if (index === -1) {
     return res.status(404).json({ error: "Documento não encontrado." });
   }
-  if (!checkNaoDesatualizado(res, db.documentos_processados[index], atualizado_em)) return;
 
   const doc = db.documentos_processados[index];
   const oldExtract = { ...doc.dados_extraidos };
@@ -1300,7 +1082,7 @@ app.put("/api/documentos/:id", (req, res) => {
 // Homologar Document (Persist directly to DB using Services / Repositories pattern equivalent)
 app.post("/api/documentos/:id/homologar", (req, res) => {
   const { id } = req.params;
-  const usuario = req.currentUser!.login;
+  const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.documentos_processados.findIndex(d => d.id === id);
   if (index === -1) {
@@ -1422,7 +1204,8 @@ function heuristicExtractFatura(text: string, filename: string, layout?: string)
       valor_linha_privada: 0,
       valor_credito: result.valor_credito || 0,
       codigo_numero: result.codigo_numero || null,
-      medidor: result.medidor || null
+      medidor: result.medidor || null,
+      itens: result.itens_fatura || []
     };
   }
   
@@ -1443,11 +1226,57 @@ function heuristicExtractFatura(text: string, filename: string, layout?: string)
 
 // --- ROBUST JSON PARSER HELPER ---
 function robustJsonParse(jsonStr: string): any {
+  if (!jsonStr) return {};
+  
+  // Strip markdown code block wrapping if present
+  let cleaned = jsonStr.replace(/```json/gi, "").replace(/```/g, "").trim();
+
   try {
-    return JSON.parse(jsonStr.trim());
-  } catch (e) {
-    console.warn("Standard JSON.parse failed, attempting robust regex extraction. Malformed JSON snippet:", jsonStr.substring(0, 300));
+    return JSON.parse(cleaned);
+  } catch (e: any) {
+    console.warn("Standard JSON.parse failed on cleaned text, attempting robust regex / repair. Snippet:", cleaned.substring(0, 300));
     
+    // Try extracting substring from first '{' to last '}'
+    const startIdx = cleaned.indexOf('{');
+    const endIdx = cleaned.lastIndexOf('}');
+    if (startIdx !== -1 && endIdx > startIdx) {
+      const candidate = cleaned.substring(startIdx, endIdx + 1);
+      try {
+        return JSON.parse(candidate);
+      } catch (e2) {
+        // Attempt repairing truncated json by balancing brackets and quotes
+        let repaired = candidate;
+        // Balance unclosed quotes
+        const quoteCount = (repaired.match(/"/g) || []).length;
+        if (quoteCount % 2 !== 0) {
+          repaired += '"';
+        }
+        // Balance unclosed brackets
+        let openBraces = 0;
+        let openBrackets = 0;
+        let inString = false;
+        for (let i = 0; i < repaired.length; i++) {
+          const char = repaired[i];
+          if (char === '"' && (i === 0 || repaired[i - 1] !== '\\')) {
+            inString = !inString;
+          } else if (!inString) {
+            if (char === '{') openBraces++;
+            else if (char === '}') openBraces--;
+            else if (char === '[') openBrackets++;
+            else if (char === ']') openBrackets--;
+          }
+        }
+        if (openBrackets > 0) repaired += ']'.repeat(openBrackets);
+        if (openBraces > 0) repaired += '}'.repeat(openBraces);
+        
+        try {
+          return JSON.parse(repaired);
+        } catch (e3) {
+          console.warn("Auto-repair balanced brackets parse failed:", e3);
+        }
+      }
+    }
+
     // Fallback object with defaults
     const result: any = {
       mes_ano: "2026-06-01",
@@ -1460,7 +1289,8 @@ function robustJsonParse(jsonStr: string): any {
       valor_linha_privada: 0,
       valor_credito: 0,
       codigo_numero: "DESCONHECIDO",
-      medidor: "N/A"
+      medidor: "N/A",
+      itens: []
     };
 
     const keyValues = [
@@ -1481,7 +1311,7 @@ function robustJsonParse(jsonStr: string): any {
       const stringPattern = new RegExp(`"${kv.key}"\\s*:\\s*"([^"]*)"`, "i");
       const numberPattern = new RegExp(`"${kv.key}"\\s*:\\s*([0-9.-]+)`, "i");
 
-      const sMatch = jsonStr.match(stringPattern);
+      const sMatch = cleaned.match(stringPattern);
       if (sMatch) {
         if (kv.type === "string") {
           result[kv.key] = sMatch[1];
@@ -1490,7 +1320,7 @@ function robustJsonParse(jsonStr: string): any {
           result[kv.key] = isNaN(val) ? 0 : val;
         }
       } else {
-        const nMatch = jsonStr.match(numberPattern);
+        const nMatch = cleaned.match(numberPattern);
         if (nMatch) {
           const val = parseFloat(nMatch[1]);
           result[kv.key] = isNaN(val) ? 0 : val;
@@ -1502,104 +1332,276 @@ function robustJsonParse(jsonStr: string): any {
   }
 }
 
-// --- GEMINI PARSER ENDPOINT ---
-app.post("/api/documentos/parse", async (req, res) => {
-  const { texto_fatura, layout, nome_arquivo } = req.body;
+// --- POST-EXTRACTION SANITY VALIDATION HELPER ---
+function validateExtractedFaturaSanity(data: any, provider: 'CELESC' | 'CASAN'): any {
+  const result = { ...data };
+  const logsMotivos: string[] = [];
 
-  if (!texto_fatura) {
-    return res.status(400).json({ error: "Nenhum conteúdo de fatura enviado para o parser." });
+  const consumo = Number(result.consumo) || 0;
+  const valorTotal = Number(result.valor_total) || 0;
+  const tarifa = Number(result.tarifa_unitaria) || 0;
+  const imposto = Number(result.valor_imposto) || 0;
+  const diversos = Number(result.valor_diversos) || 0;
+  const credito = Number(result.valor_credito) || 0;
+
+  // 1. Sanity check: Total value zero when positive consumption
+  if (valorTotal <= 0 && consumo > 0) {
+    logsMotivos.push("Valor total zerado ou negativo apesar de haver consumo medido superior a 0.");
   }
 
-  // Ensure robust size limitation for the prompt to avoid token overflows and output truncation
-  let txtToSend = texto_fatura;
-  if (txtToSend.length > 15000) {
-    txtToSend = txtToSend.substring(0, 7500) + 
-      "\n...[CONTEÚDO TRUNCADO PELO SISTEMA DE SEGURANÇA PARA EVITAR TRANSBORDAMENTO]...\n" + 
-      txtToSend.substring(txtToSend.length - 7500);
+  // 2. Cross-check consumo * tarifa vs valor_total
+  if (consumo > 0 && tarifa > 0) {
+    const consumoEstimadoCalculado = consumo * tarifa;
+    const minExpected = consumoEstimadoCalculado * 0.5 - credito;
+    const maxExpected = provider === 'CASAN' 
+      ? (consumoEstimadoCalculado * 3.2 + imposto + diversos) 
+      : (consumoEstimadoCalculado * 2.2 + imposto + diversos);
+
+    if (valorTotal > 0 && (valorTotal < minExpected || valorTotal > maxExpected)) {
+      logsMotivos.push(`Divergência matemática entre consumo (${consumo}) x tarifa (R$ ${tarifa.toFixed(2)}) e Valor Total (R$ ${valorTotal.toFixed(2)}).`);
+    }
   }
 
-  try {
-    const prompt = `
-Você é um parser oficial de faturas do sistema SisPu.JP 2.0.
-Seu objetivo é ler o conteúdo de texto de uma fatura da concessionária catarinense (CELESC ou CASAN) e extrair os dados fiscais e de consumo estruturados.
+  // 3. Meter readings consistency check
+  const leitAnt = Number(result.leitura_anterior) || 0;
+  const leitAtu = Number(result.leitura_atual) || 0;
+  if (leitAtu > 0 && leitAnt > 0 && leitAtu >= leitAnt) {
+    const consDiff = leitAtu - leitAnt;
+    if (consumo > 0 && Math.abs(consDiff - consumo) > Math.max(2, consumo * 0.15)) {
+      logsMotivos.push(`Inconsistência nas leituras do medidor: Leitura Atual (${leitAtu}) - Leitura Anterior (${leitAnt}) = ${consDiff}, divergindo do consumo faturado (${consumo}).`);
+    }
+  }
 
-LAYOUT DE ENTRADA: ${layout}
-NOME DO ARQUIVO: ${nome_arquivo}
+  // 4. Check missing identifier
+  if (!result.codigo_numero || result.codigo_numero === "DESCONHECIDO" || String(result.codigo_numero).trim() === "") {
+    logsMotivos.push("Identificador da Unidade Consumidora (UC / Matrícula / CODNUM) ausente na extração.");
+  }
 
-CONTEÚDO DA FATURA:
-"""
-${txtToSend}
-"""
+  // 5. Apply score & low confidence flag
+  if (logsMotivos.length > 0) {
+    result.baixa_confianca = true;
+    result.motivo_baixa_confianca = logsMotivos.join(" | ");
+    result.confianca = Math.max(30, Math.min(65, (result.confianca || 80) - logsMotivos.length * 20));
+  } else {
+    result.baixa_confianca = result.baixa_confianca === true ? true : false;
+    result.confianca = result.confianca || 98;
+  }
 
-Por favor, extraia os seguintes campos com exatidão matemática:
-1. Mês/Ano de competência de referência (formato YYYY-MM-DD, preferencialmente o primeiro dia do mês correspondente, ex: "2026-06-01" para Junho de 2026).
-2. Consumo medido (número, ex: 1450.50). Para CELESC é o consumo em kWh. Para CASAN é o consumo em m³.
-3. Valor Total a pagar (número, ex: 1240.20).
-4. Valor do imposto (ICMS/COSIP/Tributos somados, número, ex: 245.50).
-5. Valor celular (se houver, senão 0).
-6. Valor internet (se houver, senão 0).
-7. Valor diversos (se houver, senão 0).
-8. Valor linha privada / LP (se houver, senão 0).
-9. Valor crédito (se houver, senão 0).
-10. Código de número identificador da fatura (CODNUM / Unidade Consumidora / Número da Linha / Contrato, ex: "101001" ou "CELESC-PREF-101").
-11. Número do Medidor (se houver, ex: "928371-3").
-12. Endereço da Unidade Consumidora (extraia o endereço específico que consta no bloco da UC/imóvel, ex: "DAS MADEIRAS 3000", e NÃO o endereço genérico do cliente no cabeçalho).
-
-Sua resposta DEVE ser estritamente em formato JSON seguindo este esquema:
-{
-  "mes_ano": "YYYY-MM-DD",
-  "consumo": 0.00,
-  "valor_total": 0.00,
-  "valor_imposto": 0.00,
-  "valor_celular": 0.00,
-  "valor_internet": 0.00,
-  "valor_diversos": 0.00,
-  "valor_linha_privada": 0.00,
-  "valor_credito": 0.00,
-  "codigo_numero": "IDENTIFICADOR",
-  "medidor": "NUMERO_MEDIDOR",
-  "endereco": "ENDERECO_DA_UC"
+  return result;
 }
 
-Não inclua explicações ou markdown fora do bloco JSON.
-`;
+// --- GEMINI MULTIMODAL PARSER ENDPOINT ---
+app.post("/api/documentos/parse", async (req, res) => {
+  const { texto_fatura, imagem_base64, imagens_base64, layout, nome_arquivo } = req.body;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            mes_ano: { type: Type.STRING, description: "YYYY-MM-DD format" },
-            consumo: { type: Type.NUMBER },
-            valor_total: { type: Type.NUMBER },
-            valor_imposto: { type: Type.NUMBER },
-            valor_celular: { type: Type.NUMBER },
-            valor_internet: { type: Type.NUMBER },
-            valor_diversos: { type: Type.NUMBER },
-            valor_linha_privada: { type: Type.NUMBER },
-            valor_credito: { type: Type.NUMBER },
-            codigo_numero: { type: Type.STRING },
-            medidor: { type: Type.STRING },
-            endereco: { type: Type.STRING }
-          },
-          required: ["mes_ano", "consumo", "valor_total", "valor_imposto"]
-        }
+  if (!texto_fatura && !imagem_base64 && (!imagens_base64 || imagens_base64.length === 0)) {
+    return res.status(400).json({ error: "Nenhum conteúdo (texto ou imagem) de fatura enviado para o parser." });
+  }
+
+  const isCelesc = (layout && layout.includes("CELESC")) || 
+                  (nome_arquivo && /celesc/i.test(nome_arquivo)) || 
+                  (texto_fatura && /celesc/i.test(texto_fatura));
+  const isCasan = (layout && layout.includes("CASAN")) || 
+                 (nome_arquivo && /casan/i.test(nome_arquivo)) || 
+                 (texto_fatura && /casan/i.test(texto_fatura));
+
+  let promptInstrucoes = "";
+  if (isCasan) {
+    promptInstrucoes = `
+Você é um auditor fiscal especialista e parser multimodal para faturas de água e saneamento da CASAN (Companhia Catarinense de Águas e Saneamento - Santa Catarina).
+Sua tarefa é examinar visualmente a IMAGEM da fatura fornecida e extrair os dados estruturados de consumo e faturamento com extrema precisão conceitual.
+
+CONCEITOS A LOCALIZAR NA FATURA DA CASAN:
+1. MATRÍCULA / CÓDIGO DA LIGAÇÃO (codigo_numero): Procure o identificador da ligação ou cliente da CASAN. Geralmente fica próximo aos rótulos "Matrícula", "Nº da Ligação", "Matrícula da Ligação" ou "UC DEBITO".
+2. HIDRÔMETRO / MEDIDOR (medidor): Localize o número de série do aparelho medidor de água, próximo a "Hidrômetro", "Nº do Hidrômetro" ou "Medidor".
+3. MÊS E ANO DE COMPETÊNCIA (mes_ano): Identifique o período de referência (ex: "06/2026", "JUN/2026"). Retorne SEMPRE no formato YYYY-MM-01 (ex: "2026-06-01").
+4. CONSUMO MEDIDO (consumo): Localize o volume total de água faturado em m³ (metros cúbicos).
+5. TARIFA UNITÁRIA (tarifa_unitaria): Localize o preço por m³ praticado nas faixas de consumo de água e esgoto em Reais (R$).
+6. VALOR TOTAL (valor_total): Localize o valor líquido a pagar pelo documento em Reais (R$), destacado em "TOTAL A PAGAR", "VALOR TOTAL" ou similar.
+7. TRIBUTOS / IMPOSTOS (valor_imposto): Extraia a soma de impostos e tributos (PIS, COFINS, tributos retidos).
+8. ENDEREÇO DA LIGAÇÃO (endereco): Extraia o endereço físico exato da instalação/imóvel onde o hidrômetro está instalado (não confunda com o endereço postal da sede do cliente).
+9. UNIDADE / USUÁRIO (unidade_nome): Extraia o nome do usuário, secretaria ou prédio cadastrado na fatura.
+10. DEMAIS VALORES: Extraia valores de créditos/descontos (valor_credito) e serviços diversos/outras taxas (valor_diversos).
+`;
+  } else {
+    promptInstrucoes = `
+Você é um auditor fiscal especialista e parser multimodal para faturas de energia elétrica da CELESC (Distribuição S.A. - Santa Catarina).
+Sua tarefa é examinar visualmente a IMAGEM da fatura fornecida e extrair os dados estruturados de consumo e faturamento com extrema precisão conceitual.
+
+CONCEITOS A LOCALIZAR NA FATURA DA CELESC:
+1. UNIDADE CONSUMIDORA / UC / CODNUM (codigo_numero): Procure o código identificador da instalação elétrica da CELESC. Geralmente fica próximo a "Unidade Consumidora", "UC", "CODNUM", "Nº do Cliente" ou "Ponto de Entrega".
+2. MEDIDOR (medidor): Localize o número de série do medidor elétrico, próximo a "Nº do Medidor", "Medidor" ou "Nº Série".
+3. MÊS E ANO DE COMPETÊNCIA (mes_ano): Identifique o mês e ano de referência (ex: "06/2026", "COMPETÊNCIA 06/2026"). Retorne SEMPRE no formato YYYY-MM-01 (ex: "2026-06-01").
+4. CONSUMO MEDIDO (consumo): Localize o consumo ativo faturado em kWh (kilowatt-hora) no período.
+5. TARIFA UNITÁRIA (tarifa_unitaria): Localize a tarifa unitária em R$/kWh (TE + TUSD ou tarifa homologada).
+6. VALOR TOTAL (valor_total): Localize o valor total a pagar da fatura em Reais (R$), em destaque na área "TOTAL A PAGAR", "VALOR TOTAL" ou "SUBTOTAL".
+7. TRIBUTOS E IMPOSTOS (valor_imposto): Somatório de ICMS, PIS, COFINS e Contribuição de Iluminação Pública (COSIP/CIP).
+8. ENDEREÇO DA UC (endereco): Extraia o endereço do local do imóvel onde a energia é consumida (ignore endereço postal genérico do cliente).
+9. UNIDADE / NOME (unidade_nome): Nome da unidade administrativa, escola, posto ou secretaria municipal.
+10. DEMAIS VALORES: Extraia valores de créditos/descontos (valor_credito), serviços diversos (valor_diversos) e energia injetada se houver microgeração solar.
+`;
+  }
+
+  const contentsParts: any[] = [];
+
+  const imagesList: string[] = [];
+  if (Array.isArray(imagens_base64) && imagens_base64.length > 0) {
+    imagesList.push(...imagens_base64);
+  } else if (imagem_base64) {
+    imagesList.push(imagem_base64);
+  }
+
+  for (const imgStr of imagesList) {
+    const cleanBase64 = imgStr.replace(/^data:image\/\w+;base64,/, "");
+    let mimeType = "image/png";
+    const mimeMatch = imgStr.match(/^data:(image\/\w+);base64,/);
+    if (mimeMatch) mimeType = mimeMatch[1];
+
+    contentsParts.push({
+      inlineData: {
+        mimeType: mimeType,
+        data: cleanBase64
       }
     });
+  }
+
+  let textPartContent = `${promptInstrucoes}
+
+NOME DO ARQUIVO: ${nome_arquivo || "fatura.pdf"}
+LAYOUT DE ENTRADA: ${layout || (isCasan ? "CASAN_FATURA" : "CELESC_FATURA")}
+`;
+
+  if (texto_fatura) {
+    let txtToSend = texto_fatura;
+    if (txtToSend.length > 10000) {
+      txtToSend = txtToSend.substring(0, 5000) + "\n...[TRUNCADO]...\n" + txtToSend.substring(txtToSend.length - 5000);
+    }
+    textPartContent += `\n\nTEXTO AUXILIAR EXTRAÍDO DO DOCUMENTO:\n"""\n${txtToSend}\n"""\n`;
+  }
+
+  contentsParts.push({ text: textPartContent });
+
+  try {
+    const candidateModels = ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+    let response: any = null;
+    let lastModelError: any = null;
+
+  for (const modelName of candidateModels) {
+    try {
+      response = await ai.models.generateContent({
+        model: modelName,
+        contents: { parts: contentsParts },
+        config: {
+          maxOutputTokens: 16384,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+  mes_ano: { type: Type.STRING, description: "Data de competência no formato YYYY-MM-DD (ex: 2026-06-01)" },
+  consumo: { type: Type.NUMBER, description: "Consumo total medido (kWh para CELESC, m³ para CASAN)" },
+  tarifa_unitaria: { type: Type.NUMBER, description: "Tarifa unitária cobrada por kWh ou m³ (R$)" },
+  valor_total: { type: Type.NUMBER, description: "Valor total líquido/bruto a pagar da fatura em Reais (R$)" },
+  valor_imposto: { type: Type.NUMBER, description: "Soma total dos tributos e impostos (ICMS, PIS, COFINS, COSIP) em Reais (R$)" },
+  valor_celular: { type: Type.NUMBER, description: "Valor de telefonia celular se houver, senão 0" },
+  valor_internet: { type: Type.NUMBER, description: "Valor de serviço de internet se houver, senão 0" },
+  valor_diversos: { type: Type.NUMBER, description: "Outras taxas ou serviços diversos em Reais (R$), senão 0" },
+  valor_linha_privada: { type: Type.NUMBER, description: "Valor de linha privada se houver, senão 0" },
+  valor_credito: { type: Type.NUMBER, description: "Valor total de descontos ou créditos aplicados em Reais (R$), senão 0" },
+  codigo_numero: { type: Type.STRING, description: "Código identificador da Unidade Consumidora (UC) ou Matrícula/Ligação" },
+  medidor: { type: Type.STRING, description: "Número de série do medidor elétrico ou hidrômetro" },
+  endereco: { type: Type.STRING, description: "Endereço físico específico da instalação/imóvel da UC" },
+  unidade_nome: { type: Type.STRING, description: "Nome do cliente/unidade consumidora cadastrado na fatura" },
+  leitura_anterior: { type: Type.NUMBER, description: "Valor numérico da leitura anterior do medidor" },
+  leitura_atual: { type: Type.NUMBER, description: "Valor numérico da leitura atual do medidor" },
+  data_vencimento: { type: Type.STRING, description: "Data de vencimento da fatura" },
+  municipio: { type: Type.STRING, description: "Nome do município em Santa Catarina" },
+  classe: { type: Type.STRING, description: "Classe ou categoria de consumo (ex: Poder Público, Residencial, Comercial)" },
+  grupo_tarifario: { type: Type.STRING, description: "Grupo tarifário (ex: B3, A4, B1)" },
+  fatura_num: { type: Type.STRING, description: "Número da fatura ou documento fiscal" },
+  data_leitura: { type: Type.STRING, description: "Data em que foi realizada a leitura do medidor" },
+  dias_faturados: { type: Type.NUMBER, description: "Quantidade de dias compreendidos no período faturado" },
+  nota_fiscal: { type: Type.STRING, description: "Número da Nota Fiscal Eletrônica (NF-e) ou Série" },
+  chave_acesso: { type: Type.STRING, description: "Chave de acesso de 44 dígitos da NF-e se houver" },
+  energia_injetada: { type: Type.NUMBER, description: "Quantidade de energia injetada no sistema em kWh" },
+  demanda: { type: Type.NUMBER, description: "Demanda de potência medida/faturada em kW" },
+  energia_reativa: { type: Type.NUMBER, description: "Energia reativa excedente medida em kVArh" },
+  confianca: { type: Type.NUMBER, description: "Nível de confiança da extração de 0 a 100" },
+  baixa_confianca: { type: Type.BOOLEAN, description: "Verdadeiro se a extração necessita de revisão humana (HITL)" },
+  motivo_baixa_confianca: { type: Type.STRING, description: "Motivo detalhado para sinalização de baixa confiança se houver" },
+  itens: {
+    type: Type.ARRAY,
+    description: "Lista de TODAS as linhas da tabela de itens da fatura, uma por uma, sem pular nenhuma (ex: Demanda, Diferença da Demanda Contratada, Consumo Fora Ponta TE, Consumo Ponta TE, Consumo Fora Ponta TUSD, Consumo Ponta TUSD, Tributo Retido IRPJ, Bandeira Amarela, Energia Reativa Excedente, e qualquer outra linha presente na fatura, mesmo que não esteja nesta lista de exemplos).",
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        descricao: { type: Type.STRING, description: "Nome literal da linha, exatamente como aparece na fatura" },
+        quantidade: { type: Type.NUMBER, description: "Quantidade/consumo dessa linha" },
+        preco_unitario: { type: Type.NUMBER, description: "Preço unitário com tributos, se houver" },
+        valor: { type: Type.NUMBER, description: "Valor total dessa linha em Reais" },
+        icms: { type: Type.NUMBER, description: "ICMS dessa linha, senão 0" },
+        cofins_pis: { type: Type.NUMBER, description: "COFINS/PIS dessa linha, senão 0" },
+        irpj_percentual: { type: Type.NUMBER, description: "Percentual de IRPJ retido dessa linha, senão 0" },
+        irpj: { type: Type.NUMBER, description: "Valor de IRPJ retido dessa linha, senão 0" },
+        pis: { type: Type.NUMBER, description: "PIS retido dessa linha, senão 0" },
+        cofins: { type: Type.NUMBER, description: "COFINS retido dessa linha, senão 0" },
+        csll: { type: Type.NUMBER, description: "CSLL retido dessa linha, senão 0" }
+      },
+      required: ["descricao", "valor"]
+    }
+  }
+},
+            required: [
+              "mes_ano", "consumo", "valor_total", "valor_imposto", "codigo_numero", "medidor",
+              "valor_celular", "valor_internet", "valor_diversos", "valor_linha_privada", "valor_credito",
+              "confianca", "baixa_confianca"
+            ]
+          }
+        }
+      });
+      if (response && response.text) {
+        const textLength = response.text.length;
+        let rawParseStatus = "SUCESSO";
+        let rawParseError = "";
+        try {
+          JSON.parse(response.text);
+        } catch (e: any) {
+          rawParseStatus = "ERRO_PARSE";
+          rawParseError = e.message;
+        }
+        console.log(`[Gemini Raw Response Log] Modelo: ${modelName} | Tamanho: ${textLength} chars | JSON.parse Cru: ${rawParseStatus}${rawParseError ? ` (${rawParseError})` : ""}`);
+        break;
+      }
+    } catch (err: any) {
+      lastModelError = err;
+      console.warn(`Model ${modelName} attempt failed: ${err.message || err}`);
+    }
+  }
+
+  if (!response || !response.text) {
+    throw lastModelError || new Error("Nenhum modelo Gemini respondeu com sucesso.");
+  }
 
     const resultText = response.text || "{}";
-    const parsedData = robustJsonParse(resultText);
+    let parsedData = robustJsonParse(resultText);
+
+    // Apply Post-Extraction Sanity Validation
+    parsedData = validateExtractedFaturaSanity(parsedData, isCasan ? 'CASAN' : 'CELESC');
+
+    console.log("[Gemini Multimodal Parser Output]:", JSON.stringify(parsedData, null, 2));
+
     res.json(parsedData);
 
   } catch (error: any) {
-    console.warn("Gemini API error (Quota exceeded or other), falling back to local heuristic parser:", error);
-    logTechnicalError("GEMINI_API_PARSER_FALLBACK", `Heuristic fallback used due to error: ${error.message || "Unknown error"}`, "server.ts", "1230");
+    console.warn("Gemini API error (Quota exceeded, network, or invalid image), falling back to local heuristic parser:", error);
+    logTechnicalError("GEMINI_API_PARSER_FALLBACK", `Heuristic fallback used due to error: ${error.message || "Unknown error"}`, "server.ts", "1300");
     
     try {
-      const parsedData = heuristicExtractFatura(texto_fatura, nome_arquivo || "fatura_upload.txt", layout);
+      let parsedData = heuristicExtractFatura(texto_fatura || "", nome_arquivo || "fatura_upload.txt", layout);
+      parsedData = validateExtractedFaturaSanity(parsedData, isCasan ? 'CASAN' : 'CELESC');
+      parsedData.baixa_confianca = true;
+      parsedData.confianca = Math.min(parsedData.confianca || 50, 50);
+      const motivoFallback = `Extração realizada via parser heurístico local de contingência (Gemini indisponível: ${error.message || "Erro na API"}). Revisão humana obrigatória.`;
+      parsedData.motivo_baixa_confianca = parsedData.motivo_baixa_confianca ? `${motivoFallback} | ${parsedData.motivo_baixa_confianca}` : motivoFallback;
       res.json(parsedData);
     } catch (fallbackError: any) {
       console.error("Critical: Fallback heuristic parser also failed:", fallbackError);
@@ -1607,6 +1609,7 @@ Não inclua explicações ou markdown fora do bloco JSON.
     }
   }
 });
+
 
 
 // --- INTEGRATE VITE FOR HOT CLIENT-SIDE SERVING ---

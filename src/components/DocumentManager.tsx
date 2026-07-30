@@ -14,34 +14,45 @@ import {
   extrairTodasUCsCelesc,
   segmentarCelescPorUCs
 } from "../utils/documentParser";
-import { extractTextFromPdfFile, convertTextToPaginas } from "../utils/pdfExtractor";
+import { extractTextFromPdfFile, convertTextToPaginas, convertPdfToImagesAndText, fileToBase64 } from "../utils/pdfExtractor";
 
 export function computeEnergiaInjetada(itens: any[]): number {
   if (!itens || !Array.isArray(itens)) return 0;
   const injetadaItems = itens.filter(it => /INJETAD[AO]|GERAÇ[AÃ]O|GERAC[AÃ]O/i.test(it.descricao || ""));
   if (injetadaItems.length === 0) return 0;
 
-  const teInjetada = injetadaItems.filter(it => /\bTE\b/i.test(it.descricao));
+  const teInjetada = injetadaItems.filter(it => /\bTE\b/i.test(it.descricao || "") && !/\bTUSD\b/i.test(it.descricao || ""));
   if (teInjetada.length > 0) {
     return teInjetada.reduce((sum, it) => sum + Math.abs(Number(it.quantidade || 0)), 0);
   }
-  const tusdInjetada = injetadaItems.filter(it => /\bTUSD\b/i.test(it.descricao));
-  if (tusdInjetada.length > 0) {
-    return tusdInjetada.reduce((sum, it) => sum + Math.abs(Number(it.quantidade || 0)), 0);
+
+  const nonTusdInjetada = injetadaItems.filter(it => !/\bTUSD\b/i.test(it.descricao || ""));
+  if (nonTusdInjetada.length > 0) {
+    return nonTusdInjetada.reduce((sum, it) => sum + Math.abs(Number(it.quantidade || 0)), 0);
   }
 
-  const seen = new Set<string>();
-  let total = 0;
-  for (const it of injetadaItems) {
-    const qty = Math.abs(Number(it.quantidade || 0));
-    const descClean = (it.descricao || "").toLowerCase().replace(/\b(te|tusd)\b/gi, "").trim();
-    const key = `${descClean}_${qty.toFixed(3)}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      total += qty;
-    }
+  return 0;
+}
+
+export function computeConsumoKWh(itens: any[], isCelesc: boolean = true): number {
+  if (!itens || !Array.isArray(itens)) return 0;
+  if (!isCelesc) {
+    const consumoAgua = itens.find(it => (it.descricao || "").toLowerCase().includes("água") || (it.descricao || "").toLowerCase().includes("agua"))?.quantidade || 0;
+    return consumoAgua;
   }
-  return total;
+
+  const teItems = itens.filter(it => 
+    /CONSUMO/i.test(it.descricao || "") && /\bTE\b/i.test(it.descricao || "") && !/\bTUSD\b/i.test(it.descricao || "") && !/INJETADA|REATIVA/i.test(it.descricao || "")
+  );
+
+  if (teItems.length > 0) {
+    return teItems.reduce((sum, it) => sum + Number(it.quantidade || 0), 0);
+  }
+
+  const genericCons = itens.filter(it => 
+    /CONSUMO/i.test(it.descricao || "") && !/\bTUSD\b/i.test(it.descricao || "") && !/INJETADA|REATIVA|DEMANDA/i.test(it.descricao || "")
+  );
+  return genericCons.reduce((sum, it) => sum + Number(it.quantidade || 0), 0);
 }
 
 export const DEFAULT_MASTER_UCS: CadastroMestreUC[] = [
@@ -733,33 +744,34 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     setIsBatchDetected(isBatch);
 
     if (isPdf) {
-      addLog(`Tipo de arquivo identificado: PDF (Real Reader Engine)`);
-      addLog(`Carregando biblioteca PDF.js para extração segura de texto...`);
+      addLog(`Tipo de arquivo identificado: PDF (Real Reader Engine Multimodal)`);
+      addLog(`Carregando PDF.js e gerando imagens das páginas para o Gemini Multimodal...`);
       try {
         setProcessingQueue(true);
-        setQueueProgress({ current: 0, total: 100, phase: "Carregando motor PDF..." });
+        setQueueProgress({ current: 0, total: 100, phase: "Carregando motor PDF & Canvas..." });
         
-        // Extract text page by page (Etapa 2)
-        const pages = await extractTextFromPdfFile(file, (curr, tot) => {
-          setQueueProgress({ current: Math.round((curr / tot) * 100), total: 100, phase: `Extraindo texto da página ${curr} de ${tot}...` });
-          addLog(`Página ${curr} de ${tot} extraída com sucesso.`);
+        // Extract text AND page images
+        const pages = await convertPdfToImagesAndText(file, (curr, tot) => {
+          setQueueProgress({ current: Math.round((curr / tot) * 100), total: 100, phase: `Renderizando página ${curr} de ${tot} em imagem...` });
+          addLog(`Página ${curr} de ${tot} renderizada em imagem base64.`);
         });
         
-        addLog(`Extração do PDF concluída com sucesso. Total de páginas extraídas: ${pages.length}`);
+        addLog(`Extração do PDF e geração de imagens concluída. Total: ${pages.length} página(s).`);
         
-        // Join pages with form feed marker to preserve page separation
         const joinedText = pages.map(p => p.textoLimpo).join("\f");
+        const pageImages = pages.map(p => p.imagemBase64).filter(Boolean) as string[];
+        
         setCustomText(joinedText);
         setLoading(false);
         setProcessingQueue(false);
         
         setMessage({ 
           type: 'success', 
-          text: `PDF "${file.name}" carregado com sucesso (${pages.length} páginas). Processando faturas...` 
+          text: `PDF "${file.name}" carregado com sucesso (${pages.length} páginas com imagem multimodal). Processando faturas...` 
         });
         
-        // Start pipeline with pages count
-        startPipeline(joinedText, file.name, pages.length);
+        // Start pipeline with pages count and page images
+        startPipeline(joinedText, file.name, pages.length, pageImages);
       } catch (err: any) {
         addLog(`❌ Erro crítico na leitura do PDF: ${err.message}`);
         setLoading(false);
@@ -814,11 +826,11 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   };
 
   // Main Pipeline with Queue/Batching processing and Progress UI (Etapa 7, 10)
-  const startPipeline = async (textOverride?: string, fileOverride?: string, pagesCount: number = 1) => {
+  const startPipeline = async (textOverride?: string, fileOverride?: string, pagesCount: number = 1, imagesOverride?: string[]) => {
     const textToProcess = textOverride !== undefined ? textOverride : customText;
     const nameToProcess = fileOverride !== undefined ? fileOverride : fileName;
 
-    if (!textToProcess) {
+    if (!textToProcess && (!imagesOverride || imagesOverride.length === 0)) {
       setMessage({ type: 'error', text: "Por favor, selecione ou digite o conteúdo de um documento." });
       return;
     }
@@ -829,11 +841,10 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     setShowSummaryScreen(false);
     setLoteSummary(null);
 
-    addLog(`Iniciando pipeline de processamento sintático...`);
-    addLog(`Análise inicial de layout com base no texto...`);
+    addLog(`Iniciando pipeline de processamento multimodal Gemini...`);
 
-    const docType = identifyDocumentType(textToProcess, nameToProcess);
-    const isReport = docType === "CELESC_RELATORIO" || docType === "CASAN_RELATORIO" || textToProcess.includes("\f");
+    const docType = identifyDocumentType(textToProcess || "", nameToProcess);
+    const isReport = docType === "CELESC_RELATORIO" || docType === "CASAN_RELATORIO" || (textToProcess && textToProcess.includes("\f"));
 
     // Set layout/concessionaire state
     const concessionaire = docType.includes("CELESC") ? "CELESC" : docType.includes("CASAN") ? "CASAN" : "Desconhecida";
@@ -842,34 +853,40 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     addLog(`Concessionária inferida: ${concessionaire} | Tipo de arquivo: ${isReport ? 'Relatório/Lote' : 'Fatura Individual'}`);
 
     if (!isReport) {
-      addLog(`Processando fatura individual determinística...`);
-      setQueueProgress({ current: 0, total: 1, phase: `Analisando fatura individual...` });
+      addLog(`Processando fatura individual via Gemini Multimodal...`);
+      setQueueProgress({ current: 0, total: 1, phase: `Analisando imagem e dados da fatura...` });
       
       setTimeout(async () => {
         try {
-          let parsed = runDeterministicParser(textToProcess, nameToProcess);
-          if (!parsed) {
-            addLog(`Parser local falhou. Tentando fallback inteligente via API...`);
-            const fallbackRes = await fetch("/api/documentos/parse", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                texto_fatura: textToProcess,
-                layout: concessionaire === "CELESC" ? "CELESC_FATURA" : "CASAN_FATURA",
-                nome_arquivo: nameToProcess
-              })
-            });
-            if (fallbackRes.ok) {
-              parsed = await fallbackRes.json();
-              addLog(`Parser inteligente via API concluiu com sucesso.`);
-            } else {
-              throw new Error("Falha no parser inteligente.");
-            }
+          addLog(`Enviando imagem multimodal e instruções conceituais para a API do Gemini...`);
+          const apiRes = await fetch("/api/documentos/parse", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              texto_fatura: textToProcess,
+              imagens_base64: imagesOverride,
+              layout: concessionaire === "CELESC" ? "CELESC_FATURA" : "CASAN_FATURA",
+              nome_arquivo: nameToProcess
+            })
+          });
+
+          let parsed: any;
+          if (apiRes.ok) {
+            parsed = await apiRes.json();
+            addLog(`Parser Gemini Multimodal concluiu extração com sucesso! Confiança: ${parsed.confianca || 98}%`);
           } else {
-            addLog(`Parser local determinístico concluído com sucesso.`);
+            addLog(`API retornou erro. Utilizando parser local determinístico...`);
+            parsed = runDeterministicParser(textToProcess, nameToProcess);
+          }
+
+          if (!parsed) {
+            throw new Error("Não foi possível extrair os dados da fatura.");
           }
 
           const logs: string[] = [];
+          if (parsed.baixa_confianca) {
+            logs.push(`⚠️ Atenção: ${parsed.motivo_baixa_confianca || 'Extração requer revisão humana (HITL).'}`);
+          }
           if (!parsed.valor_total || parsed.valor_total <= 0) {
             logs.push("❌ Valor total é nulo ou inconsistente.");
           }
@@ -892,7 +909,8 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
               valor_linha_privada: 0,
               valor_credito: parsed.valor_credito || 0,
               codigo_numero: parsed.codigo_numero || "DESCONHECIDO",
-              medidor: parsed.medidor || "N/A"
+              medidor: parsed.medidor || "N/A",
+              itens_fatura: parsed.itens || []
             },
             logs_validacao: logs,
             historico_alteracoes: [],
@@ -998,7 +1016,8 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
             valor_internet: 0,
             valor_diversos: seg.dados_extraidos.valor_diversos || 0,
             valor_linha_privada: 0,
-            valor_credito: seg.dados_extraidos.valor_credito || 0
+            valor_credito: seg.dados_extraidos.valor_credito || 0,
+            itens_fatura: seg.dados_extraidos.itens_fatura || (seg.dados_extraidos as any).itens || []
           },
           logs_validacao: logs,
           historico_alteracoes: [],
@@ -1254,32 +1273,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
     // Consumo calculation based on items & rules
     const isCelesc = activeDoc.layout.includes("CELESC");
-    let calculatedConsumo = 0;
-
-    if (isCelesc) {
-      const teItems = updatedItens.filter(it => 
-        /CONSUMO/i.test(it.descricao) && /\bTE\b/i.test(it.descricao) && !/INJETADA|REATIVA/i.test(it.descricao)
-      );
-      if (teItems.length > 0) {
-        calculatedConsumo = teItems.reduce((sum, it) => sum + Number(it.quantidade || 0), 0);
-      } else {
-        const tusdItems = updatedItens.filter(it => 
-          /CONSUMO/i.test(it.descricao) && /\bTUSD\b/i.test(it.descricao) && !/INJETADA|REATIVA/i.test(it.descricao)
-        );
-        if (tusdItems.length > 0) {
-          calculatedConsumo = tusdItems.reduce((sum, it) => sum + Number(it.quantidade || 0), 0);
-        } else {
-          const genericCons = updatedItens.filter(it => 
-            /CONSUMO/i.test(it.descricao) && !/INJETADA|REATIVA|DEMANDA/i.test(it.descricao)
-          );
-          calculatedConsumo = genericCons.reduce((sum, it) => sum + Number(it.quantidade || 0), 0);
-        }
-      }
-    } else {
-      // CASAN
-      const consumoAgua = updatedItens.find(it => it.descricao.toLowerCase().includes("água") || it.descricao.toLowerCase().includes("agua"))?.quantidade || 0;
-      calculatedConsumo = consumoAgua;
-    }
+    const calculatedConsumo = computeConsumoKWh(updatedItens, isCelesc);
 
     const calculatedInjetada = computeEnergiaInjetada(updatedItens);
 
@@ -2595,7 +2589,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                       </button>
                     </div>
                     
-                    <div className="overflow-x-auto max-h-80 border border-white/10 rounded-lg bg-[#111111] shadow-inner">
+                    <div className="overflow-x-auto max-h-[600px] border border-white/10 rounded-lg bg-[#111111] shadow-inner">
                       <table className="w-full text-left text-[10px] border-collapse min-w-[840px]">
                         <thead className="bg-[#1c1c1c] text-gray-200 font-mono text-[9px] font-bold border-b border-white/10 uppercase tracking-tight">
                           <tr>
