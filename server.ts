@@ -250,29 +250,33 @@ function saveDB(state: DatabaseState) {
 let db: DatabaseState = loadDB();
 
 async function initDatabasePersistence() {
-  const initialized = await initPostgresSchema();
-  if (initialized) {
-    const pgState = await loadStateFromPostgres();
-    if (pgState && (pgState.secretarias?.length > 0 || pgState.documentos_processados?.length > 0 || pgState.auditoria_registros?.length > 0)) {
-      db = {
-        usuarios: pgState.usuarios || [],
-        secretarias: pgState.secretarias || [],
-        unidades: pgState.unidades || [],
-        despesas: pgState.despesas || [],
-        itens_despesas: pgState.itens_despesas || [],
-        lancamentos: pgState.lancamentos || [],
-        pessoas: pgState.pessoas || [],
-        contatos_email: pgState.contatos_email || [],
-        logs_erros: pgState.logs_erros || [],
-        auditoria_registros: pgState.auditoria_registros || [],
-        documentos_processados: pgState.documentos_processados || [],
-      };
-      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
-      console.log("[DB] Estado restaurado com sucesso diretamente do PostgreSQL (Neon)!");
-    } else {
-      console.log("[DB] PostgreSQL está sem registros. Semeando dados iniciais no Neon...");
-      await saveAllStateToPostgres(db);
+  try {
+    const initialized = await initPostgresSchema();
+    if (initialized) {
+      const pgState = await loadStateFromPostgres();
+      if (pgState && (pgState.secretarias?.length > 0 || pgState.lancamentos?.length > 0 || pgState.documentos_processados?.length > 0)) {
+        db = {
+          usuarios: pgState.usuarios || [],
+          secretarias: pgState.secretarias || [],
+          unidades: pgState.unidades || [],
+          despesas: pgState.despesas || [],
+          itens_despesas: pgState.itens_despesas || [],
+          lancamentos: pgState.lancamentos || [],
+          pessoas: pgState.pessoas || [],
+          contatos_email: pgState.contatos_email || [],
+          logs_erros: pgState.logs_erros || [],
+          auditoria_registros: pgState.auditoria_registros || [],
+          documentos_processados: pgState.documentos_processados || [],
+        };
+        fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
+        console.log("[DB] Estado restaurado com sucesso diretamente do PostgreSQL (Neon)!");
+      } else {
+        console.log("[DB] PostgreSQL está sem registros. Semeando dados iniciais no Neon...");
+        await saveAllStateToPostgres(db);
+      }
     }
+  } catch (err) {
+    console.error("[DB] Erro ao inicializar banco PostgreSQL:", err);
   }
 }
 
@@ -2326,7 +2330,11 @@ app.get("/api/documentos/jobs/:id", (req, res) => {
 // --- INTEGRATE VITE FOR HOT CLIENT-SIDE SERVING ---
 
 async function startServer() {
-  await initDatabasePersistence();
+  try {
+    await initDatabasePersistence();
+  } catch (err) {
+    console.error("[DB] Falha no startup de persistência:", err);
+  }
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
