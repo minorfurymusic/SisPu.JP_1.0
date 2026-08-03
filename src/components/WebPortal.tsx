@@ -576,7 +576,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                   <div>
                     <span className="text-[9px] text-slate-400 block">Valor Última Fatura</span>
                     <span className="font-bold text-slate-900 font-mono">
-                      {latestLanc ? `R$ ${latestLanc.valor_total.toFixed(2)}` : "R$ 0,00"}
+                      {latestLanc ? `R$ ${Number(latestLanc.valor_total || 0).toFixed(2)}` : "R$ 0,00"}
                     </span>
                   </div>
                   <div>
@@ -793,7 +793,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                         <div key={i} className="flex flex-col items-center flex-1 group relative h-full justify-end">
                           <div className="absolute bottom-full mb-2 bg-slate-900 text-white text-[10px] py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition duration-200 pointer-events-none shadow-lg z-20 whitespace-nowrap">
                             <span className="font-bold">{val} {isEnergy ? 'kWh' : 'm³'}</span>
-                            <span className="block text-[8px] text-slate-400">R$ {(isEnergy ? d.kwCost : d.m3Cost).toFixed(2)}</span>
+                            <span className="block text-[8px] text-slate-400">R$ {Number((isEnergy ? d.kwCost : d.m3Cost) || 0).toFixed(2)}</span>
                           </div>
                           
                           <div 
@@ -935,7 +935,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     key: "acoes",
                     label: "Ações do Gestor",
                     render: (item) => (
-                      <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex items-center gap-1.5">
                         <button
                           onClick={() => handleEditSecretaria(item)}
                           className="p-1.5 hover:bg-indigo-50 text-indigo-600 rounded-lg transition"
@@ -1071,7 +1071,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     key: "acoes",
                     label: "Ações",
                     render: (item) => (
-                      <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                         <button
                           onClick={() => handleEditUnidade(item)}
                           className="p-1.5 hover:bg-indigo-50 text-indigo-600 rounded-lg transition"
@@ -1162,7 +1162,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     key: "acoes",
                     label: "Ações",
                     render: (item) => (
-                      <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex items-center gap-1.5">
                         <button onClick={() => handleEditDespesa(item)} className="p-1.5 hover:bg-indigo-50 text-indigo-600 rounded-lg transition">
                           <Edit2 className="h-3.5 w-3.5" />
                         </button>
@@ -1283,7 +1283,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     key: "acoes",
                     label: "Ações",
                     render: (item) => (
-                      <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex items-center gap-1.5">
                         <button onClick={() => handleEditItem(item)} className="p-1.5 hover:bg-indigo-50 text-indigo-600 rounded-lg transition">
                           <Edit2 className="h-3.5 w-3.5" />
                         </button>
@@ -1453,19 +1453,19 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                           key: "valor_total", 
                           label: "Valor Total", 
                           searchable: true,
-                          render: (item) => <span className="font-bold text-indigo-400 font-mono">R$ {item.valor_total.toFixed(2)}</span>
+                          render: (item) => <span className="font-bold text-indigo-400 font-mono">R$ {Number(item.valor_total || 0).toFixed(2)}</span>
                         },
                         { 
                           key: "valor_imposto", 
                           label: "Impostos", 
                           searchable: true,
-                          render: (item) => <span className="text-gray-450 font-mono">R$ {item.valor_imposto.toFixed(2)}</span>
+                          render: (item) => <span className="text-gray-450 font-mono">R$ {Number(item.valor_imposto || 0).toFixed(2)}</span>
                         },
                         {
                           key: "acoes",
                           label: "Ações",
                           render: (item) => (
-                            <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <div className="flex items-center gap-1.5">
                               <button onClick={() => handleEditLancamento(item)} className="p-1.5 hover:bg-indigo-900/30 text-indigo-400 rounded-lg transition">
                                 <Edit2 className="h-3.5 w-3.5" />
                               </button>

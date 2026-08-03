@@ -30,6 +30,15 @@ const ai = new GoogleGenAI({
 // JSON Middleware
 app.use(express.json({ limit: '10mb' }));
 
+// Version Check Route for Deploy Sync Test
+app.get("/api/version-check", (req, res) => {
+  res.json({
+    version: "TEST_AUTO_DEPLOY_CHECK_2026_08_03",
+    timestamp: new Date().toISOString(),
+    env: process.env.NODE_ENV || "development"
+  });
+});
+
 // In-Memory/JSON File Database State (Simulating PostgreSQL with triggers)
 const DB_FILE = path.join(process.cwd(), "sispu_db.json");
 
@@ -1167,21 +1176,22 @@ app.post("/api/documentos", (req, res) => {
 
   // Run validation step automatically
   const logs: string[] = [];
+  const ext = dados_extraidos || {};
   
   // Rule 1: check if item despesa already exists for this CODNUM
-  const itemMatch = db.itens_despesas.find(it => it.codigo_numero === dados_extraidos.codigo_numero);
-  if (!itemMatch) {
-    logs.push(`⚠️ CODNUM "${dados_extraidos.codigo_numero}" não cadastrado no banco. Itens de despesa deverão ser vinculados durante a conferência.`);
+  const itemMatch = ext.codigo_numero ? db.itens_despesas.find(it => it.codigo_numero === ext.codigo_numero) : null;
+  if (!itemMatch && ext.codigo_numero) {
+    logs.push(`⚠️ CODNUM "${ext.codigo_numero}" não cadastrado no banco. Itens de despesa deverão ser vinculados durante a conferência.`);
   }
 
   // Rule 2: check if consumption matches normal ranges
-  if (dados_extraidos.consumo <= 0) {
-    logs.push(`⚠️ Consumo extraído de ${dados_extraidos.consumo} é inválido ou nulo. Verifique a fatura original.`);
+  if (ext.consumo !== undefined && ext.consumo <= 0) {
+    logs.push(`⚠️ Consumo extraído de ${ext.consumo} é inválido ou nulo. Verifique a fatura original.`);
   }
 
   // Rule 3: check if value matches normal ranges
-  if (dados_extraidos.valor_total <= 0) {
-    logs.push(`❌ Valor total extraído de R$ ${dados_extraidos.valor_total} é nulo ou negativo.`);
+  if (ext.valor_total !== undefined && ext.valor_total <= 0) {
+    logs.push(`❌ Valor total extraído de R$ ${ext.valor_total} é nulo ou negativo.`);
   }
 
   doc.status = logs.some(l => l.includes('❌')) ? 'NORMALIZADO' : 'VALIDADO';
@@ -1361,6 +1371,24 @@ app.post("/api/documentos/:id/homologar", (req, res) => {
   logAudit("documentos_processados", doc.id, "UPDATE", usuario, { status: "VALIDADO" }, { status: "HOMOLOGADO" });
 
   res.json({ message: "Documento homologado e despesa persistida com sucesso!", lancamento: newLanc });
+});
+
+app.delete("/api/documentos/:id", (req, res) => {
+  const { id } = req.params;
+  const usuario = req.headers["x-user"] as string || "admin";
+
+  const index = db.documentos_processados.findIndex(d => d.id === id);
+  if (index === -1) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+
+  const oldVal = { ...db.documentos_processados[index] };
+  db.documentos_processados.splice(index, 1);
+  saveDB(db);
+
+  logAudit("documentos_processados", id, "DELETE", usuario, oldVal, null);
+
+  res.json({ message: "Documento/Fatura excluído com sucesso." });
 });
 
 

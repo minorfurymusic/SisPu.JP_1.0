@@ -367,7 +367,7 @@ export default function SmartTable({
                     >
                       {visibleColumns.map(col => {
                         const isPinned = config.pinnedColumns.includes(col.key);
-                        const width = config.columnWidths[col.key] || 150;
+                        const width = col.key === "acoes" ? Math.max(config.columnWidths[col.key] || 120, 110) : (config.columnWidths[col.key] || 150);
 
                         return (
                           <td
@@ -375,9 +375,9 @@ export default function SmartTable({
                             className={`px-4 py-2.5 transition-all text-slate-800 ${
                               isPinned ? "sticky left-0 bg-white/95 group-hover:bg-slate-50/95 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]" : ""
                             }`}
-                            style={{ maxWidth: `${width}px`, minWidth: `${width}px`, width: `${width}px` }}
+                            style={{ maxWidth: col.key === "acoes" ? "none" : `${width}px`, minWidth: `${width}px`, width: `${width}px` }}
                           >
-                            <div className="truncate">
+                            <div className={col.key === "acoes" ? "flex items-center" : "truncate"}>
                               {col.render ? col.render(item) : (item[col.key] !== undefined && item[col.key] !== null ? String(item[col.key]) : "-")}
                             </div>
                           </td>

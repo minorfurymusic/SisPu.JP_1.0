@@ -389,6 +389,26 @@ export async function saveAllStateToPostgres(state: any): Promise<void> {
         );
       }
 
+      // Sync Deletions for all tables
+      const syncDeletes = async (table: string, list: any[]) => {
+        const validIds = (list || []).map((x: any) => String(x.id)).filter(Boolean);
+        if (validIds.length > 0) {
+          await client.query(`DELETE FROM ${table} WHERE NOT (id = ANY($1::text[]))`, [validIds]);
+        } else {
+          await client.query(`DELETE FROM ${table}`);
+        }
+      };
+
+      await syncDeletes('usuarios', state.usuarios);
+      await syncDeletes('secretarias', state.secretarias);
+      await syncDeletes('unidades', state.unidades);
+      await syncDeletes('despesas', state.despesas);
+      await syncDeletes('itens_despesas', state.itens_despesas);
+      await syncDeletes('lancamentos', state.lancamentos);
+      await syncDeletes('pessoas', state.pessoas);
+      await syncDeletes('contatos_email', state.contatos_email);
+      await syncDeletes('documentos_processados', state.documentos_processados);
+
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');
