@@ -253,7 +253,7 @@ async function initDatabasePersistence() {
   const initialized = await initPostgresSchema();
   if (initialized) {
     const pgState = await loadStateFromPostgres();
-    if (pgState && (pgState.secretarias?.length > 0 || pgState.documentos_processados?.length > 0)) {
+    if (pgState && (pgState.secretarias?.length > 0 || pgState.documentos_processados?.length > 0 || pgState.auditoria_registros?.length > 0)) {
       db = {
         usuarios: pgState.usuarios || [],
         secretarias: pgState.secretarias || [],
@@ -279,8 +279,12 @@ async function initDatabasePersistence() {
 
 // Simulated PostgreSQL Trigger-based Auditor
 function logAudit(tabela: string, pk: string, acao: 'INSERT' | 'UPDATE' | 'DELETE', usuario: string, antigo: any, novo: any) {
+  const maxId = db.auditoria_registros.reduce((max, item) => {
+    const num = parseInt(item.id, 10);
+    return !isNaN(num) && num > max ? num : max;
+  }, 0);
   const auditRow: AuditoriaRegistro = {
-    id: (db.auditoria_registros.length + 1).toString(),
+    id: (maxId + 1).toString(),
     tabela,
     registro_pk: pk,
     acao,
@@ -562,10 +566,31 @@ app.delete("/api/secretarias/:id", (req, res) => {
     return res.status(404).json({ error: "Secretaria não encontrada." });
   }
 
-  // Check references in unidades
-  const hasUnidades = db.unidades.some(u => u.secretaria_id === id);
-  if (hasUnidades) {
-    return res.status(400).json({ error: "Não é possível excluir esta secretaria pois ela possui unidades vinculadas." });
+  // Relational integrity check: check if any unidades, itens, lancamentos or documentos belong to this secretaria
+  const unidadesDaSec = db.unidades.filter(u => u.secretaria_id === id);
+  const unidadeIds = unidadesDaSec.map(u => u.id);
+
+  const itensDaSec = db.itens_despesas.filter(it => 
+    unidadeIds.includes(it.unidade_id) || (it as any).secretaria_id === id
+  );
+  const itemIds = itensDaSec.map(it => it.id);
+  const itemCodnums = itensDaSec.map(it => it.codigo_numero).filter(Boolean);
+
+  const hasLancamentos = db.lancamentos.some(l => 
+    itemIds.includes(l.item_despesa_id) || 
+    (l as any).secretaria_id === id || 
+    ((l as any).unidade_id && unidadeIds.includes((l as any).unidade_id))
+  );
+
+  const hasDocumentos = db.documentos_processados.some(d => {
+    const ext = (d.dados_extraidos || {}) as any;
+    if (ext.secretaria_id === id) return true;
+    if (ext.codigo_numero && itemCodnums.includes(ext.codigo_numero)) return true;
+    return false;
+  });
+
+  if (hasLancamentos || hasDocumentos || unidadesDaSec.length > 0) {
+    return res.status(400).json({ error: "Não é possível excluir esta secretaria pois há faturas/lançamentos vinculados a ela." });
   }
 
   const oldVal = { ...db.secretarias[index] };
@@ -1066,6 +1091,17 @@ app.put("/api/lancamentos/:id", (req, res) => {
   if (valor_linha_privada !== undefined) db.lancamentos[index].valor_linha_privada = parseFloat(valor_linha_privada || 0);
   if (valor_credito !== undefined) db.lancamentos[index].valor_credito = parseFloat(valor_credito || 0);
   if (data_lancamento !== undefined) db.lancamentos[index].data_lancamento = data_lancamento;
+  if (req.body.secretaria_id) {
+    (db.lancamentos[index] as any).secretaria_id = req.body.secretaria_id;
+    const item = db.itens_despesas.find(it => it.id === db.lancamentos[index].item_despesa_id);
+    if (item) {
+      const unidade = db.unidades.find(u => u.id === item.unidade_id);
+      if (unidade) {
+        unidade.secretaria_id = req.body.secretaria_id;
+        unidade.atualizado_em = new Date().toISOString();
+      }
+    }
+  }
 
   db.lancamentos[index].atualizado_em = new Date().toISOString();
   saveDB(db);
@@ -1073,6 +1109,58 @@ app.put("/api/lancamentos/:id", (req, res) => {
   logAudit("lancamentos", id, "UPDATE", usuario, oldVal, db.lancamentos[index]);
 
   res.json(db.lancamentos[index]);
+});
+
+app.post("/api/lancamentos/:id/vincular_secretaria", (req, res) => {
+  const { id } = req.params;
+  const { secretaria_id } = req.body;
+  const usuario = req.headers["x-user"] as string || "admin";
+
+  const sec = db.secretarias.find(s => s.id === secretaria_id);
+  if (!sec) {
+    return res.status(400).json({ error: "Secretaria não encontrada." });
+  }
+
+  const index = db.lancamentos.findIndex(l => l.id === id);
+  if (index === -1) {
+    return res.status(404).json({ error: "Lançamento não encontrado." });
+  }
+
+  const oldVal = { ...db.lancamentos[index] };
+  (db.lancamentos[index] as any).secretaria_id = secretaria_id;
+  db.lancamentos[index].atualizado_em = new Date().toISOString();
+
+  // Also update associated ItemDespesa and Unidade if present
+  const item = db.itens_despesas.find(it => it.id === db.lancamentos[index].item_despesa_id);
+  if (item) {
+    const unidade = db.unidades.find(u => u.id === item.unidade_id);
+    if (unidade) {
+      unidade.secretaria_id = secretaria_id;
+      unidade.atualizado_em = new Date().toISOString();
+    }
+  }
+
+  // Also update any matching documentos_processados
+  const matchingDoc = db.documentos_processados.find(d => {
+    const ext = (d.dados_extraidos || {}) as any;
+    return item && ext.codigo_numero === item.codigo_numero;
+  });
+  if (matchingDoc && matchingDoc.dados_extraidos) {
+    (matchingDoc.dados_extraidos as any).secretaria_id = secretaria_id;
+    (matchingDoc.dados_extraidos as any).secretaria_nome = sec.nome;
+  }
+
+  saveDB(db);
+  logAudit("lancamentos", id, "UPDATE", usuario, oldVal, db.lancamentos[index]);
+
+  res.json({
+    message: `Secretaria ${sec.nome} vinculada com sucesso ao lançamento!`,
+    lancamento: {
+      ...db.lancamentos[index],
+      secretaria_id: sec.id,
+      secretaria_nome: sec.nome
+    }
+  });
 });
 
 app.delete("/api/lancamentos/:id", (req, res) => {
@@ -1135,6 +1223,76 @@ app.get("/api/relatorios/resumo_secretaria", (req, res) => {
 app.get("/api/auditoria", (req, res) => {
   const limit = req.query.limite ? parseInt(req.query.limite as string) : 200;
   res.json(db.auditoria_registros.slice(0, limit));
+});
+
+// TODO: REMOVER ESTE BOTÃO ANTES DE IR PARA USO REAL DEFINITIVO
+// ROUTE: ZERAR BANCO DE DADOS (APENAS TESTES)
+app.post("/api/admin/reset_database", async (req, res) => {
+  const usuario = (req.headers["x-user"] as string) || "admin";
+
+  try {
+    // 1. Snapshot of counts before reset
+    const snapshot = {
+      secretarias: db.secretarias?.length || 0,
+      unidades: db.unidades?.length || 0,
+      despesas: db.despesas?.length || 0,
+      itens_despesas: db.itens_despesas?.length || 0,
+      lancamentos: db.lancamentos?.length || 0,
+      pessoas: db.pessoas?.length || 0,
+      contatos_email: db.contatos_email?.length || 0,
+      documentos_processados: db.documentos_processados?.length || 0,
+    };
+
+    const total_removidos = Object.values(snapshot).reduce((a, b) => a + b, 0);
+    const timestamp = new Date().toISOString();
+
+    // 2. Audit log entry BEFORE wiping data tables
+    const maxAuditId = db.auditoria_registros.reduce((max, item) => {
+      const num = parseInt(item.id, 10);
+      return !isNaN(num) && num > max ? num : max;
+    }, 0);
+
+    const auditRow = {
+      id: (maxAuditId + 1).toString(),
+      tabela: "DATABASE_RESET",
+      registro_pk: "RESET_TOTAL",
+      acao: "RESET_TOTAL",
+      usuario,
+      valor_antigo: snapshot,
+      valor_novo: { status: "BANCO_ZERADO", timestamp, total_removidos },
+      criado_em: timestamp
+    };
+
+    // Insert audit row into auditoria_registros FIRST
+    db.auditoria_registros.unshift(auditRow);
+
+    // 3. Clear data tables in memory
+    db.secretarias = [];
+    db.unidades = [];
+    db.despesas = [];
+    db.itens_despesas = [];
+    db.lancamentos = [];
+    db.pessoas = [];
+    db.contatos_email = [];
+    db.documentos_processados = [];
+
+    // 4. Persist to local JSON and PostgreSQL / Neon DB
+    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
+    await saveAllStateToPostgres(db);
+
+    console.log(`[RESET DB] Banco de dados zerado com sucesso às ${timestamp}. ${total_removidos} registros removidos por '${usuario}'.`);
+
+    res.json({
+      success: true,
+      message: `Banco de dados zerado com sucesso às ${timestamp}. ${total_removidos} registros removidos.`,
+      timestamp,
+      total_removidos,
+      snapshot
+    });
+  } catch (err: any) {
+    console.error("[RESET DB] Erro ao zerar banco de dados:", err);
+    res.status(500).json({ error: "Falha ao zerar banco de dados: " + (err.message || err) });
+  }
 });
 
 
@@ -1389,6 +1547,52 @@ app.delete("/api/documentos/:id", (req, res) => {
   logAudit("documentos_processados", id, "DELETE", usuario, oldVal, null);
 
   res.json({ message: "Documento/Fatura excluído com sucesso." });
+});
+
+app.post("/api/documentos/:id/vincular_secretaria", (req, res) => {
+  const { id } = req.params;
+  const { secretaria_id } = req.body;
+  const usuario = req.headers["x-user"] as string || "admin";
+
+  const sec = db.secretarias.find(s => s.id === secretaria_id);
+  if (!sec) {
+    return res.status(400).json({ error: "Secretaria não encontrada." });
+  }
+
+  const doc = db.documentos_processados.find(d => d.id === id);
+  if (!doc) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+
+  const oldVal = JSON.parse(JSON.stringify(doc));
+  if (!doc.dados_extraidos) doc.dados_extraidos = {} as any;
+  (doc.dados_extraidos as any).secretaria_id = secretaria_id;
+  (doc.dados_extraidos as any).secretaria_nome = sec.nome;
+
+  // Also update matching item, unidade and lancamentos
+  if (doc.dados_extraidos.codigo_numero) {
+    const item = db.itens_despesas.find(it => it.codigo_numero === doc.dados_extraidos.codigo_numero);
+    if (item) {
+      const unidade = db.unidades.find(u => u.id === item.unidade_id);
+      if (unidade) {
+        unidade.secretaria_id = secretaria_id;
+        unidade.atualizado_em = new Date().toISOString();
+      }
+      const matchingLancs = db.lancamentos.filter(l => l.item_despesa_id === item.id);
+      matchingLancs.forEach(l => {
+        (l as any).secretaria_id = secretaria_id;
+        l.atualizado_em = new Date().toISOString();
+      });
+    }
+  }
+
+  saveDB(db);
+  logAudit("documentos_processados", id, "UPDATE", usuario, oldVal, doc);
+
+  res.json({
+    message: `Secretaria ${sec.nome} vinculada com sucesso à fatura!`,
+    documento: doc
+  });
 });
 
 

@@ -54,6 +54,10 @@ export interface ItemDespesa {
 export interface Lancamento {
   id: string;
   item_despesa_id: string;
+  secretaria_id?: string;
+  secretaria_nome?: string;
+  unidade_nome?: string;
+  codigo_numero?: string;
   mes_ano: string; // YYYY-MM-DD
   consumo: number;
   valor_total: number;
@@ -104,7 +108,7 @@ export interface AuditoriaRegistro {
   id: string;
   tabela: string;
   registro_pk?: string;
-  acao: 'INSERT' | 'UPDATE' | 'DELETE';
+  acao: 'INSERT' | 'UPDATE' | 'DELETE' | 'RESET_TOTAL' | string;
   usuario: string;
   valor_antigo?: any;
   valor_novo?: any;

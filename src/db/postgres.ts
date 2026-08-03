@@ -399,15 +399,16 @@ export async function saveAllStateToPostgres(state: any): Promise<void> {
         }
       };
 
-      await syncDeletes('usuarios', state.usuarios);
-      await syncDeletes('secretarias', state.secretarias);
-      await syncDeletes('unidades', state.unidades);
-      await syncDeletes('despesas', state.despesas);
-      await syncDeletes('itens_despesas', state.itens_despesas);
+      // Sync Deletions for all tables (child tables first)
       await syncDeletes('lancamentos', state.lancamentos);
+      await syncDeletes('itens_despesas', state.itens_despesas);
+      await syncDeletes('unidades', state.unidades);
+      await syncDeletes('secretarias', state.secretarias);
+      await syncDeletes('despesas', state.despesas);
       await syncDeletes('pessoas', state.pessoas);
       await syncDeletes('contatos_email', state.contatos_email);
       await syncDeletes('documentos_processados', state.documentos_processados);
+      await syncDeletes('usuarios', state.usuarios);
 
       await client.query('COMMIT');
     } catch (e) {

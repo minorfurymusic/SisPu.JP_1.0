@@ -3,7 +3,7 @@ import {
   Building2, Receipt, Lightbulb, Droplets, History,
   TrendingUp, BarChart3, ShieldAlert, Search, Edit2, Trash2,
   Layers, Plus, Trash, Calendar, FolderCheck, CheckCircle2, X,
-  ClipboardList, Settings, Check, HelpCircle
+  ClipboardList, Settings, Check, HelpCircle, AlertCircle
 } from "lucide-react";
 import { Secretaria, Unidade, Despesa, ItemDespesa, Lancamento, AuditoriaRegistro } from "../types";
 import DocumentManager from "./DocumentManager";
@@ -26,8 +26,17 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
   // Layout & Sections
   const [activeSection, setActiveSection] = useState<
-    "dashboard" | "secretarias" | "unidades" | "despesas" | "itens" | "lancamentos" | "documentos" | "auditoria"
+    "dashboard" | "secretarias" | "unidades" | "despesas" | "itens" | "lancamentos" | "documentos" | "auditoria" | "pendencias" | "configuracoes"
   >("dashboard");
+
+  // TODO: REMOVER ESTE BOTÃO ANTES DE IR PARA USO REAL DEFINITIVO
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetConfirmInput, setResetConfirmInput] = useState("");
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetResultMsg, setResetResultMsg] = useState<string | null>(null);
+
+  const [pendingSelSec, setPendingSelSec] = useState<{ [lancId: string]: string }>({});
+  const [submittingPending, setSubmittingPending] = useState<string | null>(null);
 
   const [chartMode, setChartMode] = useState<'energia' | 'agua'>('energia');
 
@@ -670,6 +679,29 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               className={`px-3 py-1.5 rounded-md transition ${activeSection === 'auditoria' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
             >
               Controle de Auditoria
+            </button>
+
+            <button
+              onClick={() => setActiveSection('configuracoes')}
+              className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
+                activeSection === 'configuracoes' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <span>⚙️ Configurações</span>
+            </button>
+
+            <button
+              onClick={() => setActiveSection('pendencias')}
+              className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
+                activeSection === 'pendencias' ? 'bg-amber-600 text-white shadow-sm' : 'text-amber-400 hover:text-amber-300 hover:bg-amber-500/10'
+              }`}
+            >
+              <span>Pendências de Vinculação</span>
+              {lancamentos.filter(l => !l.secretaria_id && (!l.secretaria_nome || l.secretaria_nome === "NÃO LOCALIZADA" || l.secretaria_nome === "NÃO VINCULADA")).length > 0 && (
+                <span className="px-1.5 py-0.5 text-[10px] bg-amber-400 text-slate-950 font-extrabold rounded-full font-mono">
+                  {lancamentos.filter(l => !l.secretaria_id && (!l.secretaria_nome || l.secretaria_nome === "NÃO LOCALIZADA" || l.secretaria_nome === "NÃO VINCULADA")).length}
+                </span>
+              )}
             </button>
           </div>
         </div>
@@ -1529,7 +1561,262 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
           </div>
         )}
 
+        {/* SECTION: PENDÊNCIAS DE VINCULAÇÃO DE SECRETARIA */}
+        {activeSection === 'pendencias' && (() => {
+          const unlinkedLancamentos = lancamentos.filter(l => !l.secretaria_id && (!l.secretaria_nome || l.secretaria_nome === "NÃO LOCALIZADA" || l.secretaria_nome === "NÃO VINCULADA"));
+          return (
+            <div className="space-y-6">
+              <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <h4 className="font-bold text-slate-800 text-base flex items-center gap-2">
+                      <span>⚠️ Central de Pendências de Vinculação de Secretaria</span>
+                      <span className="px-2.5 py-0.5 rounded-full text-xs bg-amber-100 text-amber-800 font-mono font-bold">
+                        {unlinkedLancamentos.length} pendências
+                      </span>
+                    </h4>
+                    <p className="text-xs text-slate-500">
+                      Listagem de todos os lançamentos de faturas importadas que não foram vinculados automaticamente a nenhuma Secretaria Municipal.
+                    </p>
+                  </div>
+                </div>
+
+                {unlinkedLancamentos.length === 0 ? (
+                  <div className="p-8 text-center bg-emerald-50/50 rounded-xl border border-emerald-200 space-y-2">
+                    <CheckCircle2 className="h-10 w-10 text-emerald-500 mx-auto" />
+                    <h5 className="font-bold text-slate-800 text-sm">Nenhuma pendência de vinculação!</h5>
+                    <p className="text-xs text-slate-500">
+                      Todas as faturas e lançamentos cadastrados estão devidamente associados a suas respectivas Secretarias Municipais.
+                    </p>
+                  </div>
+                ) : (
+                  <SmartTable
+                    tableId="web_pendencias"
+                    data={unlinkedLancamentos}
+                    searchPlaceholder="Filtrar por CODNUM, Unidade Gestora, Competência..."
+                    columns={[
+                      { key: "id", label: "Lançamento ID", isPinned: true },
+                      { 
+                        key: "codigo_numero", 
+                        label: "CODNUM", 
+                        searchable: true,
+                        render: (item) => <span className="font-mono font-bold text-indigo-700">{item.codigo_numero}</span>
+                      },
+                      { 
+                        key: "unidade_nome", 
+                        label: "Unidade Gestora", 
+                        searchable: true,
+                        render: (item) => <span className="text-slate-700 font-semibold">{item.unidade_nome || "NÃO VINCULADA"}</span>
+                      },
+                      { 
+                        key: "consumo", 
+                        label: "Consumo", 
+                        render: (item) => <span className="font-mono text-slate-800">{item.consumo}</span>
+                      },
+                      { 
+                        key: "valor_total", 
+                        label: "Valor Total", 
+                        render: (item) => <span className="font-mono font-bold text-emerald-700">R$ {(item.valor_total || 0).toFixed(2)}</span>
+                      },
+                      { 
+                        key: "mes_ano", 
+                        label: "Competência", 
+                        searchable: true,
+                        render: (item) => <span className="font-mono text-slate-600">{item.mes_ano}</span>
+                      },
+                      {
+                        key: "acoes",
+                        label: "Vincular Secretaria",
+                        render: (item) => {
+                          const currentSel = pendingSelSec[item.id] || "";
+                          const isSub = submittingPending === item.id;
+                          return (
+                            <div className="flex items-center gap-2">
+                              <select
+                                value={currentSel}
+                                onChange={(e) => setPendingSelSec(prev => ({ ...prev, [item.id]: e.target.value }))}
+                                className="bg-slate-50 border border-slate-300 text-xs rounded-lg px-2.5 py-1.5 font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                              >
+                                <option value="">Selecione a Secretaria...</option>
+                                {secretarias.map(sec => (
+                                  <option key={sec.id} value={sec.id}>
+                                    {sec.nome}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                disabled={!currentSel || isSub}
+                                onClick={async () => {
+                                  setSubmittingPending(item.id);
+                                  try {
+                                    const res = await fetch(`/api/lancamentos/${item.id}/vincular_secretaria`, {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ secretaria_id: currentSel })
+                                    });
+                                    if (res.ok) {
+                                      setGlobalSuccess(`Lançamento (CODNUM: ${item.codigo_numero}) vinculado à Secretaria com sucesso!`);
+                                      loadAllData();
+                                      notifyChange();
+                                    } else {
+                                      const err = await res.json();
+                                      setGlobalError(err.error || "Erro ao vincular secretaria.");
+                                    }
+                                  } catch (err: any) {
+                                    setGlobalError("Erro de comunicação com o servidor.");
+                                  } finally {
+                                    setSubmittingPending(null);
+                                  }
+                                }}
+                                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-lg disabled:opacity-50 transition shadow-sm flex items-center gap-1"
+                              >
+                                {isSub ? "Vinculando..." : "🔗 Vincular"}
+                              </button>
+                            </div>
+                          );
+                        }
+                      }
+                    ]}
+                  />
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* SECTION: CONFIGURAÇÕES E MANUTENÇÃO */}
+        {activeSection === 'configuracoes' && (
+          <div className="space-y-6">
+            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
+              <div>
+                <h4 className="font-bold text-slate-800 text-base flex items-center gap-2">
+                  <span>⚙️ Painel de Configurações e Manutenção do Sistema</span>
+                </h4>
+                <p className="text-xs text-slate-500 mt-1">
+                  Painel administrativo de parâmetros do banco de dados, auditoria de operações e ferramentas de teste.
+                </p>
+              </div>
+
+              {resetResultMsg && (
+                <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-800 text-xs font-semibold flex items-center gap-2 animate-in fade-in">
+                  <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0" />
+                  <span>{resetResultMsg}</span>
+                </div>
+              )}
+
+              {/* TODO: REMOVER ESTE BOTÃO ANTES DE IR PARA USO REAL DEFINITIVO */}
+              <div className="p-5 bg-rose-50 border border-rose-200 rounded-xl space-y-3">
+                <div className="flex items-center gap-2 text-rose-800 font-bold text-sm">
+                  <AlertCircle className="h-5 w-5 text-rose-600" />
+                  <span>Ferramenta de Manutenção para Testes — Zerar Banco de Dados</span>
+                </div>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  Esta operação apaga todos os registros de Secretarias, Unidades, Tipos de Conta, Contratos CODNUM, Lançamentos, Pessoas, Contatos e Documentos. O histórico de auditoria do próprio reset será preservado com o snapshot de quantidade de linhas de cada tabela antes da limpeza.
+                </p>
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResetConfirmInput("");
+                      setShowResetModal(true);
+                    }}
+                    className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-lg transition shadow-md flex items-center gap-2"
+                  >
+                    <span>🗑️ ZERAR BANCO DE DADOS (APENAS TESTES)</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
       </div>
+
+      {/* TODO: REMOVER ESTE BOTÃO ANTES DE IR PARA USO REAL DEFINITIVO */}
+      {/* MODAL: Zerar Banco de Dados */}
+      {showResetModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[80] flex items-center justify-center p-4">
+          <div className="bg-[#121212] border border-rose-500/30 rounded-xl p-6 max-w-lg w-full space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
+            <div className="flex justify-between items-center border-b border-white/10 pb-3">
+              <h5 className="font-bold text-sm text-rose-400 uppercase tracking-wide flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 text-rose-500" />
+                <span>ATENÇÃO: Zerar Banco de Dados</span>
+              </h5>
+              <button
+                onClick={() => setShowResetModal(false)}
+                className="text-gray-400 hover:text-white font-bold text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-lg text-xs text-rose-300 space-y-2">
+              <p className="font-semibold">
+                Você está prestes a LIMPAR TOTALMENTE os dados cadastrais e faturas do sistema!
+              </p>
+              <p className="text-[11px] text-gray-300 leading-relaxed">
+                • Secretarias, Unidades Gestoras, Contratos, Faturas e Documentos serão apagados.<br />
+                • A estrutura do banco de dados e o log de auditoria do reset serão mantidos.<br />
+                • Esta ação é irreversível.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs text-gray-300 font-semibold block">
+                Para confirmar, digite exatamente a frase <strong className="text-rose-400 font-mono select-all">CONFIRMAR RESET TOTAL</strong>:
+              </label>
+              <input
+                type="text"
+                value={resetConfirmInput}
+                onChange={(e) => setResetConfirmInput(e.target.value)}
+                placeholder="CONFIRMAR RESET TOTAL"
+                className="w-full bg-[#1a1a1a] border border-white/20 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-rose-500 font-bold tracking-wider"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-white/10">
+              <button
+                type="button"
+                onClick={() => setShowResetModal(false)}
+                className="px-4 py-2 rounded-lg text-xs font-semibold bg-gray-800 hover:bg-gray-700 text-gray-300"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={resetConfirmInput !== "CONFIRMAR RESET TOTAL" || isResetting}
+                onClick={async () => {
+                  setIsResetting(true);
+                  try {
+                    const res = await fetch("/api/admin/reset_database", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json", "x-user": "admin" }
+                    });
+                    const data = await res.json();
+                    if (res.ok && data.success) {
+                      setResetResultMsg(data.message);
+                      setShowResetModal(false);
+                      loadAllData();
+                      notifyChange();
+                    } else {
+                      setGlobalError(data.error || "Erro ao zerar banco de dados.");
+                    }
+                  } catch (err) {
+                    setGlobalError("Erro de comunicação ao zerar banco de dados.");
+                  } finally {
+                    setIsResetting(false);
+                  }
+                }}
+                className="px-5 py-2 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white disabled:opacity-40 disabled:cursor-not-allowed transition shadow-lg shadow-rose-600/30 flex items-center gap-2"
+              >
+                {isResetting ? "Zerando Banco..." : "Confirmar e Zerar Banco"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

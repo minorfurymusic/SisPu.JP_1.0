@@ -6,7 +6,7 @@ import {
   Maximize2, Trash2, Edit2, Columns, Settings, Sliders, Info, FileImage, Clipboard,
   Search, Plus, Copy, AlertCircle, CheckCircle, Calendar
 } from "lucide-react";
-import { DocumentoProcessado, DocumentLayoutType, CadastroMestreUC } from "../types";
+import { DocumentoProcessado, DocumentLayoutType, CadastroMestreUC, Secretaria } from "../types";
 import { 
   identifyDocumentType, 
   splitReportIntoFaturas, 
@@ -697,6 +697,21 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'warning', text: string } | null>(null);
   const [copiedKey, setCopiedKey] = useState<boolean>(false);
+
+  // Secretarias list & linking modal states (Parte A)
+  const [secretariasList, setSecretariasList] = useState<Secretaria[]>([]);
+  const [showLinkSecModal, setShowLinkSecModal] = useState(false);
+  const [selectedSecId, setSelectedSecId] = useState("");
+  const [linkingSec, setLinkingSec] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/secretarias")
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data)) setSecretariasList(data);
+      })
+      .catch(err => console.error("Error fetching secretarias in DocumentManager:", err));
+  }, []);
 
   // PDF Viewer controls state
   const [pdfZoom, setPdfZoom] = useState<number>(100);
@@ -2712,10 +2727,24 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                 <div className="space-y-4">
                   {/* High-Fidelity Position Metadata (Etapa 9) */}
                   <div className="bg-indigo-500/10 border border-indigo-500/20 p-3 rounded-lg text-xs space-y-2">
-                    <span className="font-bold text-indigo-300 flex items-center gap-1.5 font-mono uppercase text-[9px]">
-                      <Info className="h-3.5 w-3.5 text-indigo-400" />
-                      Rastreabilidade de Importação (FaturaImportada)
-                    </span>
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-indigo-300 flex items-center gap-1.5 font-mono uppercase text-[9px]">
+                        <Info className="h-3.5 w-3.5 text-indigo-400" />
+                        Rastreabilidade de Importação (FaturaImportada)
+                      </span>
+                      {(!activeDoc.dados_extraidos?.secretaria_id && !activeDoc.dados_extraidos?.secretaria_nome) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedSecId(secretariasList[0]?.id || "");
+                            setShowLinkSecModal(true);
+                          }}
+                          className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[10px] rounded flex items-center gap-1 transition shadow-sm"
+                        >
+                          🔗 Vincular Secretaria
+                        </button>
+                      )}
+                    </div>
                     <div className="grid grid-cols-3 gap-2 text-[10px] font-mono text-gray-300">
                       <div className="bg-black/40 p-2 rounded border border-white/5 text-center">
                         <span className="text-gray-500 block text-[8px] uppercase">Pág. PDF</span>
@@ -3223,6 +3252,94 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
               </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Vincular Secretaria (Parte A) */}
+      {showLinkSecModal && activeDoc && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
+          <div className="bg-[#121212] border border-white/10 rounded-xl p-5 max-w-md w-full space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
+            <div className="flex justify-between items-center border-b border-white/10 pb-3">
+              <h5 className="font-bold text-sm text-white uppercase tracking-wide flex items-center gap-2">
+                <span>🔗 Vincular Secretaria à Fatura</span>
+              </h5>
+              <button 
+                onClick={() => setShowLinkSecModal(false)}
+                className="text-gray-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-300">
+              Selecione a Secretaria Municipal para associar a esta fatura/lançamento (UC/CODNUM: <strong className="text-indigo-400 font-mono">{activeDoc.dados_extraidos?.codigo_numero || "N/A"}</strong>):
+            </p>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-mono text-gray-400 uppercase">Secretaria Municipal</label>
+              <select
+                value={selectedSecId}
+                onChange={(e) => setSelectedSecId(e.target.value)}
+                className="w-full bg-[#1a1a1a] border border-white/15 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-semibold"
+              >
+                <option value="">Selecione uma Secretaria...</option>
+                {secretariasList.map(sec => (
+                  <option key={sec.id} value={sec.id}>
+                    {sec.nome} {sec.codigo_legado ? `(Cód: ${sec.codigo_legado})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowLinkSecModal(false)}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-800 hover:bg-gray-700 text-gray-300"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={!selectedSecId || linkingSec}
+                onClick={async () => {
+                  setLinkingSec(true);
+                  try {
+                    const res = await fetch(`/api/documentos/${activeDoc.id}/vincular_secretaria`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ secretaria_id: selectedSecId })
+                    });
+                    if (res.ok) {
+                      const data = await res.json();
+                      const secFound = secretariasList.find(s => s.id === selectedSecId);
+                      setActiveDoc((prev: any) => ({
+                        ...prev,
+                        dados_extraidos: {
+                          ...prev.dados_extraidos,
+                          secretaria_id: selectedSecId,
+                          secretaria_nome: secFound?.nome || data.secretaria_nome
+                        }
+                      }));
+                      setMessage({ type: "success", text: `Secretaria "${secFound?.nome}" vinculada com sucesso!` });
+                      setShowLinkSecModal(false);
+                      if (onDocumentProcessed) onDocumentProcessed();
+                    } else {
+                      const err = await res.json();
+                      setMessage({ type: "error", text: err.error || "Erro ao vincular secretaria." });
+                    }
+                  } catch (err: any) {
+                    setMessage({ type: "error", text: "Erro de conexão ao vincular secretaria." });
+                  } finally {
+                    setLinkingSec(false);
+                  }
+                }}
+                className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50 transition shadow"
+              >
+                {linkingSec ? "Vinculando..." : "Confirmar Vinculação"}
+              </button>
+            </div>
           </div>
         </div>
       )}
