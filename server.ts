@@ -1599,12 +1599,18 @@ function validateExtractedFaturaSanity(data: any, provider: 'CELESC' | 'CASAN'):
   return result;
 }
 
-// --- GEMINI MULTIMODAL PARSER ENDPOINT ---
-app.post("/api/documentos/parse", async (req, res) => {
-  const { texto_fatura, imagem_base64, imagens_base64, layout, nome_arquivo } = req.body;
+// --- GEMINI MULTIMODAL PARSER CORE FUNCTION ---
+async function parseSinglePageWithGeminiCore(params: {
+  texto_fatura?: string;
+  imagem_base64?: string;
+  imagens_base64?: string[];
+  layout?: string;
+  nome_arquivo?: string;
+}): Promise<any> {
+  const { texto_fatura, imagem_base64, imagens_base64, layout, nome_arquivo } = params;
 
   if (!texto_fatura && !imagem_base64 && (!imagens_base64 || imagens_base64.length === 0)) {
-    return res.status(400).json({ error: "Nenhum conteúdo (texto ou imagem) de fatura enviado para o parser." });
+    throw new Error("Nenhum conteúdo (texto ou imagem) de fatura enviado para o parser.");
   }
 
   const isCelesc = (layout && layout.includes("CELESC")) || 
@@ -1701,194 +1707,386 @@ LAYOUT DE ENTRADA: ${layout || (isCasan ? "CASAN_FATURA" : "CELESC_FATURA")}
     let response: any = null;
     let lastModelError: any = null;
 
-  for (const modelName of candidateModels) {
-    try {
-      response = await ai.models.generateContent({
-        model: modelName,
-        contents: { parts: contentsParts },
-        config: {
-          maxOutputTokens: 16384,
-          responseMimeType: "application/json",
-          responseSchema: isCasanCentralizada ? {
-            type: Type.OBJECT,
-            properties: {
-              tipo_relatorio: { type: Type.STRING, description: "Sempre 'CASAN_CENTRALIZADA'" },
-              referencia: { type: Type.STRING, description: "Mês/ano no formato YYYY-MM-01" },
-              contas: {
-                type: Type.ARRAY,
-                description: "Uma entrada para CADA linha/matrícula da tabela, sem pular nenhuma",
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    matricula: { type: Type.STRING },
-                    localizacao: { type: Type.STRING },
-                    usuario: { type: Type.STRING },
-                    leitura_anterior: { type: Type.NUMBER },
-                    leitura_atual: { type: Type.NUMBER },
-                    consumo: { type: Type.NUMBER },
-                    valor_agua: { type: Type.NUMBER },
-                    valor_esgoto: { type: Type.NUMBER },
-                    valor_servico: { type: Type.NUMBER },
-                    valor_bonus: { type: Type.NUMBER },
-                    valor_total: { type: Type.NUMBER }
-                  },
-                  required: ["matricula", "consumo", "valor_total"]
+    for (const modelName of candidateModels) {
+      try {
+        response = await ai.models.generateContent({
+          model: modelName,
+          contents: { parts: contentsParts },
+          config: {
+            maxOutputTokens: 16384,
+            responseMimeType: "application/json",
+            responseSchema: isCasanCentralizada ? {
+              type: Type.OBJECT,
+              properties: {
+                tipo_relatorio: { type: Type.STRING, description: "Sempre 'CASAN_CENTRALIZADA'" },
+                referencia: { type: Type.STRING, description: "Mês/ano no formato YYYY-MM-01" },
+                contas: {
+                  type: Type.ARRAY,
+                  description: "Uma entrada para CADA linha/matrícula da tabela, sem pular nenhuma",
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      matricula: { type: Type.STRING },
+                      localizacao: { type: Type.STRING },
+                      usuario: { type: Type.STRING },
+                      leitura_anterior: { type: Type.NUMBER },
+                      leitura_atual: { type: Type.NUMBER },
+                      consumo: { type: Type.NUMBER },
+                      valor_agua: { type: Type.NUMBER },
+                      valor_esgoto: { type: Type.NUMBER },
+                      valor_servico: { type: Type.NUMBER },
+                      valor_bonus: { type: Type.NUMBER },
+                      valor_total: { type: Type.NUMBER }
+                    },
+                    required: ["matricula", "consumo", "valor_total"]
+                  }
                 }
-              }
-            },
-            required: ["tipo_relatorio", "referencia", "contas"]
-          } : {
-            type: Type.OBJECT,
-            properties: {
-  mes_ano: { type: Type.STRING, description: "Data de competência no formato YYYY-MM-DD (ex: 2026-06-01)" },
-  consumo: { type: Type.NUMBER, description: "Consumo total medido (kWh para CELESC, m³ para CASAN)" },
-  tarifa_unitaria: { type: Type.NUMBER, description: "Tarifa unitária cobrada por kWh ou m³ (R$)" },
-  valor_total: { type: Type.NUMBER, description: "Valor total líquido/bruto a pagar da fatura em Reais (R$)" },
-  valor_imposto: { type: Type.NUMBER, description: "Soma total dos tributos e impostos (ICMS, PIS, COFINS, COSIP) em Reais (R$)" },
-  valor_celular: { type: Type.NUMBER, description: "Valor de telefonia celular se houver, senão 0" },
-  valor_internet: { type: Type.NUMBER, description: "Valor de serviço de internet se houver, senão 0" },
-  valor_diversos: { type: Type.NUMBER, description: "Outras taxas ou serviços diversos em Reais (R$), senão 0" },
-  valor_linha_privada: { type: Type.NUMBER, description: "Valor de linha privada se houver, senão 0" },
-  valor_credito: { type: Type.NUMBER, description: "Valor total de descontos ou créditos aplicados em Reais (R$), senão 0" },
-  codigo_numero: { type: Type.STRING, description: "Código identificador da Unidade Consumidora (UC) ou Matrícula/Ligação" },
-  medidor: { type: Type.STRING, description: "Número de série do medidor elétrico ou hidrômetro" },
-  endereco: { type: Type.STRING, description: "Endereço físico específico da instalação/imóvel da UC" },
-  unidade_nome: { type: Type.STRING, description: "Nome do cliente/unidade consumidora cadastrado na fatura" },
-  leitura_anterior: { type: Type.NUMBER, description: "Valor numérico da leitura anterior do medidor" },
-  leitura_atual: { type: Type.NUMBER, description: "Valor numérico da leitura atual do medidor" },
-  data_vencimento: { type: Type.STRING, description: "Data de vencimento da fatura" },
-  municipio: { type: Type.STRING, description: "Nome do município em Santa Catarina" },
-  classe: { type: Type.STRING, description: "Classe ou categoria de consumo (ex: Poder Público, Residencial, Comercial)" },
-  grupo_tarifario: { type: Type.STRING, description: "Grupo tarifário (ex: B3, A4, B1)" },
-  fatura_num: { type: Type.STRING, description: "Número da fatura ou documento fiscal" },
-  data_leitura: { type: Type.STRING, description: "Data em que foi realizada a leitura do medidor" },
-  dias_faturados: { type: Type.NUMBER, description: "Quantidade de dias compreendidos no período faturado" },
-  nota_fiscal: { type: Type.STRING, description: "Número da Nota Fiscal Eletrônica (NF-e) ou Série" },
-  chave_acesso: { type: Type.STRING, description: "Chave de acesso de 44 dígitos da NF-e se houver" },
-  energia_injetada: { type: Type.NUMBER, description: "Quantidade de energia injetada no sistema em kWh" },
-  demanda: { type: Type.NUMBER, description: "Demanda de potência medida/faturada em kW" },
-  energia_reativa: { type: Type.NUMBER, description: "Energia reativa excedente medida em kVArh" },
-  confianca: { type: Type.NUMBER, description: "Nível de confiança da extração de 0 a 100" },
-  baixa_confianca: { type: Type.BOOLEAN, description: "Verdadeiro se a extração necessita de revisão humana (HITL)" },
-  motivo_baixa_confianca: { type: Type.STRING, description: "Motivo detalhado para sinalização de baixa confiança se houver" },
-  itens: {
-    type: Type.ARRAY,
-    description: "Lista de TODAS as linhas da tabela de itens da fatura, uma por uma, sem pular nenhuma (ex: Demanda, Diferença da Demanda Contratada, Consumo Fora Ponta TE, Consumo Ponta TE, Consumo Fora Ponta TUSD, Consumo Ponta TUSD, Tributo Retido IRPJ, Bandeira Amarela, Energia Reativa Excedente, e qualquer outra linha presente na fatura, mesmo que não esteja nesta lista de exemplos).",
-    items: {
-      type: Type.OBJECT,
-      properties: {
-        descricao: { type: Type.STRING, description: "Nome literal da linha, exatamente como aparece na fatura" },
-        quantidade: { type: Type.NUMBER, description: "Quantidade/consumo dessa linha" },
-        preco_unitario: { type: Type.NUMBER, description: "Preço unitário com tributos, se houver" },
-        valor: { type: Type.NUMBER, description: "Valor total dessa linha em Reais" },
-        icms: { type: Type.NUMBER, description: "ICMS dessa linha, senão 0" },
-        cofins_pis: { type: Type.NUMBER, description: "COFINS/PIS dessa linha, senão 0" },
-        irpj_percentual: { type: Type.NUMBER, description: "Percentual de IRPJ retido dessa linha, senão 0" },
-        irpj: { type: Type.NUMBER, description: "Valor de IRPJ retido dessa linha, senão 0" },
-        pis: { type: Type.NUMBER, description: "PIS retido dessa linha, senão 0" },
-        cofins: { type: Type.NUMBER, description: "COFINS retido dessa linha, senão 0" },
-        csll: { type: Type.NUMBER, description: "CSLL retido dessa linha, senão 0" }
-      },
-      required: ["descricao", "valor"]
-    }
-  }
-},
-            required: [
-              "mes_ano", "consumo", "valor_total", "valor_imposto", "codigo_numero", "medidor",
-              "valor_celular", "valor_internet", "valor_diversos", "valor_linha_privada", "valor_credito",
-              "confianca", "baixa_confianca"
-            ]
+              },
+              required: ["tipo_relatorio", "referencia", "contas"]
+            } : {
+              type: Type.OBJECT,
+              properties: {
+                mes_ano: { type: Type.STRING, description: "Data de competência no formato YYYY-MM-DD (ex: 2026-06-01)" },
+                consumo: { type: Type.NUMBER, description: "Consumo total medido (kWh para CELESC, m³ para CASAN)" },
+                tarifa_unitaria: { type: Type.NUMBER, description: "Tarifa unitária cobrada por kWh ou m³ (R$)" },
+                valor_total: { type: Type.NUMBER, description: "Valor total líquido/bruto a pagar da fatura em Reais (R$)" },
+                valor_imposto: { type: Type.NUMBER, description: "Soma total dos tributos e impostos (ICMS, PIS, COFINS, COSIP) em Reais (R$)" },
+                valor_celular: { type: Type.NUMBER, description: "Valor de telefonia celular se houver, senão 0" },
+                valor_internet: { type: Type.NUMBER, description: "Valor de serviço de internet se houver, senão 0" },
+                valor_diversos: { type: Type.NUMBER, description: "Outras taxas ou serviços diversos em Reais (R$), senão 0" },
+                valor_linha_privada: { type: Type.NUMBER, description: "Valor de linha privada se houver, senão 0" },
+                valor_credito: { type: Type.NUMBER, description: "Valor total de descontos ou créditos aplicados em Reais (R$), senão 0" },
+                codigo_numero: { type: Type.STRING, description: "Código identificador da Unidade Consumidora (UC) ou Matrícula/Ligação" },
+                medidor: { type: Type.STRING, description: "Número de série do medidor elétrico ou hidrômetro" },
+                endereco: { type: Type.STRING, description: "Endereço físico específico da instalação/imóvel da UC" },
+                unidade_nome: { type: Type.STRING, description: "Nome do cliente/unidade consumidora cadastrado na fatura" },
+                leitura_anterior: { type: Type.NUMBER, description: "Valor numérico da leitura anterior do medidor" },
+                leitura_atual: { type: Type.NUMBER, description: "Valor numérico da leitura atual do medidor" },
+                data_vencimento: { type: Type.STRING, description: "Data de vencimento da fatura" },
+                municipio: { type: Type.STRING, description: "Nome do município em Santa Catarina" },
+                classe: { type: Type.STRING, description: "Classe ou categoria de consumo (ex: Poder Público, Residencial, Comercial)" },
+                grupo_tarifario: { type: Type.STRING, description: "Grupo tarifário (ex: B3, A4, B1)" },
+                fatura_num: { type: Type.STRING, description: "Número da fatura ou documento fiscal" },
+                data_leitura: { type: Type.STRING, description: "Data em que foi realizada a leitura do medidor" },
+                dias_faturados: { type: Type.NUMBER, description: "Quantidade de dias compreendidos no período faturado" },
+                nota_fiscal: { type: Type.STRING, description: "Número da Nota Fiscal Eletrônica (NF-e) ou Série" },
+                chave_acesso: { type: Type.STRING, description: "Chave de acesso de 44 dígitos da NF-e se houver" },
+                energia_injetada: { type: Type.NUMBER, description: "Quantidade de energia injetada no sistema em kWh" },
+                demanda: { type: Type.NUMBER, description: "Demanda de potência medida/faturada em kW" },
+                energia_reativa: { type: Type.NUMBER, description: "Energia reativa excedente medida em kVArh" },
+                confianca: { type: Type.NUMBER, description: "Nível de confiança da extração de 0 a 100" },
+                baixa_confianca: { type: Type.BOOLEAN, description: "Verdadeiro se a extração necessita de revisão humana (HITL)" },
+                motivo_baixa_confianca: { type: Type.STRING, description: "Motivo detalhado para sinalização de baixa confiança se houver" },
+                itens: {
+                  type: Type.ARRAY,
+                  description: "Lista de TODAS as linhas da tabela de itens da fatura, uma por uma, sem pular nenhuma.",
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      descricao: { type: Type.STRING },
+                      quantidade: { type: Type.NUMBER },
+                      preco_unitario: { type: Type.NUMBER },
+                      valor: { type: Type.NUMBER },
+                      icms: { type: Type.NUMBER },
+                      cofins_pis: { type: Type.NUMBER },
+                      irpj_percentual: { type: Type.NUMBER },
+                      irpj: { type: Type.NUMBER },
+                      pis: { type: Type.NUMBER },
+                      cofins: { type: Type.NUMBER },
+                      csll: { type: Type.NUMBER }
+                    },
+                    required: ["descricao", "valor"]
+                  }
+                }
+              },
+              required: [
+                "mes_ano", "consumo", "valor_total", "valor_imposto", "codigo_numero", "medidor",
+                "valor_celular", "valor_internet", "valor_diversos", "valor_linha_privada", "valor_credito",
+                "confianca", "baixa_confianca"
+              ]
+            }
           }
+        });
+        if (response && response.text) {
+          break;
         }
-      });
-      if (response && response.text) {
-        const textLength = response.text.length;
-        let rawParseStatus = "SUCESSO";
-        let rawParseError = "";
-        try {
-          JSON.parse(response.text);
-        } catch (e: any) {
-          rawParseStatus = "ERRO_PARSE";
-          rawParseError = e.message;
-        }
-        console.log(`[Gemini Raw Response Log] Modelo: ${modelName} | Tamanho: ${textLength} chars | JSON.parse Cru: ${rawParseStatus}${rawParseError ? ` (${rawParseError})` : ""}`);
-        break;
+      } catch (err: any) {
+        lastModelError = err;
+        console.warn(`Model ${modelName} attempt failed: ${err.message || err}`);
       }
-    } catch (err: any) {
-      lastModelError = err;
-      console.warn(`Model ${modelName} attempt failed: ${err.message || err}`);
     }
-  }
 
-  if (!response || !response.text) {
-    throw lastModelError || new Error("Nenhum modelo Gemini respondeu com sucesso.");
-  }
+    if (!response || !response.text) {
+      throw lastModelError || new Error("Nenhum modelo Gemini respondeu com sucesso.");
+    }
 
     const resultText = response.text || "{}";
     let parsedData = robustJsonParse(resultText);
 
     if (parsedData && parsedData.tipo_relatorio === "CASAN_CENTRALIZADA") {
-      console.log("[Gemini Multimodal Parser Output - CASAN Centralizada]:", JSON.stringify(parsedData, null, 2));
-      return res.json(parsedData);
+      return parsedData;
     }
 
-    // Apply Post-Extraction Sanity Validation
     parsedData = validateExtractedFaturaSanity(parsedData, isCasan ? 'CASAN' : 'CELESC');
-
-    console.log("[Gemini Multimodal Parser Output]:", JSON.stringify(parsedData, null, 2));
-
-    res.json(parsedData);
+    return parsedData;
 
   } catch (error: any) {
-    console.warn("Gemini API error (Quota exceeded, network, or invalid image), falling back to local heuristic parser:", error);
+    console.warn("Gemini API error, falling back to local heuristic parser:", error);
     logTechnicalError("GEMINI_API_PARSER_FALLBACK", `Heuristic fallback used due to error: ${error.message || "Unknown error"}`, "server.ts", "1300");
-    
-    try {
-      if (isCasanCentralizada) {
-        const contas: any[] = [];
-        const lines = (texto_fatura || "").split("\n");
-        let refDate = "2026-06-01";
-        const refMatch = (texto_fatura || "").match(/(?:REFERÊNCIA|REFERENCIA|COMPETÊNCIA|COMPETENCIA)\s*[:/]*\s*(\d{2})\/(\d{4})/i);
-        if (refMatch) {
-          refDate = `${refMatch[2]}-${refMatch[1]}-01`;
-        }
-        for (const line of lines) {
-          const mMatch = line.match(/^\s*(\d{5,10}[-\s]?\d{1,2})\s+(.+?)\s+(\d+)\s+(\d+)\s+(\d+)\s*(?:m³)?\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)/i);
-          if (mMatch) {
-            contas.push({
-              matricula: mMatch[1].trim(),
-              usuario: mMatch[2].trim(),
-              localizacao: mMatch[2].trim(),
-              leitura_anterior: parseFloat(mMatch[3]) || 0,
-              leitura_atual: parseFloat(mMatch[4]) || 0,
-              consumo: parseFloat(mMatch[5]) || 0,
-              valor_agua: parseFloat(mMatch[6].replace(/\./g, "").replace(",", ".")) || 0,
-              valor_esgoto: parseFloat(mMatch[7].replace(/\./g, "").replace(",", ".")) || 0,
-              valor_servico: parseFloat(mMatch[8].replace(/\./g, "").replace(",", ".")) || 0,
-              valor_bonus: 0,
-              valor_total: parseFloat(mMatch[9].replace(/\./g, "").replace(",", ".")) || 0
-            });
-          }
-        }
-        return res.json({
-          tipo_relatorio: "CASAN_CENTRALIZADA",
-          referencia: refDate,
-          contas: contas
-        });
-      }
 
-      let parsedData = heuristicExtractFatura(texto_fatura || "", nome_arquivo || "fatura_upload.txt", layout);
-      parsedData = validateExtractedFaturaSanity(parsedData, isCasan ? 'CASAN' : 'CELESC');
-      parsedData.baixa_confianca = true;
-      parsedData.confianca = Math.min(parsedData.confianca || 50, 50);
-      const motivoFallback = `Extração realizada via parser heurístico local de contingência (Gemini indisponível: ${error.message || "Erro na API"}). Revisão humana obrigatória.`;
-      parsedData.motivo_baixa_confianca = parsedData.motivo_baixa_confianca ? `${motivoFallback} | ${parsedData.motivo_baixa_confianca}` : motivoFallback;
-      res.json(parsedData);
-    } catch (fallbackError: any) {
-      console.error("Critical: Fallback heuristic parser also failed:", fallbackError);
-      res.status(500).json({ error: "Falha na comunicação com o Parser do Gemini e no extrator de contingência: " + fallbackError.message });
+    if (isCasanCentralizada) {
+      const contas: any[] = [];
+      const lines = (texto_fatura || "").split("\n");
+      let refDate = "2026-06-01";
+      const refMatch = (texto_fatura || "").match(/(?:REFERÊNCIA|REFERENCIA|COMPETÊNCIA|COMPETENCIA)\s*[:/]*\s*(\d{2})\/(\d{4})/i);
+      if (refMatch) {
+        refDate = `${refMatch[2]}-${refMatch[1]}-01`;
+      }
+      for (const line of lines) {
+        const mMatch = line.match(/^\s*(\d{5,10}[-\s]?\d{1,2})\s+(.+?)\s+(\d+)\s+(\d+)\s+(\d+)\s*(?:m³)?\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)/i);
+        if (mMatch) {
+          contas.push({
+            matricula: mMatch[1].trim(),
+            usuario: mMatch[2].trim(),
+            localizacao: mMatch[2].trim(),
+            leitura_anterior: parseFloat(mMatch[3]) || 0,
+            leitura_atual: parseFloat(mMatch[4]) || 0,
+            consumo: parseFloat(mMatch[5]) || 0,
+            valor_agua: parseFloat(mMatch[6].replace(/\./g, "").replace(",", ".")) || 0,
+            valor_esgoto: parseFloat(mMatch[7].replace(/\./g, "").replace(",", ".")) || 0,
+            valor_servico: parseFloat(mMatch[8].replace(/\./g, "").replace(",", ".")) || 0,
+            valor_bonus: 0,
+            valor_total: parseFloat(mMatch[9].replace(/\./g, "").replace(",", ".")) || 0
+          });
+        }
+      }
+      return {
+        tipo_relatorio: "CASAN_CENTRALIZADA",
+        referencia: refDate,
+        contas: contas
+      };
+    }
+
+    let parsedData = heuristicExtractFatura(texto_fatura || "", nome_arquivo || "fatura_upload.txt", layout);
+    parsedData = validateExtractedFaturaSanity(parsedData, isCasan ? 'CASAN' : 'CELESC');
+    parsedData.baixa_confianca = true;
+    parsedData.confianca = Math.min(parsedData.confianca || 50, 50);
+    const motivoFallback = `Extração realizada via parser heurístico local de contingência (Gemini indisponível: ${error.message || "Erro na API"}). Revisão humana obrigatória.`;
+    parsedData.motivo_baixa_confianca = parsedData.motivo_baixa_confianca ? `${motivoFallback} | ${parsedData.motivo_baixa_confianca}` : motivoFallback;
+    return parsedData;
+  }
+}
+
+// --- GEMINI MULTIMODAL PARSER ENDPOINT (SYNCHRONOUS SINGLE PAGE) ---
+app.post("/api/documentos/parse", async (req, res) => {
+  try {
+    const result = await parseSinglePageWithGeminiCore(req.body);
+    res.json(result);
+  } catch (error: any) {
+    console.error("Error in /api/documentos/parse:", error);
+    res.status(500).json({ error: error.message || "Erro no processamento da fatura." });
+  }
+});
+
+// --- ASYNCHRONOUS EXTRACTION JOBS INFRASTRUCTURE ---
+interface DocumentJob {
+  id: string;
+  status: 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  created_em: string;
+  updated_em: string;
+  nome_arquivo: string;
+  totalPages: number;
+  processedPages: number;
+  extractedContasCount: number;
+  progressMessage: string;
+  pageStats: Array<{ page: number; count: number; truncated: boolean }>;
+  createdDocs: any[];
+  error?: string;
+}
+
+const activeJobs: Record<string, DocumentJob> = {};
+
+// Clean old jobs after 2 hours
+setInterval(() => {
+  const now = Date.now();
+  for (const id of Object.keys(activeJobs)) {
+    const job = activeJobs[id];
+    if (now - new Date(job.created_em).getTime() > 2 * 3600 * 1000) {
+      delete activeJobs[id];
     }
   }
+}, 10 * 60 * 1000);
+
+async function runAsyncExtractionJob(jobId: string, payload: {
+  nome_arquivo: string;
+  layout?: string;
+  pages: Array<{ pageNum: number; texto_fatura?: string; imagem_base64?: string }>;
+}) {
+  const job = activeJobs[jobId];
+  if (!job) return;
+
+  try {
+    const totalPages = payload.pages.length;
+    const createdDocs: any[] = [];
+    const pageStats: { page: number; count: number; truncated: boolean }[] = [];
+
+    // Parallel controlled concurrency of 2 pages at a time
+    const CONCURRENCY = 2;
+    for (let i = 0; i < totalPages; i += CONCURRENCY) {
+      const chunk = payload.pages.slice(i, i + CONCURRENCY);
+      job.progressMessage = `Processando páginas ${i + 1} a ${Math.min(i + CONCURRENCY, totalPages)} de ${totalPages} via Gemini Multimodal...`;
+      job.updated_em = new Date().toISOString();
+
+      const results = await Promise.all(
+        chunk.map(async (p) => {
+          try {
+            const pageName = `${payload.nome_arquivo} - Pág ${p.pageNum}`;
+            const parsed = await parseSinglePageWithGeminiCore({
+              texto_fatura: p.texto_fatura,
+              imagem_base64: p.imagem_base64,
+              layout: payload.layout || "CASAN_FATURA",
+              nome_arquivo: pageName
+            });
+            return { pageNum: p.pageNum, text: p.texto_fatura || "", parsed, success: true };
+          } catch (err: any) {
+            console.error(`Job ${jobId} error on page ${p.pageNum}:`, err);
+            return { pageNum: p.pageNum, text: p.texto_fatura || "", parsed: null, success: false, error: err.message };
+          }
+        })
+      );
+
+      for (const res of results) {
+        job.processedPages++;
+        if (res.success && res.parsed) {
+          const parsed = res.parsed;
+          let pageContas: any[] = [];
+          if (parsed.tipo_relatorio === "CASAN_CENTRALIZADA" && Array.isArray(parsed.contas)) {
+            pageContas = parsed.contas;
+          } else if (Array.isArray(parsed.contas)) {
+            pageContas = parsed.contas;
+          } else if (parsed.codigo_numero && parsed.valor_total) {
+            pageContas = [{
+              matricula: parsed.codigo_numero,
+              localizacao: parsed.endereco || "N/A",
+              usuario: parsed.unidade_nome || "N/A",
+              consumo: parsed.consumo || 0,
+              valor_total: parsed.valor_total || 0,
+              leitura_anterior: parsed.leitura_anterior || 0,
+              leitura_atual: parsed.leitura_atual || 0
+            }];
+          }
+
+          const isTrunc = !!(parsed.json_reparado_truncado || parsed.alerta_truncamento);
+          pageStats.push({
+            page: res.pageNum,
+            count: pageContas.length,
+            truncated: isTrunc
+          });
+
+          pageContas.forEach((conta: any, cIdx: number) => {
+            const logsVal: string[] = [];
+            if (isTrunc) {
+              logsVal.push("⚠️ ALERTA DE IMPORTAÇÃO: Resposta do Gemini para esta página sofreu truncamento de tokens e foi reparada.");
+            }
+
+            createdDocs.push({
+              id: `DOC-JOB-${jobId}-P${res.pageNum}-${cIdx + 1}`,
+              nome_arquivo: `${payload.nome_arquivo} (Pág ${res.pageNum} | Matrícula: ${conta.matricula || 'N/A'})`,
+              layout: payload.layout || "CASAN_FATURA",
+              tamanho: res.text.length,
+              status: logsVal.length > 0 ? 'NORMALIZADO' : 'VALIDADO',
+              origem_conteudo: res.text,
+              dados_extraidos: {
+                mes_ano: parsed.referencia || "2026-06-01",
+                consumo: conta.consumo || 0,
+                valor_total: conta.valor_total || 0,
+                valor_imposto: 0,
+                valor_celular: 0,
+                valor_internet: 0,
+                valor_diversos: conta.valor_servico || 0,
+                valor_linha_privada: 0,
+                valor_credito: conta.valor_bonus || 0,
+                codigo_numero: conta.matricula || "DESCONHECIDO",
+                medidor: "N/A",
+                unidade_nome: conta.usuario || conta.localizacao || "N/A",
+                endereco: conta.localizacao || "N/A",
+                leitura_anterior: conta.leitura_anterior || 0,
+                leitura_atual: conta.leitura_atual || 0,
+                itens_fatura: []
+              },
+              logs_validacao: logsVal,
+              historico_alteracoes: [],
+              criado_em: new Date().toISOString(),
+              atualizado_em: new Date().toISOString(),
+              numero_pagina: res.pageNum,
+              posicao_na_pagina: cIdx + 1,
+              total_na_pagina: pageContas.length,
+              posicao_no_lote: createdDocs.length + 1,
+              total_no_lote: totalPages,
+              score: 100
+            });
+          });
+        }
+      }
+
+      job.extractedContasCount = createdDocs.length;
+      job.pageStats = pageStats;
+      job.createdDocs = createdDocs;
+      job.updated_em = new Date().toISOString();
+    }
+
+    job.status = 'COMPLETED';
+    job.progressMessage = `Extração concluída com sucesso! Total: ${createdDocs.length} contas extraídas em ${totalPages} páginas.`;
+    job.updated_em = new Date().toISOString();
+  } catch (err: any) {
+    console.error(`Job ${jobId} execution error:`, err);
+    job.status = 'FAILED';
+    job.error = err.message || "Erro no processamento do job.";
+    job.progressMessage = `Falha no processamento: ${err.message}`;
+    job.updated_em = new Date().toISOString();
+  }
+}
+
+app.post("/api/documentos/jobs", (req, res) => {
+  const { nome_arquivo, layout, pages } = req.body;
+  if (!pages || !Array.isArray(pages) || pages.length === 0) {
+    return res.status(400).json({ error: "Nenhuma página enviada para processamento em lote." });
+  }
+
+  const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const newJob: DocumentJob = {
+    id: jobId,
+    status: 'PROCESSING',
+    created_em: new Date().toISOString(),
+    updated_em: new Date().toISOString(),
+    nome_arquivo: nome_arquivo || "relatorio_lote.pdf",
+    totalPages: pages.length,
+    processedPages: 0,
+    extractedContasCount: 0,
+    progressMessage: `Job de extração iniciado para ${pages.length} página(s)...`,
+    pageStats: [],
+    createdDocs: []
+  };
+
+  activeJobs[jobId] = newJob;
+
+  // Launch background execution
+  runAsyncExtractionJob(jobId, { nome_arquivo, layout, pages });
+
+  // Immediate response
+  res.json({
+    jobId,
+    status: 'PROCESSING',
+    totalPages: pages.length
+  });
+});
+
+app.get("/api/documentos/jobs/:id", (req, res) => {
+  const job = activeJobs[req.params.id];
+  if (!job) {
+    return res.status(404).json({ error: "Job de extração não encontrado ou expirado." });
+  }
+  res.json(job);
 });
 
 
@@ -1912,9 +2110,14 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`SisPu.JP 2.0 running on http://localhost:${PORT} [NODE_ENV=${process.env.NODE_ENV || 'development'}]`);
   });
+
+  // Configure high HTTP server timeouts for long running workloads
+  server.timeout = 1200000; // 20 minutes
+  server.keepAliveTimeout = 120000; // 2 minutes
+  server.headersTimeout = 125000;
 }
 
 startServer();

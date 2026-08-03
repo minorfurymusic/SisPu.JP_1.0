@@ -885,15 +885,99 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
     addLog(`Concessionária inferida: ${concessionaire} | Tipo de arquivo: ${isCasanCentralized ? 'CASAN Cobrança Centralizada (Lote Fracionado por Página)' : isReport ? 'Relatório/Lote' : 'Fatura Individual'}`);
 
-    // --- PAGE-BY-PAGE ARCHITECTURE FOR CASAN CENTRALIZADA ---
+    // --- PAGE-BY-PAGE ASYNC JOB ARCHITECTURE FOR CASAN CENTRALIZADA ---
     if (isCasanCentralized) {
-      addLog(`[CASAN Centralizada] Executando arquitetura de extração fracionada PÁGINA A PÁGINA...`);
+      addLog(`[CASAN Centralizada] Executando arquitetura de extração ASSÍNCRONA VIA JOB BACKEND (Robusta & Anti-Timeout)...`);
       
       const textPages = convertTextToPaginas(textToProcess);
       const totalPages = Math.max(textPages.length, imagesOverride ? imagesOverride.length : 1, pagesCount || 1);
       
-      addLog(`Total de páginas identificadas no relatório CASAN Centralizada: ${totalPages} páginas.`);
+      addLog(`Total de páginas preparadas para envio ao Job Runner: ${totalPages} páginas.`);
       
+      const pagesPayload = [];
+      for (let pIdx = 0; pIdx < totalPages; pIdx++) {
+        const pNum = pIdx + 1;
+        const pText = textPages[pIdx] ? textPages[pIdx].textoLimpo : textToProcess;
+        const pImg = imagesOverride && imagesOverride[pIdx] ? imagesOverride[pIdx] : undefined;
+        pagesPayload.push({
+          pageNum: pNum,
+          texto_fatura: pText,
+          imagem_base64: pImg
+        });
+      }
+
+      try {
+        const jobStartRes = await fetch("/api/documentos/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            nome_arquivo: nameToProcess,
+            layout: "CASAN_FATURA",
+            pages: pagesPayload
+          })
+        });
+
+        if (!jobStartRes.ok) {
+          throw new Error(`Falha ao criar job no servidor: HTTP ${jobStartRes.status}`);
+        }
+
+        const jobData = await jobStartRes.json();
+        const jobId = jobData.jobId;
+        addLog(`Job de extração ${jobId} iniciado no servidor. Acompanhando progresso via Polling...`);
+
+        let isJobComplete = false;
+        let finalDocs: DocumentoProcessado[] = [];
+
+        while (!isJobComplete) {
+          await new Promise(res => setTimeout(res, 1500));
+
+          const pollRes = await fetch(`/api/documentos/jobs/${jobId}`);
+          if (!pollRes.ok) {
+            addLog(`⚠️ Erro temporário ao consultar job ${jobId}. Tentando novamente...`);
+            continue;
+          }
+
+          const statusData = await pollRes.json();
+
+          if (statusData.status === 'COMPLETED') {
+            isJobComplete = true;
+            finalDocs = statusData.createdDocs || [];
+            
+            addLog(`=======================================================`);
+            addLog(`📊 DEMONSTRATIVO DE EXTRAÇÃO ASSÍNCRONA VIA JOB (${jobId}):`);
+            if (Array.isArray(statusData.pageStats)) {
+              statusData.pageStats.forEach((st: any) => {
+                addLog(`   • Página ${st.page}: ${st.count} contas extraídas ${st.truncated ? "⚠️ (JSON Reparado)" : "✅"}`);
+              });
+            }
+            addLog(`🎯 TOTAL SOMADO DAS ${totalPages} PÁGINAS: ${finalDocs.length} CONTAS.`);
+            addLog(`=======================================================`);
+
+            setSessionDocs(finalDocs);
+            setQueueProgress({ current: totalPages, total: totalPages, phase: "Concluído!" });
+            setMessage({
+              type: 'success',
+              text: `Extração assíncrona concluída com sucesso: ${finalDocs.length} contas extraídas em ${totalPages} páginas.`
+            });
+            setProcessingQueue(false);
+            return;
+
+          } else if (statusData.status === 'FAILED') {
+            throw new Error(statusData.error || "Job de extração falhou no backend.");
+          } else {
+            setQueueProgress({
+              current: statusData.processedPages || 0,
+              total: totalPages,
+              phase: statusData.progressMessage || `Processando página ${statusData.processedPages} de ${totalPages}...`
+            });
+            addLog(`🔄 [Progresso do Job]: ${statusData.progressMessage} (${statusData.extractedContasCount || 0} contas extraídas)`);
+          }
+        }
+      } catch (jobErr: any) {
+        addLog(`❌ Job Assíncrono reportou exceção (${jobErr.message}). Iniciando contingência síncrona...`);
+      }
+
+      // --- SINC-FALLBACK IF JOB ENDPOINT UNREACHABLE ---
       const createdDocs: DocumentoProcessado[] = [];
       const pageStats: { page: number; count: number; truncated: boolean }[] = [];
       
@@ -902,10 +986,8 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
         setQueueProgress({
           current: pageNum,
           total: totalPages,
-          phase: `Enviando Página ${pageNum} de ${totalPages} para a API do Gemini...`
+          phase: `[Contingência] Página ${pageNum} de ${totalPages}...`
         });
-        
-        addLog(`➡️ [Página ${pageNum}/${totalPages}] Disparando chamada individual ao Gemini...`);
         
         const pageText = textPages[pIdx] ? textPages[pIdx].textoLimpo : textToProcess;
         const pageImage = imagesOverride && imagesOverride[pIdx] ? [imagesOverride[pIdx]] : undefined;
@@ -927,12 +1009,6 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
           }
           
           const parsed = await apiRes.json();
-          
-          // Check for non-silent truncation / repair alert
-          if (parsed.json_reparado_truncado || parsed.alerta_truncamento) {
-            addLog(`🚨 [ALERTA GRAVE PÁGINA ${pageNum}]: A resposta da IA excedeu o limite de tokens e precisou ser REPARADA por heurística! Registros do final da Página ${pageNum} podem ter sido omitidos. Notifique o operador!`);
-          }
-          
           let pageContas: any[] = [];
           if (parsed.tipo_relatorio === "CASAN_CENTRALIZADA" && Array.isArray(parsed.contas)) {
             pageContas = parsed.contas;
@@ -951,19 +1027,11 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
           }
           
           const isTrunc = !!(parsed.json_reparado_truncado || parsed.alerta_truncamento);
-          pageStats.push({
-            page: pageNum,
-            count: pageContas.length,
-            truncated: isTrunc
-          });
-          
-          addLog(`✅ [Página ${pageNum}/${totalPages}]: ${pageContas.length} conta(s) extraída(s) individualmente.${isTrunc ? " ⚠️ (Aviso: JSON desta página foi reparado)" : ""}`);
+          pageStats.push({ page: pageNum, count: pageContas.length, truncated: isTrunc });
           
           pageContas.forEach((conta: any, cIdx: number) => {
             const logsVal: string[] = [];
-            if (isTrunc) {
-              logsVal.push("⚠️ ALERTA DE IMPORTAÇÃO: Resposta do Gemini para esta página sofreu truncamento de tokens e foi reparada. Dados do final da página podem estar omissos.");
-            }
+            if (isTrunc) logsVal.push("⚠️ ALERTA DE IMPORTAÇÃO: Resposta do Gemini foi reparada.");
             
             createdDocs.push({
               id: `DOC-CASAN-CENTRAL-P${pageNum}-${Date.now()}-${cIdx + 1}`,
@@ -1002,28 +1070,18 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
               score: 100
             });
           });
-          
         } catch (errPage: any) {
-          addLog(`❌ [Página ${pageNum}/${totalPages}] Erro na extração: ${errPage.message}`);
+          addLog(`❌ [Contingência Página ${pageNum}] Erro: ${errPage.message}`);
           pageStats.push({ page: pageNum, count: 0, truncated: false });
         }
       }
       
       const totalExtracted = createdDocs.length;
-      
-      addLog(`=======================================================`);
-      addLog(`📊 DEMONSTRATIVO DE EXTRAÇÃO FRACIONADA PÁGINA A PÁGINA:`);
-      pageStats.forEach(st => {
-        addLog(`   • Página ${st.page}: ${st.count} contas extraídas ${st.truncated ? "⚠️ (JSON Reparado)" : "✅"}`);
-      });
-      addLog(`🎯 TOTAL SOMADO DAS ${totalPages} PÁGINAS: ${totalExtracted} CONTAS.`);
-      addLog(`=======================================================`);
-      
       setSessionDocs(createdDocs);
       setQueueProgress({ current: totalPages, total: totalPages, phase: "Concluído!" });
       setMessage({
         type: 'success',
-        text: `Extração PÁGINA A PÁGINA concluída com sucesso: ${totalExtracted} contas extraídas em ${totalPages} páginas.`
+        text: `Extração de contingência concluída: ${totalExtracted} contas extraídas em ${totalPages} páginas.`
       });
       setProcessingQueue(false);
       return;
