@@ -133,6 +133,10 @@ export interface DocumentoProcessado {
     codigo_numero?: string; // CODNUM (e.g. medidor, telefone, contrato)
     medidor?: string;
     unidade_nome?: string;
+    endereco?: string;
+    localizacao?: string;
+    leitura_anterior?: number;
+    leitura_atual?: number;
     secretaria_nome?: string;
     despesa_descricao?: string;
     

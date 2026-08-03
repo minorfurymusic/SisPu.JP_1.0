@@ -6,3 +6,5 @@ coverage/
 *.log
 .env*
 !.env.example
+sispu_db*.json
+sispu_repo/

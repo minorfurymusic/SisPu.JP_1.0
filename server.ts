@@ -10,6 +10,7 @@ import {
   DocumentoProcessado 
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
+import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool } from "./src/db/postgres";
 
 dotenv.config();
 
@@ -209,7 +210,7 @@ const initialDBState: DatabaseState = {
   documentos_processados: []
 };
 
-// Database utility functions with automatic write persistence
+// Database utility functions with automatic write persistence (PostgreSQL + Local Cache)
 function loadDB(): DatabaseState {
   try {
     if (fs.existsSync(DB_FILE)) {
@@ -230,10 +231,42 @@ function saveDB(state: DatabaseState) {
   } catch (err) {
     console.error("Error saving DB file:", err);
   }
+  // Asynchronously persist state to PostgreSQL
+  saveAllStateToPostgres(state).catch(err => {
+    console.error("Error persisting state to PostgreSQL:", err);
+  });
 }
 
 // Global DB instance
-const db = loadDB();
+let db: DatabaseState = loadDB();
+
+async function initDatabasePersistence() {
+  const initialized = await initPostgresSchema();
+  if (initialized) {
+    const pgState = await loadStateFromPostgres();
+    if (pgState && (pgState.secretarias?.length > 0 || pgState.documentos_processados?.length > 0)) {
+      db = {
+        usuarios: pgState.usuarios || [],
+        secretarias: pgState.secretarias || [],
+        unidades: pgState.unidades || [],
+        despesas: pgState.despesas || [],
+        itens_despesas: pgState.itens_despesas || [],
+        lancamentos: pgState.lancamentos || [],
+        pessoas: pgState.pessoas || [],
+        contatos_email: pgState.contatos_email || [],
+        logs_erros: pgState.logs_erros || [],
+        auditoria_registros: pgState.auditoria_registros || [],
+        documentos_processados: pgState.documentos_processados || [],
+      };
+      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
+      console.log("[DB] Estado restaurado com sucesso diretamente do PostgreSQL (Neon)!");
+    } else {
+      console.log("[DB] PostgreSQL está sem registros. Semeando dados iniciais no Neon...");
+      await saveAllStateToPostgres(db);
+    }
+  }
+}
+
 
 // Simulated PostgreSQL Trigger-based Auditor
 function logAudit(tabela: string, pk: string, acao: 'INSERT' | 'UPDATE' | 'DELETE', usuario: string, antigo: any, novo: any) {
@@ -267,6 +300,159 @@ function logTechnicalError(origem: string, mensagem: string, arquivo: string, li
 }
 
 // REST API DEFINITIONS - Mirroring PySide6 repositories and FastAPI routes
+
+// --- BANCO DE DADOS (POSTGRESQL NEON STATUS E CONFIGURAÇÃO) ---
+app.get("/api/db-status", async (req, res) => {
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) {
+    return res.json({ connected: false, message: "DATABASE_URL não configurada." });
+  }
+  const pool = getPool();
+  if (!pool) {
+    return res.json({ connected: false, message: "Falha ao obter pool de conexão." });
+  }
+  try {
+    const client = await pool.connect();
+    client.release();
+    return res.json({
+      connected: true,
+      message: "Conectado ao PostgreSQL (Neon DB)!",
+      db_url_masked: dbUrl.replace(/:([^:@]+)@/, ":*****@")
+    });
+  } catch (err: any) {
+    return res.json({
+      connected: false,
+      message: `Erro de conexão: ${err.message || err}`,
+      error: err.message
+    });
+  }
+});
+
+app.post("/api/db-config", async (req, res) => {
+  try {
+    const { database_url } = req.body || {};
+    if (!database_url || typeof database_url !== "string") {
+      return res.status(400).json({ success: false, error: "Connection string 'database_url' é obrigatória." });
+    }
+
+    const trimmed = database_url.trim();
+    process.env.DATABASE_URL = trimmed;
+
+    // Persist to .env
+    let envContent = "";
+    if (fs.existsSync(".env")) {
+      envContent = fs.readFileSync(".env", "utf-8");
+    }
+    if (envContent.includes("DATABASE_URL=")) {
+      envContent = envContent.replace(/DATABASE_URL=.*(\r?\n|$)/, `DATABASE_URL="${trimmed}"\n`);
+    } else {
+      envContent += `\nDATABASE_URL="${trimmed}"\n`;
+    }
+    fs.writeFileSync(".env", envContent, "utf-8");
+
+    await resetPool();
+    const initialized = await initPostgresSchema();
+    if (!initialized) {
+      return res.status(400).json({
+        success: false,
+        error: "Falha ao conectar com a Connection String fornecida. Verifique a senha e tente novamente."
+      });
+    }
+
+    await initDatabasePersistence();
+
+    return res.json({
+      success: true,
+      message: "PostgreSQL Neon conectado e sincronizado com sucesso!",
+      secretarias_count: db.secretarias.length,
+      documentos_count: db.documentos_processados.length
+    });
+  } catch (err: any) {
+    console.error("Erro em /api/db-config:", err);
+    return res.status(500).json({ success: false, error: err.message || "Erro interno ao configurar banco." });
+  }
+});
+
+// --- GITHUB INTEGRATION & PUSH ---
+app.get("/api/git-status", (req, res) => {
+  try {
+    const { execSync } = require("child_process");
+    const status = execSync("git status", { encoding: "utf-8" });
+    const log = execSync("git log --oneline -5", { encoding: "utf-8" });
+    let hasToken = Boolean(process.env.GITHUB_TOKEN);
+    if (!hasToken && fs.existsSync(".env")) {
+      const content = fs.readFileSync(".env", "utf-8");
+      hasToken = /GITHUB_TOKEN="?.+"?/.test(content);
+    }
+    res.json({
+      success: true,
+      status,
+      log,
+      hasToken
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/github-push", async (req, res) => {
+  try {
+    const { execSync } = require("child_process");
+    const { github_token } = req.body || {};
+    
+    let tokenToUse = github_token?.trim() || process.env.GITHUB_TOKEN;
+    if (!tokenToUse && fs.existsSync(".env")) {
+      const match = fs.readFileSync(".env", "utf-8").match(/GITHUB_TOKEN="?([^"\n\r]+)"?/);
+      if (match) tokenToUse = match[1];
+    }
+
+    if (!tokenToUse) {
+      return res.status(400).json({
+        success: false,
+        error: "GITHUB_TOKEN não fornecido e não encontrado no arquivo .env."
+      });
+    }
+
+    // Update process.env and .env safely
+    process.env.GITHUB_TOKEN = tokenToUse;
+    let envContent = fs.existsSync(".env") ? fs.readFileSync(".env", "utf-8") : "";
+    if (envContent.includes("GITHUB_TOKEN=")) {
+      envContent = envContent.replace(/GITHUB_TOKEN=.*(\r?\n|$)/, `GITHUB_TOKEN="${tokenToUse}"\n`);
+    } else {
+      envContent += `\nGITHUB_TOKEN="${tokenToUse}"\n`;
+    }
+    fs.writeFileSync(".env", envContent, "utf-8");
+
+    // Configure git core.askpass
+    const askpassPath = path.join(process.cwd(), "scripts", "git-askpass.sh");
+    execSync(`chmod +x "${askpassPath}" && git config core.askpass "${askpassPath}"`);
+
+    // Execute git push
+    let pushOutput = "";
+    try {
+      pushOutput = execSync("git push origin main 2>&1", { encoding: "utf-8" });
+    } catch (pushErr: any) {
+      return res.status(400).json({
+        success: false,
+        error: `Falha na autenticação ou push: ${pushErr.stdout || pushErr.message}`
+      });
+    }
+
+    const postStatus = execSync("git status 2>&1", { encoding: "utf-8" });
+    const postLog = execSync("git log --oneline -5 2>&1", { encoding: "utf-8" });
+
+    return res.json({
+      success: true,
+      message: "Push realizado com sucesso para origin/main!",
+      push_output: pushOutput,
+      git_status: postStatus,
+      git_log: postLog
+    });
+  } catch (err: any) {
+    console.error("Erro em /api/github-push:", err);
+    return res.status(500).json({ success: false, error: err.message || "Erro interno ao realizar push." });
+  }
+});
 
 // --- USUARIOS ---
 app.get("/api/usuarios", (req, res) => {
@@ -1231,51 +1417,75 @@ function robustJsonParse(jsonStr: string): any {
   // Strip markdown code block wrapping if present
   let cleaned = jsonStr.replace(/```json/gi, "").replace(/```/g, "").trim();
 
+  // Fix unescaped control characters inside json
+  cleaned = cleaned.replace(/[\r\n\t]/g, (match) => {
+    if (match === '\t') return ' ';
+    return ' ';
+  });
+
   try {
     return JSON.parse(cleaned);
   } catch (e: any) {
     console.warn("Standard JSON.parse failed on cleaned text, attempting robust regex / repair. Snippet:", cleaned.substring(0, 300));
-    
-    // Try extracting substring from first '{' to last '}'
-    const startIdx = cleaned.indexOf('{');
-    const endIdx = cleaned.lastIndexOf('}');
-    if (startIdx !== -1 && endIdx > startIdx) {
-      const candidate = cleaned.substring(startIdx, endIdx + 1);
-      try {
-        return JSON.parse(candidate);
-      } catch (e2) {
-        // Attempt repairing truncated json by balancing brackets and quotes
-        let repaired = candidate;
-        // Balance unclosed quotes
-        const quoteCount = (repaired.match(/"/g) || []).length;
-        if (quoteCount % 2 !== 0) {
-          repaired += '"';
-        }
-        // Balance unclosed brackets
-        let openBraces = 0;
-        let openBrackets = 0;
-        let inString = false;
-        for (let i = 0; i < repaired.length; i++) {
-          const char = repaired[i];
-          if (char === '"' && (i === 0 || repaired[i - 1] !== '\\')) {
-            inString = !inString;
-          } else if (!inString) {
-            if (char === '{') openBraces++;
-            else if (char === '}') openBraces--;
-            else if (char === '[') openBrackets++;
-            else if (char === ']') openBrackets--;
-          }
-        }
-        if (openBrackets > 0) repaired += ']'.repeat(openBrackets);
-        if (openBraces > 0) repaired += '}'.repeat(openBraces);
-        
-        try {
-          return JSON.parse(repaired);
-        } catch (e3) {
-          console.warn("Auto-repair balanced brackets parse failed:", e3);
+  }
+
+  // Iterative truncation & bracket repair
+  const startIdx = cleaned.indexOf('{');
+  if (startIdx !== -1) {
+    let workingText = cleaned.substring(startIdx);
+
+    // Try progressively trimming from the end until a valid JSON object is recovered
+    for (let attempt = 0; attempt < 300; attempt++) {
+      let testStr = workingText;
+
+      // Fix trailing dangling tokens
+      testStr = testStr.replace(/,\s*$/, "");
+      testStr = testStr.replace(/:\s*$/, "");
+      testStr = testStr.replace(/(\d+)\.\s*$/, "$1"); // fix 12. -> 12
+      testStr = testStr.replace(/("[^"]*")\s*:\s*$/, ""); // remove trailing unassigned key
+      testStr = testStr.replace(/,\s*"[^"]*"\s*:\s*$/, "");
+      testStr = testStr.replace(/,\s*\{[^}]*$/, ""); // remove unclosed trailing object
+
+      // Balance unclosed quotes
+      const quoteCount = (testStr.match(/"/g) || []).length;
+      if (quoteCount % 2 !== 0) {
+        testStr += '"';
+      }
+
+      // Balance unclosed brackets
+      let openBraces = 0;
+      let openBrackets = 0;
+      let inString = false;
+      for (let i = 0; i < testStr.length; i++) {
+        const char = testStr[i];
+        if (char === '"' && (i === 0 || testStr[i - 1] !== '\\')) {
+          inString = !inString;
+        } else if (!inString) {
+          if (char === '{') openBraces++;
+          else if (char === '}') openBraces--;
+          else if (char === '[') openBrackets++;
+          else if (char === ']') openBrackets--;
         }
       }
+
+      if (openBrackets > 0) testStr += ']'.repeat(openBrackets);
+      if (openBraces > 0) testStr += '}'.repeat(openBraces);
+
+      try {
+        const parsed = JSON.parse(testStr);
+        if (parsed && typeof parsed === 'object') {
+          parsed.json_reparado_truncado = true;
+          parsed.alerta_truncamento = "⚠️ [ALERTA CRÍTICO DE TOKENS]: O JSON gerado pela IA foi truncado pelo limite de saída e precisou ser reparado por heurística de parênteses/chaves. Registros do final desta página podem ter sido omitidos!";
+          console.warn("[ALERTA CRÍTICO] robustJsonParse reparou um JSON truncado pela IA! Marcando json_reparado_truncado = true.");
+          return parsed;
+        }
+      } catch (e2) {
+        // Trim back 1 char from workingText and retry
+        workingText = workingText.slice(0, -1).trim();
+        if (!workingText) break;
+      }
     }
+  }
 
     // Fallback object with defaults
     const result: any = {
@@ -1329,7 +1539,6 @@ function robustJsonParse(jsonStr: string): any {
     }
 
     return result;
-  }
 }
 
 // --- POST-EXTRACTION SANITY VALIDATION HELPER ---
@@ -1405,8 +1614,14 @@ app.post("/api/documentos/parse", async (req, res) => {
                  (nome_arquivo && /casan/i.test(nome_arquivo)) || 
                  (texto_fatura && /casan/i.test(texto_fatura));
 
+  const isCasanCentralizada = (isCasan || (layout && layout.includes("CASAN"))) &&
+    ((nome_arquivo && (/COBRANÇA CENTRALIZADA/i.test(nome_arquivo) || /CONTAS QUE COMPÕEM/i.test(nome_arquivo))) ||
+     (texto_fatura && (/COBRANÇA CENTRALIZADA/i.test(texto_fatura) || /CONTAS QUE COMPÕEM/i.test(texto_fatura))));
+
   let promptInstrucoes = "";
-  if (isCasan) {
+  if (isCasanCentralizada) {
+    promptInstrucoes = `Você é um auditor fiscal especialista em relatórios de cobrança centralizada da CASAN (Companhia Catarinense de Águas e Saneamento). Este documento contém MÚLTIPLAS contas/matrículas diferentes, uma por linha de tabela. Para CADA linha da tabela, extraia: Matrícula, Localização/Logradouro, Usuário (nome do órgão/prédio), Unidades Autorizadas, Leitura Anterior, Leitura Atual, Consumo (m³), Valor Água, Valor Esgoto, Valor Serviço, Valor Bônus, Valor Total. NÃO pule nenhuma linha da tabela, mesmo que haja dezenas de contas na mesma página. Também extraia a Referência (mês/ano) do cabeçalho do relatório.`;
+  } else if (isCasan) {
     promptInstrucoes = `
 Você é um auditor fiscal especialista e parser multimodal para faturas de água e saneamento da CASAN (Companhia Catarinense de Águas e Saneamento - Santa Catarina).
 Sua tarefa é examinar visualmente a IMAGEM da fatura fornecida e extrair os dados estruturados de consumo e faturamento com extrema precisão conceitual.
@@ -1494,7 +1709,35 @@ LAYOUT DE ENTRADA: ${layout || (isCasan ? "CASAN_FATURA" : "CELESC_FATURA")}
         config: {
           maxOutputTokens: 16384,
           responseMimeType: "application/json",
-          responseSchema: {
+          responseSchema: isCasanCentralizada ? {
+            type: Type.OBJECT,
+            properties: {
+              tipo_relatorio: { type: Type.STRING, description: "Sempre 'CASAN_CENTRALIZADA'" },
+              referencia: { type: Type.STRING, description: "Mês/ano no formato YYYY-MM-01" },
+              contas: {
+                type: Type.ARRAY,
+                description: "Uma entrada para CADA linha/matrícula da tabela, sem pular nenhuma",
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    matricula: { type: Type.STRING },
+                    localizacao: { type: Type.STRING },
+                    usuario: { type: Type.STRING },
+                    leitura_anterior: { type: Type.NUMBER },
+                    leitura_atual: { type: Type.NUMBER },
+                    consumo: { type: Type.NUMBER },
+                    valor_agua: { type: Type.NUMBER },
+                    valor_esgoto: { type: Type.NUMBER },
+                    valor_servico: { type: Type.NUMBER },
+                    valor_bonus: { type: Type.NUMBER },
+                    valor_total: { type: Type.NUMBER }
+                  },
+                  required: ["matricula", "consumo", "valor_total"]
+                }
+              }
+            },
+            required: ["tipo_relatorio", "referencia", "contas"]
+          } : {
             type: Type.OBJECT,
             properties: {
   mes_ano: { type: Type.STRING, description: "Data de competência no formato YYYY-MM-DD (ex: 2026-06-01)" },
@@ -1584,6 +1827,11 @@ LAYOUT DE ENTRADA: ${layout || (isCasan ? "CASAN_FATURA" : "CELESC_FATURA")}
     const resultText = response.text || "{}";
     let parsedData = robustJsonParse(resultText);
 
+    if (parsedData && parsedData.tipo_relatorio === "CASAN_CENTRALIZADA") {
+      console.log("[Gemini Multimodal Parser Output - CASAN Centralizada]:", JSON.stringify(parsedData, null, 2));
+      return res.json(parsedData);
+    }
+
     // Apply Post-Extraction Sanity Validation
     parsedData = validateExtractedFaturaSanity(parsedData, isCasan ? 'CASAN' : 'CELESC');
 
@@ -1596,6 +1844,39 @@ LAYOUT DE ENTRADA: ${layout || (isCasan ? "CASAN_FATURA" : "CELESC_FATURA")}
     logTechnicalError("GEMINI_API_PARSER_FALLBACK", `Heuristic fallback used due to error: ${error.message || "Unknown error"}`, "server.ts", "1300");
     
     try {
+      if (isCasanCentralizada) {
+        const contas: any[] = [];
+        const lines = (texto_fatura || "").split("\n");
+        let refDate = "2026-06-01";
+        const refMatch = (texto_fatura || "").match(/(?:REFERÊNCIA|REFERENCIA|COMPETÊNCIA|COMPETENCIA)\s*[:/]*\s*(\d{2})\/(\d{4})/i);
+        if (refMatch) {
+          refDate = `${refMatch[2]}-${refMatch[1]}-01`;
+        }
+        for (const line of lines) {
+          const mMatch = line.match(/^\s*(\d{5,10}[-\s]?\d{1,2})\s+(.+?)\s+(\d+)\s+(\d+)\s+(\d+)\s*(?:m³)?\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)/i);
+          if (mMatch) {
+            contas.push({
+              matricula: mMatch[1].trim(),
+              usuario: mMatch[2].trim(),
+              localizacao: mMatch[2].trim(),
+              leitura_anterior: parseFloat(mMatch[3]) || 0,
+              leitura_atual: parseFloat(mMatch[4]) || 0,
+              consumo: parseFloat(mMatch[5]) || 0,
+              valor_agua: parseFloat(mMatch[6].replace(/\./g, "").replace(",", ".")) || 0,
+              valor_esgoto: parseFloat(mMatch[7].replace(/\./g, "").replace(",", ".")) || 0,
+              valor_servico: parseFloat(mMatch[8].replace(/\./g, "").replace(",", ".")) || 0,
+              valor_bonus: 0,
+              valor_total: parseFloat(mMatch[9].replace(/\./g, "").replace(",", ".")) || 0
+            });
+          }
+        }
+        return res.json({
+          tipo_relatorio: "CASAN_CENTRALIZADA",
+          referencia: refDate,
+          contas: contas
+        });
+      }
+
       let parsedData = heuristicExtractFatura(texto_fatura || "", nome_arquivo || "fatura_upload.txt", layout);
       parsedData = validateExtractedFaturaSanity(parsedData, isCasan ? 'CASAN' : 'CELESC');
       parsedData.baixa_confianca = true;
@@ -1615,6 +1896,8 @@ LAYOUT DE ENTRADA: ${layout || (isCasan ? "CASAN_FATURA" : "CELESC_FATURA")}
 // --- INTEGRATE VITE FOR HOT CLIENT-SIDE SERVING ---
 
 async function startServer() {
+  await initDatabasePersistence();
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },

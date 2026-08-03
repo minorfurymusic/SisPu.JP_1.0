@@ -358,6 +358,36 @@ SUBTOTAL: R$ 380,00
 ------------------------------------------------------------------------
 VALOR TOTAL DO LOTE CASAN:             R$ 2.101,20
 ========================================================================`
+  },
+  CASAN_CENTRALIZADA: {
+    nome: "cobranca_centralizada_casan_062026_8paginas.txt",
+    layout: "CASAN_RELATORIO" as DocumentLayoutType,
+    tamanho: 24500,
+    paginas: 8,
+    conteudo: Array.from({ length: 8 }, (_, pIdx) => {
+      const pageNum = pIdx + 1;
+      const rows = Array.from({ length: 15 }, (_, rIdx) => {
+        const itemNum = pIdx * 15 + rIdx + 1;
+        const mat = `${637564 + itemNum}-${itemNum % 9}`;
+        const loc = `656.801.068.0${1000 + itemNum}.01`;
+        const usr = `UNIDADE MUNICIPAL SISPU SERVIÇOS SETOR ${itemNum}`;
+        const cons = 5 + (itemNum % 20);
+        const valAgua = (cons * 12.5).toFixed(2);
+        const valEsg = (cons * 12.5).toFixed(2);
+        const valTot = (cons * 25.0).toFixed(2);
+        return `${mat} | ${loc} | ${usr} | 100 | ${100 + cons} | ${cons} | R$ ${valAgua} | R$ ${valEsg} | R$ 0.00 | R$ ${valTot}`;
+      }).join('\n');
+      
+      return `========================================================================
+CASAN - CIA CATARINENSE DE AGUAS E SANEAMENTO
+RELATÓRIO DE COBRANÇA CENTRALIZADA - CONTAS QUE COMPÕEM A FATURA
+REFERÊNCIA: 06/2026
+PÁGINA ${pageNum} DE 8
+========================================================================
+MATRÍCULA | LOCALIZAÇÃO | USUÁRIO | LEITURA ANT | LEITURA ATU | CONSUMO (m³) | VALOR ÁGUA | VALOR ESGOTO | VALOR SERVIÇO | VALOR TOTAL
+${rows}
+------------------------------------------------------------------------`;
+    }).join('\n\f\n')
   }
 };
 
@@ -844,13 +874,160 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     addLog(`Iniciando pipeline de processamento multimodal Gemini...`);
 
     const docType = identifyDocumentType(textToProcess || "", nameToProcess);
-    const isReport = docType === "CELESC_RELATORIO" || docType === "CASAN_RELATORIO" || (textToProcess && textToProcess.includes("\f"));
+    const isCasanCentralized = (nameToProcess.toUpperCase().includes("CENTRALIZADA") || 
+      textToProcess.toUpperCase().includes("COBRANÇA CENTRALIZADA") || 
+      textToProcess.toUpperCase().includes("CONTAS QUE COMPÕEM"));
+    let isReport = (docType === "CELESC_RELATORIO" || docType === "CASAN_RELATORIO" || (textToProcess && textToProcess.includes("\f"))) && !isCasanCentralized;
 
     // Set layout/concessionaire state
-    const concessionaire = docType.includes("CELESC") ? "CELESC" : docType.includes("CASAN") ? "CASAN" : "Desconhecida";
+    const concessionaire = docType.includes("CELESC") ? "CELESC" : (docType.includes("CASAN") || isCasanCentralized) ? "CASAN" : "Desconhecida";
     setConcessionaireDetected(concessionaire);
 
-    addLog(`Concessionária inferida: ${concessionaire} | Tipo de arquivo: ${isReport ? 'Relatório/Lote' : 'Fatura Individual'}`);
+    addLog(`Concessionária inferida: ${concessionaire} | Tipo de arquivo: ${isCasanCentralized ? 'CASAN Cobrança Centralizada (Lote Fracionado por Página)' : isReport ? 'Relatório/Lote' : 'Fatura Individual'}`);
+
+    // --- PAGE-BY-PAGE ARCHITECTURE FOR CASAN CENTRALIZADA ---
+    if (isCasanCentralized) {
+      addLog(`[CASAN Centralizada] Executando arquitetura de extração fracionada PÁGINA A PÁGINA...`);
+      
+      const textPages = convertTextToPaginas(textToProcess);
+      const totalPages = Math.max(textPages.length, imagesOverride ? imagesOverride.length : 1, pagesCount || 1);
+      
+      addLog(`Total de páginas identificadas no relatório CASAN Centralizada: ${totalPages} páginas.`);
+      
+      const createdDocs: DocumentoProcessado[] = [];
+      const pageStats: { page: number; count: number; truncated: boolean }[] = [];
+      
+      for (let pIdx = 0; pIdx < totalPages; pIdx++) {
+        const pageNum = pIdx + 1;
+        setQueueProgress({
+          current: pageNum,
+          total: totalPages,
+          phase: `Enviando Página ${pageNum} de ${totalPages} para a API do Gemini...`
+        });
+        
+        addLog(`➡️ [Página ${pageNum}/${totalPages}] Disparando chamada individual ao Gemini...`);
+        
+        const pageText = textPages[pIdx] ? textPages[pIdx].textoLimpo : textToProcess;
+        const pageImage = imagesOverride && imagesOverride[pIdx] ? [imagesOverride[pIdx]] : undefined;
+        
+        try {
+          const apiRes = await fetch("/api/documentos/parse", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              texto_fatura: pageText,
+              imagens_base64: pageImage,
+              layout: "CASAN_FATURA",
+              nome_arquivo: `${nameToProcess} - Pág ${pageNum}`
+            })
+          });
+          
+          if (!apiRes.ok) {
+            throw new Error(`Servidor retornou status HTTP ${apiRes.status} para a Página ${pageNum}`);
+          }
+          
+          const parsed = await apiRes.json();
+          
+          // Check for non-silent truncation / repair alert
+          if (parsed.json_reparado_truncado || parsed.alerta_truncamento) {
+            addLog(`🚨 [ALERTA GRAVE PÁGINA ${pageNum}]: A resposta da IA excedeu o limite de tokens e precisou ser REPARADA por heurística! Registros do final da Página ${pageNum} podem ter sido omitidos. Notifique o operador!`);
+          }
+          
+          let pageContas: any[] = [];
+          if (parsed.tipo_relatorio === "CASAN_CENTRALIZADA" && Array.isArray(parsed.contas)) {
+            pageContas = parsed.contas;
+          } else if (Array.isArray(parsed.contas)) {
+            pageContas = parsed.contas;
+          } else if (parsed.codigo_numero && parsed.valor_total) {
+            pageContas = [{
+              matricula: parsed.codigo_numero,
+              localizacao: parsed.endereco || "N/A",
+              usuario: parsed.unidade_nome || "N/A",
+              consumo: parsed.consumo || 0,
+              valor_total: parsed.valor_total || 0,
+              leitura_anterior: parsed.leitura_anterior || 0,
+              leitura_atual: parsed.leitura_atual || 0
+            }];
+          }
+          
+          const isTrunc = !!(parsed.json_reparado_truncado || parsed.alerta_truncamento);
+          pageStats.push({
+            page: pageNum,
+            count: pageContas.length,
+            truncated: isTrunc
+          });
+          
+          addLog(`✅ [Página ${pageNum}/${totalPages}]: ${pageContas.length} conta(s) extraída(s) individualmente.${isTrunc ? " ⚠️ (Aviso: JSON desta página foi reparado)" : ""}`);
+          
+          pageContas.forEach((conta: any, cIdx: number) => {
+            const logsVal: string[] = [];
+            if (isTrunc) {
+              logsVal.push("⚠️ ALERTA DE IMPORTAÇÃO: Resposta do Gemini para esta página sofreu truncamento de tokens e foi reparada. Dados do final da página podem estar omissos.");
+            }
+            
+            createdDocs.push({
+              id: `DOC-CASAN-CENTRAL-P${pageNum}-${Date.now()}-${cIdx + 1}`,
+              nome_arquivo: `${nameToProcess} (Pág ${pageNum} | Matrícula: ${conta.matricula || 'N/A'})`,
+              layout: "CASAN_FATURA" as DocumentLayoutType,
+              tamanho: pageText.length,
+              status: logsVal.length > 0 ? 'NORMALIZADO' : 'VALIDADO',
+              origem_conteudo: pageText,
+              dados_extraidos: {
+                mes_ano: parsed.referencia || "2026-06-01",
+                consumo: conta.consumo || 0,
+                valor_total: conta.valor_total || 0,
+                valor_imposto: 0,
+                valor_celular: 0,
+                valor_internet: 0,
+                valor_diversos: conta.valor_servico || 0,
+                valor_linha_privada: 0,
+                valor_credito: conta.valor_bonus || 0,
+                codigo_numero: conta.matricula || "DESCONHECIDO",
+                medidor: "N/A",
+                unidade_nome: conta.usuario || conta.localizacao || "N/A",
+                endereco: conta.localizacao || "N/A",
+                leitura_anterior: conta.leitura_anterior || 0,
+                leitura_atual: conta.leitura_atual || 0,
+                itens_fatura: []
+              },
+              logs_validacao: logsVal,
+              historico_alteracoes: [],
+              criado_em: new Date().toISOString(),
+              atualizado_em: new Date().toISOString(),
+              numero_pagina: pageNum,
+              posicao_na_pagina: cIdx + 1,
+              total_na_pagina: pageContas.length,
+              posicao_no_lote: createdDocs.length + 1,
+              total_no_lote: totalPages,
+              score: 100
+            });
+          });
+          
+        } catch (errPage: any) {
+          addLog(`❌ [Página ${pageNum}/${totalPages}] Erro na extração: ${errPage.message}`);
+          pageStats.push({ page: pageNum, count: 0, truncated: false });
+        }
+      }
+      
+      const totalExtracted = createdDocs.length;
+      
+      addLog(`=======================================================`);
+      addLog(`📊 DEMONSTRATIVO DE EXTRAÇÃO FRACIONADA PÁGINA A PÁGINA:`);
+      pageStats.forEach(st => {
+        addLog(`   • Página ${st.page}: ${st.count} contas extraídas ${st.truncated ? "⚠️ (JSON Reparado)" : "✅"}`);
+      });
+      addLog(`🎯 TOTAL SOMADO DAS ${totalPages} PÁGINAS: ${totalExtracted} CONTAS.`);
+      addLog(`=======================================================`);
+      
+      setSessionDocs(createdDocs);
+      setQueueProgress({ current: totalPages, total: totalPages, phase: "Concluído!" });
+      setMessage({
+        type: 'success',
+        text: `Extração PÁGINA A PÁGINA concluída com sucesso: ${totalExtracted} contas extraídas em ${totalPages} páginas.`
+      });
+      setProcessingQueue(false);
+      return;
+    }
 
     if (!isReport) {
       addLog(`Processando fatura individual via Gemini Multimodal...`);
@@ -881,6 +1058,54 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
           if (!parsed) {
             throw new Error("Não foi possível extrair os dados da fatura.");
+          }
+
+          if (parsed.tipo_relatorio === "CASAN_CENTRALIZADA" && Array.isArray(parsed.contas) && parsed.contas.length > 0) {
+            addLog(`Relatório CASAN Centralizada detectado: ${parsed.contas.length} contas extraídas da tabela.`);
+            const createdDocs: DocumentoProcessado[] = parsed.contas.map((conta: any, cIdx: number) => {
+              return {
+                id: `DOC-CASAN-CENTRAL-${Date.now()}-${cIdx + 1}`,
+                nome_arquivo: `${nameToProcess} (Matrícula: ${conta.matricula || 'N/A'})`,
+                layout: "CASAN_FATURA" as DocumentLayoutType,
+                tamanho: textToProcess.length,
+                status: 'VALIDADO',
+                origem_conteudo: textToProcess,
+                dados_extraidos: {
+                  mes_ano: parsed.referencia || "2026-06-01",
+                  consumo: conta.consumo || 0,
+                  valor_total: conta.valor_total || 0,
+                  valor_imposto: 0,
+                  valor_celular: 0,
+                  valor_internet: 0,
+                  valor_diversos: conta.valor_servico || 0,
+                  valor_linha_privada: 0,
+                  valor_credito: conta.valor_bonus || 0,
+                  codigo_numero: conta.matricula || "DESCONHECIDO",
+                  medidor: "N/A",
+                  unidade_nome: conta.usuario || conta.localizacao || "N/A",
+                  endereco: conta.localizacao || "N/A",
+                  leitura_anterior: conta.leitura_anterior || 0,
+                  leitura_atual: conta.leitura_atual || 0,
+                  itens_fatura: []
+                },
+                logs_validacao: [],
+                historico_alteracoes: [],
+                criado_em: new Date().toISOString(),
+                atualizado_em: new Date().toISOString(),
+                numero_pagina: 1,
+                posicao_na_pagina: cIdx + 1,
+                total_na_pagina: parsed.contas.length,
+                posicao_no_lote: cIdx + 1,
+                total_no_lote: parsed.contas.length,
+                score: 100
+              };
+            });
+
+            setSessionDocs(createdDocs);
+            setQueueProgress({ current: createdDocs.length, total: createdDocs.length, phase: "Concluído!" });
+            setMessage({ type: 'success', text: `Relatório CASAN Centralizada processado com sucesso: ${createdDocs.length} contas extraídas!` });
+            addLog(`Gerados ${createdDocs.length} lançamentos individuais da CASAN.`);
+            return;
           }
 
           const logs: string[] = [];
@@ -995,47 +1220,91 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
         const idx = currentIndex + k;
         const seg = segmentedFaturas[idx];
 
-        const logs: string[] = [];
-        if (!seg.dados_extraidos.valor_total || seg.dados_extraidos.valor_total <= 0) {
-          logs.push("❌ Valor total é nulo ou inconsistente.");
-        }
-        if (!seg.dados_extraidos.consumo || seg.dados_extraidos.consumo <= 0) {
-          logs.push("⚠️ Consumo de medição zerado ou ausente.");
-        }
+        if (seg.dados_extraidos && (seg.dados_extraidos as any).tipo_relatorio === "CASAN_CENTRALIZADA" && Array.isArray((seg.dados_extraidos as any).contas)) {
+          const contas = (seg.dados_extraidos as any).contas;
+          const refDate = (seg.dados_extraidos as any).referencia || "2026-06-01";
+          contas.forEach((conta: any, cIdx: number) => {
+            const cDoc: DocumentoProcessado = {
+              id: `DOC-LOTE-CASAN-${Date.now()}-${idx + 1}-${cIdx + 1}`,
+              nome_arquivo: `${seg.nome_arquivo} (Matrícula: ${conta.matricula || cIdx + 1})`,
+              layout: "CASAN_FATURA",
+              tamanho: seg.tamanho,
+              status: 'VALIDADO',
+              origem_conteudo: seg.origem_conteudo,
+              dados_extraidos: {
+                mes_ano: refDate,
+                consumo: conta.consumo || 0,
+                valor_total: conta.valor_total || 0,
+                valor_imposto: 0,
+                valor_celular: 0,
+                valor_internet: 0,
+                valor_diversos: conta.valor_servico || 0,
+                valor_linha_privada: 0,
+                valor_credito: conta.valor_bonus || 0,
+                codigo_numero: conta.matricula || "DESCONHECIDO",
+                medidor: "N/A",
+                unidade_nome: conta.usuario || conta.localizacao || "N/A",
+                endereco: conta.localizacao || "N/A",
+                leitura_anterior: conta.leitura_anterior || 0,
+                leitura_atual: conta.leitura_atual || 0,
+                itens_fatura: []
+              },
+              logs_validacao: [],
+              historico_alteracoes: [],
+              criado_em: new Date().toISOString(),
+              atualizado_em: new Date().toISOString(),
+              numero_pagina: seg.numero_pagina || 1,
+              posicao_na_pagina: cIdx + 1,
+              total_na_pagina: contas.length,
+              posicao_no_lote: docObjects.length + 1,
+              total_no_lote: totalSegments,
+              score: seg.score || 100
+            };
+            docObjects.push(cDoc);
+          });
+        } else {
+          const logs: string[] = [];
+          if (!seg.dados_extraidos.valor_total || seg.dados_extraidos.valor_total <= 0) {
+            logs.push("❌ Valor total é nulo ou inconsistente.");
+          }
+          if (!seg.dados_extraidos.consumo || seg.dados_extraidos.consumo <= 0) {
+            logs.push("⚠️ Consumo de medição zerado ou ausente.");
+          }
 
-        const newDoc: DocumentoProcessado = {
-          id: `DOC-LOTE-${Date.now()}-${idx + 1}`,
-          nome_arquivo: seg.nome_arquivo,
-          layout: seg.layout,
-          tamanho: seg.tamanho,
-          status: logs.some(l => l.includes('❌')) ? 'NORMALIZADO' : 'VALIDADO',
-          origem_conteudo: seg.origem_conteudo,
-          dados_extraidos: {
-            ...seg.dados_extraidos,
-            valor_celular: 0,
-            valor_internet: 0,
-            valor_diversos: seg.dados_extraidos.valor_diversos || 0,
-            valor_linha_privada: 0,
-            valor_credito: seg.dados_extraidos.valor_credito || 0,
-            itens_fatura: seg.dados_extraidos.itens_fatura || (seg.dados_extraidos as any).itens || []
-          },
-          logs_validacao: logs,
-          historico_alteracoes: [],
-          criado_em: new Date().toISOString(),
-          atualizado_em: new Date().toISOString(),
-          numero_pagina: seg.numero_pagina || 1,
-          posicao_na_pagina: seg.posicao_na_pagina || 1,
-          total_na_pagina: seg.total_na_pagina || 1,
-          posicao_no_lote: seg.posicao_no_lote || (idx + 1),
-          total_no_lote: seg.total_no_lote || totalSegments,
-          score: seg.score || 100
-        };
+          const newDoc: DocumentoProcessado = {
+            id: `DOC-LOTE-${Date.now()}-${idx + 1}`,
+            nome_arquivo: seg.nome_arquivo,
+            layout: seg.layout,
+            tamanho: seg.tamanho,
+            status: logs.some(l => l.includes('❌')) ? 'NORMALIZADO' : 'VALIDADO',
+            origem_conteudo: seg.origem_conteudo,
+            dados_extraidos: {
+              ...seg.dados_extraidos,
+              valor_celular: 0,
+              valor_internet: 0,
+              valor_diversos: seg.dados_extraidos.valor_diversos || 0,
+              valor_linha_privada: 0,
+              valor_credito: seg.dados_extraidos.valor_credito || 0,
+              itens_fatura: seg.dados_extraidos.itens_fatura || (seg.dados_extraidos as any).itens || []
+            },
+            logs_validacao: logs,
+            historico_alteracoes: [],
+            criado_em: new Date().toISOString(),
+            atualizado_em: new Date().toISOString(),
+            numero_pagina: seg.numero_pagina || 1,
+            posicao_na_pagina: seg.posicao_na_pagina || 1,
+            total_na_pagina: seg.total_na_pagina || 1,
+            posicao_no_lote: seg.posicao_no_lote || (idx + 1),
+            total_no_lote: seg.total_no_lote || totalSegments,
+            score: seg.score || 100
+          };
 
-        if (seg.scoreLogs && seg.scoreLogs.length > 0) {
-          addLog(`[Fatura ${idx + 1}] Classificação Score: ${seg.score}/100. Detalhes: ${seg.scoreLogs[seg.scoreLogs.length - 1]}`);
+          if (seg.scoreLogs && seg.scoreLogs.length > 0) {
+            addLog(`[Fatura ${idx + 1}] Classificação Score: ${seg.score}/100. Detalhes: ${seg.scoreLogs[seg.scoreLogs.length - 1]}`);
+          }
+
+          docObjects.push(newDoc);
         }
-
-        docObjects.push(newDoc);
       }
 
       currentIndex += chunkSize;
@@ -1844,6 +2113,10 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                     <button onClick={() => loadSample("CASAN_RELATORIO")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-white/5 hover:border-white/20 transition flex items-center justify-between text-[11px]">
                       <span className="font-semibold text-gray-300">Compilado Coletivo CASAN</span>
                       <span className="text-[9px] font-mono bg-amber-500/10 text-amber-400 px-1.5 py-0.5 rounded font-bold">LOTE (3x)</span>
+                    </button>
+                    <button onClick={() => loadSample("CASAN_CENTRALIZADA")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-emerald-500/20 hover:border-emerald-500/40 transition flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-emerald-300">CASAN Cobrança Centralizada</span>
+                      <span className="text-[9px] font-mono bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded font-bold">8 PÁG (120 Contas)</span>
                     </button>
                   </>
                 )}
