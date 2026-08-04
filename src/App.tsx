@@ -148,16 +148,6 @@ export default function App() {
                 <Key className="w-3.5 h-3.5 text-amber-400" />
               )}
             </button>
-
-            {/* GitHub Sync Button */}
-            <button
-              onClick={() => setIsGitModalOpen(true)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-mono font-medium transition border bg-purple-500/10 text-purple-400 border-purple-500/30 hover:bg-purple-500/20"
-            >
-              <GitBranch className="w-3.5 h-3.5 text-purple-400" />
-              <span>Sincronizar GitHub</span>
-              <Upload className="w-3.5 h-3.5 text-purple-400" />
-            </button>
           </div>
         </div>
       </header>

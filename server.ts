@@ -565,30 +565,30 @@ app.delete("/api/secretarias/:id", (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
-  const index = db.secretarias.findIndex(s => s.id === id);
+  const index = db.secretarias.findIndex(s => String(s.id) === String(id));
   if (index === -1) {
     return res.status(404).json({ error: "Secretaria não encontrada." });
   }
 
   // Relational integrity check: check if any unidades, itens, lancamentos or documentos belong to this secretaria
-  const unidadesDaSec = db.unidades.filter(u => u.secretaria_id === id);
-  const unidadeIds = unidadesDaSec.map(u => u.id);
+  const unidadesDaSec = db.unidades.filter(u => String(u.secretaria_id) === String(id));
+  const unidadeIds = unidadesDaSec.map(u => String(u.id));
 
   const itensDaSec = db.itens_despesas.filter(it => 
-    unidadeIds.includes(it.unidade_id) || (it as any).secretaria_id === id
+    unidadeIds.includes(String(it.unidade_id)) || String((it as any).secretaria_id) === String(id)
   );
-  const itemIds = itensDaSec.map(it => it.id);
+  const itemIds = itensDaSec.map(it => String(it.id));
   const itemCodnums = itensDaSec.map(it => it.codigo_numero).filter(Boolean);
 
   const hasLancamentos = db.lancamentos.some(l => 
-    itemIds.includes(l.item_despesa_id) || 
-    (l as any).secretaria_id === id || 
-    ((l as any).unidade_id && unidadeIds.includes((l as any).unidade_id))
+    itemIds.includes(String(l.item_despesa_id)) || 
+    String((l as any).secretaria_id) === String(id) || 
+    ((l as any).unidade_id && unidadeIds.includes(String((l as any).unidade_id)))
   );
 
   const hasDocumentos = db.documentos_processados.some(d => {
     const ext = (d.dados_extraidos || {}) as any;
-    if (ext.secretaria_id === id) return true;
+    if (String(ext.secretaria_id) === String(id)) return true;
     if (ext.codigo_numero && itemCodnums.includes(ext.codigo_numero)) return true;
     return false;
   });
@@ -715,13 +715,13 @@ app.delete("/api/unidades/:id", (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
-  const index = db.unidades.findIndex(u => u.id === id);
+  const index = db.unidades.findIndex(u => String(u.id) === String(id));
   if (index === -1) {
     return res.status(404).json({ error: "Unidade não encontrada." });
   }
 
   // Check reference in itens_despesas
-  const hasItens = db.itens_despesas.some(it => it.unidade_id === id);
+  const hasItens = db.itens_despesas.some(it => String(it.unidade_id) === String(id));
   if (hasItens) {
     return res.status(400).json({ error: "Não é possível excluir esta unidade pois ela possui itens de despesa vinculados." });
   }
@@ -820,12 +820,12 @@ app.delete("/api/despesas/:id", (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
-  const index = db.despesas.findIndex(d => d.id === id);
+  const index = db.despesas.findIndex(d => String(d.id) === String(id));
   if (index === -1) {
     return res.status(404).json({ error: "Despesa não encontrada." });
   }
 
-  const hasItens = db.itens_despesas.some(it => it.despesa_id === id);
+  const hasItens = db.itens_despesas.some(it => String(it.despesa_id) === String(id));
   if (hasItens) {
     return res.status(400).json({ error: "Não é possível excluir esta despesa pois ela possui itens vinculados." });
   }
@@ -945,12 +945,12 @@ app.delete("/api/itens_despesas/:id", (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
-  const index = db.itens_despesas.findIndex(it => it.id === id);
+  const index = db.itens_despesas.findIndex(it => String(it.id) === String(id));
   if (index === -1) {
     return res.status(404).json({ error: "Item de despesa não encontrado." });
   }
 
-  const hasLancamentos = db.lancamentos.some(l => l.item_despesa_id === id);
+  const hasLancamentos = db.lancamentos.some(l => String(l.item_despesa_id) === String(id));
   if (hasLancamentos) {
     return res.status(400).json({ error: "Não é possível excluir este item pois ele possui lançamentos registrados." });
   }
@@ -1171,7 +1171,7 @@ app.delete("/api/lancamentos/:id", (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
-  const index = db.lancamentos.findIndex(l => l.id === id);
+  const index = db.lancamentos.findIndex(l => String(l.id) === String(id));
   if (index === -1) {
     return res.status(404).json({ error: "Lançamento não encontrado." });
   }
@@ -1539,12 +1539,30 @@ app.delete("/api/documentos/:id", (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
-  const index = db.documentos_processados.findIndex(d => d.id === id);
+  const index = db.documentos_processados.findIndex(d => String(d.id) === String(id));
   if (index === -1) {
     return res.status(404).json({ error: "Documento não encontrado." });
   }
 
   const oldVal = { ...db.documentos_processados[index] };
+
+  // If this document had generated a lancamento, clean up the matching lancamento as well
+  const extr = oldVal.dados_extraidos;
+  if (extr && extr.codigo_numero) {
+    const item = db.itens_despesas.find(it => it.codigo_numero === extr.codigo_numero);
+    if (item) {
+      const mesAnoDate = extr.mes_ano || "";
+      if (mesAnoDate) {
+        const lIndex = db.lancamentos.findIndex(l => String(l.item_despesa_id) === String(item.id) && l.mes_ano.substring(0, 7) === mesAnoDate.substring(0, 7));
+        if (lIndex !== -1) {
+          const oldLanc = { ...db.lancamentos[lIndex] };
+          db.lancamentos.splice(lIndex, 1);
+          logAudit("lancamentos", oldLanc.id, "DELETE", usuario, oldLanc, null);
+        }
+      }
+    }
+  }
+
   db.documentos_processados.splice(index, 1);
   saveDB(db);
 

@@ -8,6 +8,7 @@ import {
 import { Secretaria, Unidade, Despesa, ItemDespesa, Lancamento, AuditoriaRegistro } from "../types";
 import DocumentManager from "./DocumentManager";
 import SmartTable, { SmartTableColumn } from "./SmartTable";
+import AuditoriaDashboard from "./AuditoriaDashboard";
 
 interface WebPortalProps {
   onRefreshTrigger?: number;
@@ -26,7 +27,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
   // Layout & Sections
   const [activeSection, setActiveSection] = useState<
-    "dashboard" | "secretarias" | "unidades" | "despesas" | "itens" | "lancamentos" | "documentos" | "auditoria" | "pendencias" | "configuracoes"
+    "dashboard" | "secretarias" | "unidades" | "despesas" | "itens" | "lancamentos" | "documentos" | "auditoria" | "log" | "pendencias" | "configuracoes"
   >("dashboard");
 
   // TODO: REMOVER ESTE BOTÃO ANTES DE IR PARA USO REAL DEFINITIVO
@@ -76,6 +77,15 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   // Status/Notifications
   const [globalError, setGlobalError] = useState("");
   const [globalSuccess, setGlobalSuccess] = useState("");
+
+  // Confirmation Modal State
+  const [deleteModal, setDeleteModal] = useState<{
+    isOpen: boolean;
+    type: 'secretaria' | 'unidade' | 'despesa' | 'item' | 'lancamento';
+    id: string;
+    title: string;
+    description: string;
+  } | null>(null);
 
   useEffect(() => {
     loadAllData();
@@ -168,26 +178,16 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     showSuccess(`Editando secretaria: ${s.nome}`);
   };
 
-  const handleDeleteSecretaria = async (id: string) => {
-    const s = secretarias.find(x => x.id === id);
+  const handleDeleteSecretaria = (id: string) => {
+    const s = secretarias.find(x => String(x.id) === String(id));
     if (!s) return;
-    if (!confirm(`Deseja realmente excluir a secretaria "${s.nome}"?`)) return;
-
-    try {
-      const res = await fetch(`/api/secretarias/${id}`, {
-        method: "DELETE",
-        headers: { "x-user": "gestor_web" }
-      });
-      if (res.ok) {
-        showSuccess("Secretaria excluída com sucesso.");
-        notifyChange();
-      } else {
-        const err = await res.json();
-        showError(err.error || "Erro ao excluir.");
-      }
-    } catch (err: any) {
-      showError(err.message);
-    }
+    setDeleteModal({
+      isOpen: true,
+      type: 'secretaria',
+      id: String(id),
+      title: 'Excluir Secretaria',
+      description: `Tem certeza que deseja excluir a secretaria "${s.nome}"?`
+    });
   };
 
   // Unidades
@@ -239,26 +239,16 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     showSuccess(`Editando Unidade: ${u.nome}`);
   };
 
-  const handleDeleteUnidade = async (id: string) => {
-    const u = unidades.find(x => x.id === id);
+  const handleDeleteUnidade = (id: string) => {
+    const u = unidades.find(x => String(x.id) === String(id));
     if (!u) return;
-    if (!confirm(`Deseja realmente excluir a unidade "${u.nome}"?`)) return;
-
-    try {
-      const res = await fetch(`/api/unidades/${id}`, {
-        method: "DELETE",
-        headers: { "x-user": "gestor_web" }
-      });
-      if (res.ok) {
-        showSuccess("Unidade excluída com sucesso.");
-        notifyChange();
-      } else {
-        const err = await res.json();
-        showError(err.error || "Erro ao excluir.");
-      }
-    } catch (err: any) {
-      showError(err.message);
-    }
+    setDeleteModal({
+      isOpen: true,
+      type: 'unidade',
+      id: String(id),
+      title: 'Excluir Unidade Gestora',
+      description: `Tem certeza que deseja excluir a unidade "${u.nome}"?`
+    });
   };
 
   // Despesas
@@ -304,26 +294,16 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     showSuccess(`Editando Despesa: ${d.descricao}`);
   };
 
-  const handleDeleteDespesa = async (id: string) => {
-    const d = despesas.find(x => x.id === id);
+  const handleDeleteDespesa = (id: string) => {
+    const d = despesas.find(x => String(x.id) === String(id));
     if (!d) return;
-    if (!confirm(`Deseja realmente excluir a despesa "${d.descricao}"?`)) return;
-
-    try {
-      const res = await fetch(`/api/despesas/${id}`, {
-        method: "DELETE",
-        headers: { "x-user": "gestor_web" }
-      });
-      if (res.ok) {
-        showSuccess("Despesa excluída com sucesso.");
-        notifyChange();
-      } else {
-        const err = await res.json();
-        showError(err.error || "Erro ao excluir.");
-      }
-    } catch (err: any) {
-      showError(err.message);
-    }
+    setDeleteModal({
+      isOpen: true,
+      type: 'despesa',
+      id: String(id),
+      title: 'Excluir Despesa',
+      description: `Tem certeza que deseja excluir a despesa "${d.descricao}"?`
+    });
   };
 
   // Itens de Despesa / CODNUM Contracts
@@ -376,26 +356,16 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     showSuccess(`Editando contrato CODNUM: ${it.codigo_numero}`);
   };
 
-  const handleDeleteItem = async (id: string) => {
-    const it = itens.find(x => x.id === id);
+  const handleDeleteItem = (id: string) => {
+    const it = itens.find(x => String(x.id) === String(id));
     if (!it) return;
-    if (!confirm(`Deseja realmente excluir o contrato "${it.codigo_numero}"?`)) return;
-
-    try {
-      const res = await fetch(`/api/itens_despesas/${id}`, {
-        method: "DELETE",
-        headers: { "x-user": "gestor_web" }
-      });
-      if (res.ok) {
-        showSuccess("Contrato excluído com sucesso.");
-        notifyChange();
-      } else {
-        const err = await res.json();
-        showError(err.error || "Erro ao excluir.");
-      }
-    } catch (err: any) {
-      showError(err.message);
-    }
+    setDeleteModal({
+      isOpen: true,
+      type: 'item',
+      id: String(id),
+      title: 'Excluir Contrato / CODNUM',
+      description: `Tem certeza que deseja excluir o contrato CODNUM "${it.codigo_numero}"?`
+    });
   };
 
   // Lançamentos Mensais
@@ -449,35 +419,76 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     showSuccess(`Editando lançamento ID: ${l.id}`);
   };
 
-  const handleDeleteLancamento = async (id: string) => {
-    if (!confirm(`Deseja realmente excluir este lançamento ID: ${id}?`)) return;
+  const handleDeleteLancamento = (id: string) => {
+    const l = lancamentos.find(x => String(x.id) === String(id));
+    const desc = l ? `o lançamento do CODNUM "${l.codigo_numero}" (${l.mes_ano ? l.mes_ano.substring(0, 7) : ''})` : `este lançamento ID: ${id}`;
+    setDeleteModal({
+      isOpen: true,
+      type: 'lancamento',
+      id: String(id),
+      title: 'Excluir Lançamento',
+      description: `Tem certeza que deseja excluir ${desc}?`
+    });
+  };
+
+  const executeDelete = async () => {
+    if (!deleteModal) return;
+    const { type, id } = deleteModal;
+    setDeleteModal(null);
 
     try {
-      const res = await fetch(`/api/lancamentos/${id}`, {
+      let url = "";
+      if (type === 'secretaria') url = `/api/secretarias/${id}`;
+      else if (type === 'unidade') url = `/api/unidades/${id}`;
+      else if (type === 'despesa') url = `/api/despesas/${id}`;
+      else if (type === 'item') url = `/api/itens_despesas/${id}`;
+      else if (type === 'lancamento') url = `/api/lancamentos/${id}`;
+
+      const res = await fetch(url, {
         method: "DELETE",
         headers: { "x-user": "gestor_web" }
       });
+
       if (res.ok) {
-        showSuccess("Lançamento excluído.");
+        showSuccess("Registro excluído com sucesso.");
+        if (type === 'lancamento') {
+          setLancamentos(prev => prev.filter(l => String(l.id) !== String(id)));
+        }
         notifyChange();
       } else {
         const err = await res.json();
-        showError(err.error || "Erro ao excluir.");
+        showError(err.error || "Erro ao excluir o registro.");
       }
     } catch (err: any) {
-      showError(err.message);
+      showError(err.message || "Erro de comunicação ao excluir.");
     }
   };
 
   // Stats Calculations
   const totalSpend = lancamentos.reduce((acc, l) => acc + (l.valor_total || 0), 0);
-  
+
+  const isCelesc = (l: any) => {
+    if (l.codigo_numero && l.codigo_numero.toLowerCase().includes('celesc')) return true;
+    const item = itens.find(it => String(it.id) === String(l.item_despesa_id));
+    if (item && item.despesa_descricao && item.despesa_descricao.toLowerCase().includes('celesc')) return true;
+    if (item && item.codigo_numero && item.codigo_numero.toLowerCase().includes('celesc')) return true;
+    return false;
+  };
+
+  const isCasan = (l: any) => {
+    if (l.codigo_numero && l.codigo_numero.toLowerCase().includes('casan')) return true;
+    const item = itens.find(it => String(it.id) === String(l.item_despesa_id));
+    if (item && item.despesa_descricao && item.despesa_descricao.toLowerCase().includes('casan')) return true;
+    if (item && item.codigo_numero && item.codigo_numero.toLowerCase().includes('casan')) return true;
+    return false;
+  };
+
   const totalEnergyCons = lancamentos
-    .filter(l => l.codigo_numero && l.codigo_numero.toLowerCase().includes('celesc'))
+    .filter(l => isCelesc(l))
     .reduce((acc, l) => acc + (l.consumo || 0), 0);
 
   const totalWaterCons = lancamentos
-    .filter(l => l.codigo_numero && l.codigo_numero.toLowerCase().includes('casan'))
+    .filter(l => isCasan(l))
     .reduce((acc, l) => acc + (l.consumo || 0), 0);
 
   const monthNames = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
@@ -486,13 +497,14 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     const months = ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"];
     return months.map((m, idx) => {
       const matches = lancamentos.filter(l => {
+        if (!l.mes_ano) return false;
         const itemDate = new Date(l.mes_ano);
-        const refStr = `${itemDate.getFullYear()}-${String(itemDate.getMonth() + 1).padStart(2, '0')}`;
+        const refStr = l.mes_ano.length >= 7 ? l.mes_ano.substring(0, 7) : `${itemDate.getFullYear()}-${String(itemDate.getMonth() + 1).padStart(2, '0')}`;
         return refStr === m;
       });
 
-      const filterKw = matches.filter(l => l.codigo_numero && l.codigo_numero.toLowerCase().includes('celesc'));
-      const filterM3 = matches.filter(l => l.codigo_numero && l.codigo_numero.toLowerCase().includes('casan'));
+      const filterKw = matches.filter(l => isCelesc(l));
+      const filterM3 = matches.filter(l => isCasan(l));
 
       const kwVal = filterKw.reduce((acc, l) => acc + (l.consumo || 0), 0);
       const m3Val = filterM3.reduce((acc, l) => acc + (l.consumo || 0), 0);
@@ -501,10 +513,10 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
       return {
         label: monthNames[idx],
-        kw: kwVal || (1000 + idx * 150),
-        m3: m3Val || (30 + idx * 8),
-        kwCost: kwCost || (800 + idx * 120),
-        m3Cost: m3Cost || (400 + idx * 60)
+        kw: kwVal,
+        m3: m3Val,
+        kwCost: kwCost,
+        m3Cost: m3Cost
       };
     });
   };
@@ -676,9 +688,23 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
             <button
               onClick={() => setActiveSection('auditoria')}
-              className={`px-3 py-1.5 rounded-md transition ${activeSection === 'auditoria' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+              className={`px-3 py-1.5 rounded-md transition font-bold flex items-center gap-1.5 ${
+                activeSection === 'auditoria' 
+                  ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-500/20 ring-1 ring-indigo-400/50' 
+                  : 'bg-indigo-950/40 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-900/40 hover:text-white'
+              }`}
             >
-              Controle de Auditoria
+              <ShieldAlert className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Auditoria</span>
+            </button>
+
+            <button
+              onClick={() => setActiveSection('log')}
+              className={`px-3 py-1.5 rounded-md transition ${
+                activeSection === 'log' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              Log
             </button>
 
             <button
@@ -815,30 +841,35 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     <div className="absolute left-0 right-0 top-2/4 border-t border-slate-100 border-dashed pointer-events-none"></div>
                     <div className="absolute left-0 right-0 top-3/4 border-t border-slate-100 border-dashed pointer-events-none"></div>
 
-                    {chartData.map((d, i) => {
-                      const maxVal = chartMode === 'energia' ? 2500 : 100;
-                      const val = chartMode === 'energia' ? d.kw : d.m3;
-                      const percent = Math.min(100, Math.max(10, (val / maxVal) * 100));
-                      const isEnergy = chartMode === 'energia';
+                    {(() => {
+                      const maxValInSeries = Math.max(...chartData.map(d => chartMode === 'energia' ? d.kw : d.m3), 0);
+                      const maxVal = maxValInSeries > 0 ? maxValInSeries * 1.15 : 100;
 
-                      return (
-                        <div key={i} className="flex flex-col items-center flex-1 group relative h-full justify-end">
-                          <div className="absolute bottom-full mb-2 bg-slate-900 text-white text-[10px] py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition duration-200 pointer-events-none shadow-lg z-20 whitespace-nowrap">
-                            <span className="font-bold">{val} {isEnergy ? 'kWh' : 'm³'}</span>
-                            <span className="block text-[8px] text-slate-400">R$ {Number((isEnergy ? d.kwCost : d.m3Cost) || 0).toFixed(2)}</span>
+                      return chartData.map((d, i) => {
+                        const val = chartMode === 'energia' ? d.kw : d.m3;
+                        const percent = maxValInSeries > 0 ? Math.min(100, (val / maxVal) * 100) : 0;
+                        const isEnergy = chartMode === 'energia';
+
+                        return (
+                          <div key={i} className="flex flex-col items-center flex-1 group relative h-full justify-end">
+                            <div className="absolute bottom-full mb-2 bg-slate-900 text-white text-[10px] py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition duration-200 pointer-events-none shadow-lg z-20 whitespace-nowrap">
+                              <span className="font-bold">{val} {isEnergy ? 'kWh' : 'm³'}</span>
+                              <span className="block text-[8px] text-slate-400">R$ {Number((isEnergy ? d.kwCost : d.m3Cost) || 0).toFixed(2)}</span>
+                            </div>
+                            
+                            <div 
+                              style={{ height: `${percent}%` }}
+                              className={`w-10 sm:w-14 rounded-t-md transition-all duration-500 cursor-pointer ${
+                                percent === 0 ? 'bg-slate-200/50 border-t-2 border-slate-300/40 min-h-[4px]' :
+                                isEnergy 
+                                  ? 'bg-gradient-to-t from-amber-400 to-amber-300 hover:from-amber-500 hover:to-amber-400' 
+                                  : 'bg-gradient-to-t from-blue-500 to-blue-400 hover:from-blue-600 hover:to-blue-500'
+                              }`}
+                            />
                           </div>
-                          
-                          <div 
-                            style={{ height: `${percent}%` }}
-                            className={`w-10 sm:w-14 rounded-t-md transition-all duration-500 cursor-pointer ${
-                              isEnergy 
-                                ? 'bg-gradient-to-t from-amber-400 to-amber-300 hover:from-amber-500 hover:to-amber-400' 
-                                : 'bg-gradient-to-t from-blue-500 to-blue-400 hover:from-blue-600 hover:to-blue-500'
-                            }`}
-                          />
-                        </div>
-                      );
-                    })}
+                        );
+                      });
+                    })()}
                   </div>
                   
                   <div className="flex justify-between px-4 text-xs font-bold text-slate-500">
@@ -951,7 +982,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                 data={secretarias}
                 searchPlaceholder="Filtrar por nome ou código..."
                 columns={[
-                  { key: "id", label: "ID", isPinned: true, searchable: true },
+                  { key: "id", label: "ID", searchable: true },
                   { key: "codigo_legado", label: "Cód. Legado", searchable: true },
                   { key: "nome", label: "Nome da Secretaria", searchable: true },
                   { 
@@ -1084,7 +1115,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                 isRowExpanded={(item) => expandedUnitId === item.id}
                 expandedRowRender={(item) => <ExpandedUnitDetails unit={item} />}
                 columns={[
-                  { key: "id", label: "ID", isPinned: true, searchable: true },
+                  { key: "id", label: "ID", searchable: true },
                   { 
                     key: "codigo_legado", 
                     label: "Unidade Consumidora / UC", 
@@ -1187,7 +1218,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                 data={despesas}
                 searchPlaceholder="Buscar por concessionária..."
                 columns={[
-                  { key: "id", label: "ID", isPinned: true, searchable: true },
+                  { key: "id", label: "ID", searchable: true },
                   { key: "codigo_legado", label: "Cód. Legado", searchable: true },
                   { key: "descricao", label: "Descrição", searchable: true },
                   {
@@ -1306,7 +1337,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                 data={itens}
                 searchPlaceholder="Pesquisar por CODNUM, medidor, unidade..."
                 columns={[
-                  { key: "id", label: "ID", isPinned: true, searchable: true },
+                  { key: "id", label: "ID", searchable: true },
                   { key: "codigo_numero", label: "CODNUM", searchable: true },
                   { key: "despesa_descricao", label: "Tipo de Conta", searchable: true },
                   { key: "unidade_nome", label: "Unidade", searchable: true },
@@ -1468,7 +1499,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       data={lancamentos}
                       searchPlaceholder="Filtrar por CODNUM, Unidade..."
                       columns={[
-                        { key: "id", label: "ID", isPinned: true, searchable: true },
+                        { key: "id", label: "ID", searchable: true },
                         { 
                           key: "mes_ano", 
                           label: "Comp. / Ref", 
@@ -1497,11 +1528,11 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                           key: "acoes",
                           label: "Ações",
                           render: (item) => (
-                            <div className="flex items-center gap-1.5">
-                              <button onClick={() => handleEditLancamento(item)} className="p-1.5 hover:bg-indigo-900/30 text-indigo-400 rounded-lg transition">
+                            <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                              <button onClick={(e) => { e.stopPropagation(); handleEditLancamento(item); }} className="p-1.5 hover:bg-indigo-900/30 text-indigo-400 rounded-lg transition" title="Editar lançamento">
                                 <Edit2 className="h-3.5 w-3.5" />
                               </button>
-                              <button onClick={() => handleDeleteLancamento(item.id)} className="p-1.5 hover:bg-rose-900/30 text-rose-400 rounded-lg transition">
+                              <button onClick={(e) => { e.stopPropagation(); handleDeleteLancamento(item.id); }} className="p-1.5 hover:bg-rose-900/30 text-rose-400 rounded-lg transition" title="Excluir lançamento">
                                 <Trash2 className="h-3.5 w-3.5" />
                               </button>
                             </div>
@@ -1517,13 +1548,22 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         )}
 
 
-        {/* SECTION: CONTROLE DE AUDITORIA */}
+        {/* SECTION: AUDITORIA DE FATURAS E INTELIGÊNCIA */}
         {activeSection === 'auditoria' && (
+          <AuditoriaDashboard 
+            lancamentos={lancamentos} 
+            secretarias={secretarias} 
+            unidades={unidades} 
+          />
+        )}
+
+        {/* SECTION: LOGS DO SISTEMA (HISTÓRICO DE AUDITORIA) */}
+        {activeSection === 'log' && (
           <div className="space-y-6">
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+            <div className="bg-[#121212] p-6 rounded-xl border border-white/10 shadow-sm space-y-4">
               <div>
-                <h4 className="font-bold text-slate-800 text-base">Histórico de Alterações e Rastreabilidade</h4>
-                <p className="text-xs text-slate-500">Histórico de auditoria integrado das ações administrativas executadas por usuários</p>
+                <h4 className="font-bold text-white text-base">Histórico de Alterações e Rastreabilidade</h4>
+                <p className="text-xs text-gray-400">Histórico de auditoria integrado das ações administrativas executadas por usuários</p>
               </div>
 
               <SmartTable
@@ -1531,7 +1571,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                 data={auditorias}
                 searchPlaceholder="Filtrar por tabela, pk, usuário..."
                 columns={[
-                  { key: "id", label: "Log ID", isPinned: true, searchable: true },
+                  { key: "id", label: "Log ID", searchable: true },
                   { key: "tabela", label: "Tabela", searchable: true },
                   { key: "registro_pk", label: "Chave PK", searchable: true },
                   { 
@@ -1540,9 +1580,9 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     searchable: true,
                     render: (item) => (
                       <span className={`px-2 py-0.5 rounded font-mono font-bold text-[10px] ${
-                        item.acao === 'INSERT' ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' :
-                        item.acao === 'UPDATE' ? 'bg-blue-100 text-blue-800 border border-blue-200' :
-                        'bg-rose-100 text-rose-800 border border-rose-200'
+                        item.acao === 'INSERT' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' :
+                        item.acao === 'UPDATE' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' :
+                        'bg-rose-500/20 text-rose-300 border border-rose-500/30'
                       }`}>
                         {item.acao}
                       </span>
@@ -1553,7 +1593,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     key: "criado_em", 
                     label: "Data e Hora", 
                     searchable: true,
-                    render: (item) => <span className="font-mono text-slate-500">{new Date(item.criado_em).toLocaleString("pt-BR")}</span>
+                    render: (item) => <span className="font-mono text-gray-400">{new Date(item.criado_em).toLocaleString("pt-BR")}</span>
                   }
                 ]}
               />
@@ -1595,7 +1635,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     data={unlinkedLancamentos}
                     searchPlaceholder="Filtrar por CODNUM, Unidade Gestora, Competência..."
                     columns={[
-                      { key: "id", label: "Lançamento ID", isPinned: true },
+                      { key: "id", label: "Lançamento ID" },
                       { 
                         key: "codigo_numero", 
                         label: "CODNUM", 
@@ -1811,6 +1851,38 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                 className="px-5 py-2 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white disabled:opacity-40 disabled:cursor-not-allowed transition shadow-lg shadow-rose-600/30 flex items-center gap-2"
               >
                 {isResetting ? "Zerando Banco..." : "Confirmar e Zerar Banco"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteModal && deleteModal.isOpen && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#121214] border border-white/10 rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="p-2.5 bg-rose-500/10 rounded-xl border border-rose-500/20">
+                <Trash2 className="h-6 w-6" />
+              </div>
+              <h3 className="font-bold text-white text-lg">{deleteModal.title}</h3>
+            </div>
+            <p className="text-gray-300 text-sm leading-relaxed">
+              {deleteModal.description}
+            </p>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                onClick={() => setDeleteModal(null)}
+                className="px-4 py-2 rounded-lg text-xs font-bold bg-white/5 hover:bg-white/10 text-gray-300 transition"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={executeDelete}
+                className="px-5 py-2 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white transition shadow-lg shadow-rose-600/30 flex items-center gap-2"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Confirmar Exclusão
               </button>
             </div>
           </div>

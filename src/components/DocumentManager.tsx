@@ -4,7 +4,7 @@ import {
   History, Check, RefreshCw, FileCode, Landmark, Eye, EyeOff,
   ZoomIn, ZoomOut, RotateCw, RotateCcw, ChevronLeft, ChevronRight,
   Maximize2, Trash2, Edit2, Columns, Settings, Sliders, Info, FileImage, Clipboard,
-  Search, Plus, Copy, AlertCircle, CheckCircle, Calendar
+  Search, Plus, Copy, AlertCircle, CheckCircle, Calendar, Filter, Sparkles, Zap, Droplets, Phone, Globe
 } from "lucide-react";
 import { DocumentoProcessado, DocumentLayoutType, CadastroMestreUC, Secretaria } from "../types";
 import { 
@@ -450,6 +450,7 @@ interface DocumentManagerProps {
 
 export default function DocumentManager({ onDocumentProcessed, currentUser = "admin", initialMode = "PDF" }: DocumentManagerProps) {
   const [activeImportMode, setActiveImportMode] = useState<"PDF" | "IMAGE" | "REPORT" | "MANUAL" | "CADASTRO">(initialMode as any);
+  const [selectedUtilityFilter, setSelectedUtilityFilter] = useState<"AUTO" | "CELESC" | "CASAN" | "TELEFONIA" | "INTERNET">("AUTO");
   const [dragActive, setDragActive] = useState(false);
   const [customText, setCustomText] = useState("");
   const [fileName, setFileName] = useState("");
@@ -682,10 +683,9 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   };
 
   const handleDeleteUc = (id: string, code: string) => {
-    if (confirm(`Tem certeza que deseja excluir a UC ${code} do cadastro permanente?`)) {
-      const filtered = masterUcs.filter(u => u.id !== id);
-      saveMasterUcs(filtered);
-    }
+    const filtered = masterUcs.filter(u => u.id !== id);
+    saveMasterUcs(filtered);
+    setMessage({ type: 'warning', text: `UC ${code} removida do cadastro permanente.` });
   };
 
   const addLog = (msg: string) => {
@@ -895,7 +895,11 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     let isReport = (docType === "CELESC_RELATORIO" || docType === "CASAN_RELATORIO" || (textToProcess && textToProcess.includes("\f"))) && !isCasanCentralized;
 
     // Set layout/concessionaire state
-    const concessionaire = docType.includes("CELESC") ? "CELESC" : (docType.includes("CASAN") || isCasanCentralized) ? "CASAN" : "Desconhecida";
+    let concessionaire = docType.includes("CELESC") ? "CELESC" : (docType.includes("CASAN") || isCasanCentralized) ? "CASAN" : "Desconhecida";
+    if (selectedUtilityFilter !== "AUTO") {
+      addLog(`🎯 Filtro / Tipo de Concessionária ativado pelo usuário: ${selectedUtilityFilter}. Forçando diretrizes de extração.`);
+      concessionaire = selectedUtilityFilter;
+    }
     setConcessionaireDetected(concessionaire);
 
     addLog(`Concessionária inferida: ${concessionaire} | Tipo de arquivo: ${isCasanCentralized ? 'CASAN Cobrança Centralizada (Lote Fracionado por Página)' : isReport ? 'Relatório/Lote' : 'Fatura Individual'}`);
@@ -1719,10 +1723,28 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     setMessage({ type: 'success', text: `Alterações salvas na conferência para o documento "${activeDoc.nome_arquivo}".` });
   };
 
-  // Delete document from local session batch list
-  const handleDeleteDoc = (id: string, name: string) => {
-    setSessionDocs(prev => prev.filter(d => d.id !== id));
-    setMessage({ type: 'warning', text: `Lançamento "${name}" removido do lote de conferência.` });
+  // Delete document from local session batch list and database
+  const handleDeleteDoc = async (id: string, name: string) => {
+    try {
+      const res = await fetch(`/api/documentos/${id}`, {
+        method: "DELETE",
+        headers: { "x-user": currentUser || "admin" }
+      });
+      if (res.ok) {
+        setSessionDocs(prev => prev.filter(d => String(d.id) !== String(id)));
+        setMessage({ type: 'success', text: `Documento "${name || id}" excluído com sucesso!` });
+        if (onDocumentProcessed) onDocumentProcessed();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setMessage({ type: 'error', text: err.error || "Erro ao excluir documento do servidor." });
+        setSessionDocs(prev => prev.filter(d => String(d.id) !== String(id)));
+        if (onDocumentProcessed) onDocumentProcessed();
+      }
+    } catch (e: any) {
+      setSessionDocs(prev => prev.filter(d => String(d.id) !== String(id)));
+      setMessage({ type: 'warning', text: `Lançamento "${name || id}" removido.` });
+      if (onDocumentProcessed) onDocumentProcessed();
+    }
   };
 
   // Toggle Ignored status
@@ -2142,57 +2164,99 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
               </div>
             </div>
 
-            {/* Quick Testing templates panel */}
+            {/* Filtro / Tipo de Concessionária panel */}
             <div className="bg-[#1c1c1c] p-4 rounded-xl border border-white/10 space-y-3.5 flex flex-col justify-between">
               <div className="space-y-1.5">
                 <h4 className="text-xs font-bold text-gray-200 uppercase tracking-wider flex items-center gap-1.5">
-                  <Info className="h-4 w-4 text-indigo-400" />
-                  Gabaritos de Simulação Oficial
+                  <Filter className="h-4 w-4 text-indigo-400" />
+                  Filtro / Tipo de Concessionária
                 </h4>
-                <p className="text-[10px] text-gray-400">Clique para carregar faturas teste com fidelidade fiscal do SisPu.JP:</p>
+                <p className="text-[10px] text-gray-400 leading-relaxed">
+                  Selecione o tipo para direcionar a leitura ou deixe em <span className="text-indigo-300 font-semibold">Automático</span> para detecção por IA:
+                </p>
               </div>
 
-              <div className="flex flex-col gap-2">
-                {activeImportMode === "PDF" && (
-                  <>
-                    <button onClick={() => loadSample("CELESC_FATURA")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-white/5 hover:border-white/20 transition flex items-center justify-between text-[11px]">
-                      <span className="font-semibold text-gray-300">Fatura Individual CELESC</span>
-                      <span className="text-[9px] font-mono bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-bold">PDF</span>
-                    </button>
-                    <button onClick={() => loadSample("CASAN_FATURA")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-white/5 hover:border-white/20 transition flex items-center justify-between text-[11px]">
-                      <span className="font-semibold text-gray-300">Fatura Individual CASAN</span>
-                      <span className="text-[9px] font-mono bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-bold">PDF</span>
-                    </button>
-                  </>
-                )}
-                {activeImportMode === "IMAGE" && (
-                  <>
-                    <button onClick={() => loadSample("CELESC_FATURA")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-white/5 hover:border-white/20 transition flex items-center justify-between text-[11px]">
-                      <span className="font-semibold text-gray-300">Escaneado CELESC (OCR)</span>
-                      <span className="text-[9px] font-mono bg-indigo-500/10 text-indigo-400 px-1.5 py-0.5 rounded font-bold">PNG</span>
-                    </button>
-                    <button onClick={() => loadSample("CASAN_FATURA")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-white/5 hover:border-white/20 transition flex items-center justify-between text-[11px]">
-                      <span className="font-semibold text-gray-300">Escaneado CASAN (OCR)</span>
-                      <span className="text-[9px] font-mono bg-indigo-500/10 text-indigo-400 px-1.5 py-0.5 rounded font-bold">JPG</span>
-                    </button>
-                  </>
-                )}
-                {activeImportMode === "REPORT" && (
-                  <>
-                    <button onClick={() => loadSample("CELESC_RELATORIO")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-white/5 hover:border-white/20 transition flex items-center justify-between text-[11px]">
-                      <span className="font-semibold text-gray-300">Lote Faturamento Coletivo CELESC</span>
-                      <span className="text-[9px] font-mono bg-amber-500/10 text-amber-400 px-1.5 py-0.5 rounded font-bold">LOTE (5x)</span>
-                    </button>
-                    <button onClick={() => loadSample("CASAN_RELATORIO")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-white/5 hover:border-white/20 transition flex items-center justify-between text-[11px]">
-                      <span className="font-semibold text-gray-300">Compilado Coletivo CASAN</span>
-                      <span className="text-[9px] font-mono bg-amber-500/10 text-amber-400 px-1.5 py-0.5 rounded font-bold">LOTE (3x)</span>
-                    </button>
-                    <button onClick={() => loadSample("CASAN_CENTRALIZADA")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-emerald-500/20 hover:border-emerald-500/40 transition flex items-center justify-between text-[11px]">
-                      <span className="font-semibold text-emerald-300">CASAN Cobrança Centralizada</span>
-                      <span className="text-[9px] font-mono bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded font-bold">8 PÁG (120 Contas)</span>
-                    </button>
-                  </>
-                )}
+              {/* Utility Type Selector */}
+              <div className="flex flex-col gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setSelectedUtilityFilter("AUTO")}
+                  className={`w-full text-left p-2 rounded-lg border text-[11px] font-semibold transition flex items-center justify-between ${
+                    selectedUtilityFilter === "AUTO"
+                      ? "bg-indigo-600/20 border-indigo-500/50 text-indigo-200 shadow-sm shadow-indigo-500/20"
+                      : "bg-black/30 border-white/5 text-gray-400 hover:bg-black/50 hover:text-gray-200"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
+                    <span>Automático (Identificação por IA)</span>
+                  </div>
+                  {selectedUtilityFilter === "AUTO" && <span className="text-[9px] font-mono bg-indigo-500/30 text-indigo-300 px-1.5 py-0.5 rounded font-bold">ATIVO</span>}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedUtilityFilter("CELESC")}
+                  className={`w-full text-left p-2 rounded-lg border text-[11px] font-semibold transition flex items-center justify-between ${
+                    selectedUtilityFilter === "CELESC"
+                      ? "bg-amber-500/20 border-amber-500/50 text-amber-200 shadow-sm shadow-amber-500/20"
+                      : "bg-black/30 border-white/5 text-gray-400 hover:bg-black/50 hover:text-gray-200"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Zap className="h-3.5 w-3.5 text-amber-400" />
+                    <span>CELESC (Energia Elétrica)</span>
+                  </div>
+                  {selectedUtilityFilter === "CELESC" && <span className="text-[9px] font-mono bg-amber-500/30 text-amber-300 px-1.5 py-0.5 rounded font-bold">SELECIONADO</span>}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedUtilityFilter("CASAN")}
+                  className={`w-full text-left p-2 rounded-lg border text-[11px] font-semibold transition flex items-center justify-between ${
+                    selectedUtilityFilter === "CASAN"
+                      ? "bg-blue-500/20 border-blue-500/50 text-blue-200 shadow-sm shadow-blue-500/20"
+                      : "bg-black/30 border-white/5 text-gray-400 hover:bg-black/50 hover:text-gray-200"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Droplets className="h-3.5 w-3.5 text-blue-400" />
+                    <span>CASAN (Água e Saneamento)</span>
+                  </div>
+                  {selectedUtilityFilter === "CASAN" && <span className="text-[9px] font-mono bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-bold">SELECIONADO</span>}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedUtilityFilter("TELEFONIA")}
+                  className={`w-full text-left p-2 rounded-lg border text-[11px] font-semibold transition flex items-center justify-between ${
+                    selectedUtilityFilter === "TELEFONIA"
+                      ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-200 shadow-sm shadow-emerald-500/20"
+                      : "bg-black/30 border-white/5 text-gray-400 hover:bg-black/50 hover:text-gray-200"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Phone className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Telefonia (Fixa / Móvel)</span>
+                  </div>
+                  {selectedUtilityFilter === "TELEFONIA" && <span className="text-[9px] font-mono bg-emerald-500/30 text-emerald-300 px-1.5 py-0.5 rounded font-bold">SELECIONADO</span>}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedUtilityFilter("INTERNET")}
+                  className={`w-full text-left p-2 rounded-lg border text-[11px] font-semibold transition flex items-center justify-between ${
+                    selectedUtilityFilter === "INTERNET"
+                      ? "bg-purple-500/20 border-purple-500/50 text-purple-200 shadow-sm shadow-purple-500/20"
+                      : "bg-black/30 border-white/5 text-gray-400 hover:bg-black/50 hover:text-gray-200"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Globe className="h-3.5 w-3.5 text-purple-400" />
+                    <span>Internet / Link de Dados</span>
+                  </div>
+                  {selectedUtilityFilter === "INTERNET" && <span className="text-[9px] font-mono bg-purple-500/30 text-purple-300 px-1.5 py-0.5 rounded font-bold">SELECIONADO</span>}
+                </button>
               </div>
             </div>
 

@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useRef } from "react";
 import { 
   ArrowUpDown, ArrowUp, ArrowDown, Settings, 
-  Eye, EyeOff, Pin, PinOff, RefreshCw, GripVertical, Search 
+  Eye, EyeOff, RefreshCw, GripVertical, Search 
 } from "lucide-react";
 
 export interface SmartTableColumn {
   key: string;
   label: string;
   render?: (item: any) => React.ReactNode;
-  isPinned?: boolean;
   searchable?: boolean;
   type?: "string" | "number" | "currency" | "date" | "boolean";
 }
@@ -28,7 +27,6 @@ interface TableConfig {
   columnOrder: string[];
   hiddenColumns: string[];
   columnWidths: Record<string, number>;
-  pinnedColumns: string[];
 }
 
 export default function SmartTable({
@@ -45,8 +43,7 @@ export default function SmartTable({
   const [config, setConfig] = useState<TableConfig>({
     columnOrder: [],
     hiddenColumns: [],
-    columnWidths: {},
-    pinnedColumns: []
+    columnWidths: {}
   });
 
   // Local filtering & sorting state
@@ -81,8 +78,7 @@ export default function SmartTable({
       columnWidths: columns.reduce((acc, c) => {
         acc[c.key] = 150; // default starting width
         return acc;
-      }, {} as Record<string, number>),
-      pinnedColumns: columns.filter(c => c.isPinned).map(c => c.key)
+      }, {} as Record<string, number>)
     };
     setConfig(defaultConfig);
     saveConfig(defaultConfig);
@@ -171,18 +167,6 @@ export default function SmartTable({
     saveConfig({ ...config, hiddenColumns: newHidden });
   };
 
-  // Toggle pin
-  const togglePin = (colKey: string) => {
-    const isPinned = config.pinnedColumns.includes(colKey);
-    let newPinned = [...config.pinnedColumns];
-    if (isPinned) {
-      newPinned = newPinned.filter(k => k !== colKey);
-    } else {
-      newPinned.push(colKey);
-    }
-    saveConfig({ ...config, pinnedColumns: newPinned });
-  };
-
   // Toggle sorting
   const handleSort = (colKey: string) => {
     if (sortField === colKey) {
@@ -248,7 +232,6 @@ export default function SmartTable({
 
   // Render headers
   const renderHeader = (col: SmartTableColumn) => {
-    const isPinned = config.pinnedColumns.includes(col.key);
     const colWidth = config.columnWidths[col.key] || 150;
 
     return (
@@ -258,9 +241,7 @@ export default function SmartTable({
         onDragStart={(e) => handleDragStart(e, col.key)}
         onDragOver={(e) => handleDragOver(e, col.key)}
         onDrop={(e) => handleDrop(e, col.key)}
-        className={`px-4 py-3 bg-slate-50 text-slate-700 uppercase font-bold text-[11px] border-b border-slate-200 relative select-none group/th transition-all ${
-          isPinned ? "sticky left-0 z-20 bg-slate-100 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]" : ""
-        }`}
+        className="px-4 py-3 bg-slate-50 text-slate-700 uppercase font-bold text-[11px] border-b border-slate-200 relative select-none group/th transition-all"
         style={{ width: `${colWidth}px`, minWidth: `${colWidth}px` }}
       >
         <div className="flex items-center justify-between gap-1.5 w-full">
@@ -281,16 +262,6 @@ export default function SmartTable({
               <ArrowUpDown className="h-3.5 w-3.5 text-slate-300 shrink-0 opacity-0 group-hover/th:opacity-100 transition-opacity" />
             )}
           </span>
-
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              onClick={() => togglePin(col.key)}
-              className={`p-0.5 rounded hover:bg-slate-200 transition ${isPinned ? "text-indigo-600" : "text-slate-300 opacity-0 group-hover/th:opacity-100"}`}
-              title={isPinned ? "Descongelar coluna" : "Congelar/Fixar coluna"}
-            >
-              <Pin className="h-3 w-3" />
-            </button>
-          </div>
         </div>
 
         {/* Resize Handle */}
@@ -366,15 +337,12 @@ export default function SmartTable({
                       } ${rowCustomClass}`}
                     >
                       {visibleColumns.map(col => {
-                        const isPinned = config.pinnedColumns.includes(col.key);
                         const width = col.key === "acoes" ? Math.max(config.columnWidths[col.key] || 120, 110) : (config.columnWidths[col.key] || 150);
 
                         return (
                           <td
                             key={col.key}
-                            className={`px-4 py-2.5 transition-all text-slate-800 ${
-                              isPinned ? "sticky left-0 bg-white/95 group-hover:bg-slate-50/95 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]" : ""
-                            }`}
+                            className="px-4 py-2.5 transition-all text-slate-800"
                             style={{ maxWidth: col.key === "acoes" ? "none" : `${width}px`, minWidth: `${width}px`, width: `${width}px` }}
                           >
                             <div className={col.key === "acoes" ? "flex items-center" : "truncate"}>
@@ -406,7 +374,7 @@ export default function SmartTable({
             <div className="px-5 py-4 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
               <div>
                 <h4 className="font-bold text-slate-800 text-sm">Visualização de Colunas</h4>
-                <p className="text-[10px] text-slate-500 mt-0.5">Ordene, oculte ou congele as colunas desta tabela de dados</p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Ordene e oculte as colunas desta tabela de dados</p>
               </div>
               <button
                 onClick={() => setShowConfigModal(false)}
@@ -424,7 +392,6 @@ export default function SmartTable({
                     const col = columns.find(c => c.key === key);
                     if (!col) return null;
                     const isHidden = config.hiddenColumns.includes(key);
-                    const isPinned = config.pinnedColumns.includes(key);
 
                     return (
                       <div
@@ -445,14 +412,6 @@ export default function SmartTable({
                             title={isHidden ? "Exibir coluna" : "Ocultar coluna"}
                           >
                             {isHidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                          </button>
-                          
-                          <button
-                            onClick={() => togglePin(key)}
-                            className={`p-1 rounded hover:bg-slate-100 transition ${isPinned ? "text-indigo-600" : "text-slate-300"}`}
-                            title={isPinned ? "Descongelar coluna" : "Congelar coluna"}
-                          >
-                            <Pin className="h-3.5 w-3.5" />
                           </button>
                         </div>
                       </div>
