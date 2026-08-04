@@ -56,166 +56,21 @@ interface DatabaseState {
   documentos_processados: DocumentoProcessado[];
 }
 
-// Initial Seed Data
-const initialDBState: DatabaseState = {
+// Initial Empty DB State (No auto-seeding)
+const emptyDBState: DatabaseState = {
   usuarios: [
     { id: "1", login: "admin", nome: "Administrador", ativo: true, criado_em: new Date().toISOString() },
     { id: "2", login: "joao", nome: "João Silva", ativo: true, criado_em: new Date().toISOString() }
   ],
-  secretarias: [
-    { id: "1", codigo_legado: 10, nome: "SECRETARIA DE ADMINISTRAÇÃO", ativo: true, criado_em: "2026-01-10T10:00:00Z", atualizado_em: "2026-01-10T10:00:00Z" },
-    { id: "2", codigo_legado: 20, nome: "SECRETARIA DE FINANÇAS", ativo: true, criado_em: "2026-01-11T11:00:00Z", atualizado_em: "2026-01-11T11:00:00Z" },
-    { id: "3", codigo_legado: 30, nome: "SECRETARIA DE EDUCAÇÃO", ativo: true, criado_em: "2026-01-12T09:00:00Z", atualizado_em: "2026-01-12T09:00:00Z" },
-    { id: "4", codigo_legado: 40, nome: "SECRETARIA DE SAÚDE", ativo: true, criado_em: "2026-01-13T14:30:00Z", atualizado_em: "2026-01-13T14:30:00Z" },
-    { id: "5", codigo_legado: 50, nome: "SECRETARIA DE OBRAS E SERVIÇOS", ativo: true, criado_em: "2026-01-14T08:15:00Z", atualizado_em: "2026-01-14T08:15:00Z" }
-  ],
-  unidades: [
-    { id: "1", codigo_legado: 101, secretaria_id: "1", nome: "PREFEITURA MUNICIPAL - SEDE", endereco: "Praça dos Três Poderes, 100", ativo: true, criado_em: "2026-01-10T10:05:00Z", atualizado_em: "2026-01-10T10:05:00Z" },
-    { id: "2", codigo_legado: 102, secretaria_id: "1", nome: "ANEXO ADMINISTRATIVO I", endereco: "Rua Lauro Müller, 25", ativo: true, criado_em: "2026-01-10T10:06:00Z", atualizado_em: "2026-01-10T10:06:00Z" },
-    { id: "3", codigo_legado: 201, secretaria_id: "2", nome: "SETOR DE TRIBUTOS E FISCALIZAÇÃO", endereco: "Rua do Comércio, 150", ativo: true, criado_em: "2026-01-11T11:05:00Z", atualizado_em: "2026-01-11T11:05:00Z" },
-    { id: "4", codigo_legado: 301, secretaria_id: "3", nome: "ESCOLA MUNICIPAL CASTELO BRANCO", endereco: "Rua das Flores, 450", ativo: true, criado_em: "2026-01-12T09:05:00Z", atualizado_em: "2026-01-12T09:05:00Z" },
-    { id: "5", codigo_legado: 302, secretaria_id: "3", nome: "CRECHE MUNICIPAL TIA ANA", endereco: "Av. Beira Rio, S/N", ativo: true, criado_em: "2026-01-12T09:06:00Z", atualizado_em: "2026-01-12T09:06:00Z" },
-    { id: "6", codigo_legado: 401, secretaria_id: "4", nome: "POSTO DE SAÚDE CENTRAL", endereco: "Av. Getúlio Vargas, 1200", ativo: true, criado_em: "2026-01-13T14:35:00Z", atualizado_em: "2026-01-13T14:35:00Z" },
-    { id: "7", codigo_legado: 501, secretaria_id: "5", nome: "ALMOXARIFADO CENTRAL E GARAGEM", endereco: "Rua Industrial, 80", ativo: true, criado_em: "2026-01-14T08:20:00Z", atualizado_em: "2026-01-14T08:20:00Z" }
-  ],
-  despesas: [
-    { id: "1", codigo_legado: 1001, descricao: "ENERGIA ELÉTRICA - CELESC", ativo: true, criado_em: "2026-01-10T10:10:00Z", atualizado_em: "2026-01-10T10:10:00Z" },
-    { id: "2", codigo_legado: 1002, descricao: "ÁGUA E SANEAMENTO - CASAN", ativo: true, criado_em: "2026-01-10T10:11:00Z", atualizado_em: "2026-01-10T10:11:00Z" },
-    { id: "3", codigo_legado: 1003, descricao: "TELEFONIA MÓVEL - TIM", ativo: true, criado_em: "2026-01-10T10:12:00Z", atualizado_em: "2026-01-10T10:12:00Z" },
-    { id: "4", codigo_legado: 1004, descricao: "INTERNET E LINK DEDICADO - OI", ativo: true, criado_em: "2026-01-10T10:13:00Z", atualizado_em: "2026-01-10T10:13:00Z" }
-  ],
-  itens_despesas: [
-    { id: "1", codigo_numero: "CELESC-PREF-101", despesa_id: "1", unidade_id: "1", medidor: "928371-3", ativo: true, criado_em: "2026-01-10T10:20:00Z", atualizado_em: "2026-01-10T10:20:00Z" },
-    { id: "2", codigo_numero: "CELESC-ESCOLA-301", despesa_id: "1", unidade_id: "4", medidor: "512498-6", ativo: true, criado_em: "2026-01-12T09:20:00Z", atualizado_em: "2026-01-12T09:20:00Z" },
-    { id: "3", codigo_numero: "CASAN-PREF-101", despesa_id: "2", unidade_id: "1", medidor: "34918-02", ativo: true, criado_em: "2026-01-10T10:21:00Z", atualizado_em: "2026-01-10T10:21:00Z" },
-    { id: "4", codigo_numero: "CASAN-POSTO-401", despesa_id: "2", unidade_id: "6", medidor: "11294-08", ativo: true, criado_em: "2026-01-13T14:40:00Z", atualizado_em: "2026-01-13T14:40:00Z" },
-    { id: "5", codigo_numero: "TIM-PREF-CEL", despesa_id: "3", unidade_id: "1", tipo_fone: "CELULAR", medidor: "(48) 99912-3456", ativo: true, criado_em: "2026-01-10T10:22:00Z", atualizado_em: "2026-01-10T10:22:00Z" },
-    { id: "6", codigo_numero: "OI-PREF-INTER", despesa_id: "4", unidade_id: "1", tipo_fone: "LINK DEDICADO", medidor: "PREF-INTER-300M", ativo: true, criado_em: "2026-01-10T10:23:00Z", atualizado_em: "2026-01-10T10:23:00Z" }
-  ],
-  lancamentos: [
-    {
-      id: "1",
-      item_despesa_id: "1",
-      mes_ano: "2026-05-01",
-      consumo: 1240.50,
-      valor_total: 1540.20,
-      valor_imposto: 385.05,
-      valor_celular: 0.0,
-      valor_internet: 0.0,
-      valor_diversos: 0.0,
-      valor_linha_privada: 0.0,
-      valor_credito: 0.0,
-      data_lancamento: "2026-05-15",
-      codigo_legado_numero: "101001",
-      mes_ano_legado: "05/2026",
-      criado_em: "2026-05-15T16:00:00Z",
-      atualizado_em: "2026-05-15T16:00:00Z"
-    },
-    {
-      id: "2",
-      item_despesa_id: "1",
-      mes_ano: "2026-06-01",
-      consumo: 1350.00,
-      valor_total: 1680.50,
-      valor_imposto: 420.12,
-      valor_celular: 0.0,
-      valor_internet: 0.0,
-      valor_diversos: 0.0,
-      valor_linha_privada: 0.0,
-      valor_credito: 0.0,
-      data_lancamento: "2026-06-14",
-      codigo_legado_numero: "101001",
-      mes_ano_legado: "06/2026",
-      criado_em: "2026-06-14T15:30:00Z",
-      atualizado_em: "2026-06-14T15:30:00Z"
-    },
-    {
-      id: "3",
-      item_despesa_id: "2",
-      mes_ano: "2026-06-01",
-      consumo: 890.00,
-      valor_total: 1100.80,
-      valor_imposto: 275.20,
-      valor_celular: 0.0,
-      valor_internet: 0.0,
-      valor_diversos: 0.0,
-      valor_linha_privada: 0.0,
-      valor_credito: 0.0,
-      data_lancamento: "2026-06-14",
-      codigo_legado_numero: "101002",
-      mes_ano_legado: "06/2026",
-      criado_em: "2026-06-14T15:35:00Z",
-      atualizado_em: "2026-06-14T15:35:00Z"
-    },
-    {
-      id: "4",
-      item_despesa_id: "3",
-      mes_ano: "2026-06-01",
-      consumo: 42.00,
-      valor_total: 620.40,
-      valor_imposto: 124.08,
-      valor_celular: 0.0,
-      valor_internet: 0.0,
-      valor_diversos: 0.0,
-      valor_linha_privada: 0.0,
-      valor_credito: 0.0,
-      data_lancamento: "2026-06-16",
-      codigo_legado_numero: "102001",
-      mes_ano_legado: "06/2026",
-      criado_em: "2026-06-16T10:00:00Z",
-      atualizado_em: "2026-06-16T10:00:00Z"
-    }
-  ],
-  pessoas: [
-    {
-      id: "1",
-      codigo_legado: 501,
-      nome: "CELESC DISTRIBUIÇÃO S.A.",
-      tipo_pessoa: "JURIDICA",
-      cpf_cnpj: "08.336.783/0001-90",
-      telefone_comercial: "(48) 3231-5000",
-      criado_em: "2026-01-10T10:00:00Z",
-      atualizado_em: "2026-01-10T10:00:00Z"
-    },
-    {
-      id: "2",
-      codigo_legado: 502,
-      nome: "CASAN COMPANHIA CATARINENSE DE AGUAS E SANEAMENTO",
-      tipo_pessoa: "JURIDICA",
-      cpf_cnpj: "82.508.433/0001-17",
-      telefone_comercial: "(48) 3221-5000",
-      criado_em: "2026-01-10T10:01:00Z",
-      atualizado_em: "2026-01-10T10:01:00Z"
-    }
-  ],
-  contatos_email: [
-    { id: "1", descricao: "Secretaria de Administração - Geral", email: "administracao@sispu.sc.gov.br", criado_em: "2026-01-10T10:00:00Z" },
-    { id: "2", descricao: "Controladoria Geral Interna", email: "controladoria@sispu.sc.gov.br", criado_em: "2026-01-10T10:01:00Z" }
-  ],
-  logs_erros: [
-    { id: "1", origem: "DELPHI_LEGADO_IMPORT", mensagem: "Erro de estouro de memória ao abrir relatórios de faturas CELESC em lote (temp_349281.htm)", arquivo_origem: "UFrmDespesa.pas", linha_original: "1158", criado_em: "2025-11-12T14:22:00Z" },
-    { id: "2", origem: "PYSIDE6_DESKTOP_DB", mensagem: "QSqlError(0, 'Connection timeout while retrieving secretarias')", arquivo_origem: "db.py", linha_original: "22", criado_em: "2026-02-15T09:12:00Z" }
-  ],
-  auditoria_registros: [
-    {
-      id: "1",
-      tabela: "secretarias",
-      registro_pk: "1",
-      acao: "INSERT",
-      usuario: "admin",
-      valor_novo: { id: "1", codigo_legado: 10, nome: "SECRETARIA DE ADMINISTRAÇÃO", ativo: true },
-      criado_em: "2026-01-10T10:00:00Z"
-    },
-    {
-      id: "2",
-      tabela: "secretarias",
-      registro_pk: "2",
-      acao: "INSERT",
-      usuario: "admin",
-      valor_novo: { id: "2", codigo_legado: 20, nome: "SECRETARIA DE FINANÇAS", ativo: true },
-      criado_em: "2026-01-11T11:00:00Z"
-    }
-  ],
+  secretarias: [],
+  unidades: [],
+  despesas: [],
+  itens_despesas: [],
+  lancamentos: [],
+  pessoas: [],
+  contatos_email: [],
+  logs_erros: [],
+  auditoria_registros: [],
   documentos_processados: []
 };
 
@@ -227,11 +82,9 @@ function loadDB(): DatabaseState {
       return JSON.parse(content);
     }
   } catch (err) {
-    console.error("Error loading DB file, fallback to memory seed:", err);
+    console.error("Error loading DB file:", err);
   }
-  // If doesn't exist, seed and save
-  saveDB(initialDBState);
-  return initialDBState;
+  return { ...emptyDBState };
 }
 
 function saveDB(state: DatabaseState) {
@@ -254,9 +107,9 @@ async function initDatabasePersistence() {
     const initialized = await initPostgresSchema();
     if (initialized) {
       const pgState = await loadStateFromPostgres();
-      if (pgState && (pgState.secretarias?.length > 0 || pgState.lancamentos?.length > 0 || pgState.documentos_processados?.length > 0)) {
+      if (pgState) {
         db = {
-          usuarios: pgState.usuarios || [],
+          usuarios: pgState.usuarios?.length > 0 ? pgState.usuarios : db.usuarios,
           secretarias: pgState.secretarias || [],
           unidades: pgState.unidades || [],
           despesas: pgState.despesas || [],
@@ -269,10 +122,7 @@ async function initDatabasePersistence() {
           documentos_processados: pgState.documentos_processados || [],
         };
         fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
-        console.log("[DB] Estado restaurado com sucesso diretamente do PostgreSQL (Neon)!");
-      } else {
-        console.log("[DB] PostgreSQL está sem registros. Semeando dados iniciais no Neon...");
-        await saveAllStateToPostgres(db);
+        console.log("[DB] Estado carregado do PostgreSQL (Neon) com sucesso (sem re-seeding automático)!");
       }
     }
   } catch (err) {
@@ -1074,8 +924,9 @@ app.post("/api/lancamentos", (req, res) => {
 app.put("/api/lancamentos/:id", (req, res) => {
   const { id } = req.params;
   const { 
-    consumo, valor_total, valor_imposto, valor_celular, valor_internet, 
-    valor_diversos, valor_linha_privada, valor_credito, data_lancamento 
+    item_despesa_id, mes_ano, consumo, valor_total, valor_imposto, 
+    valor_celular, valor_internet, valor_diversos, valor_linha_privada, 
+    valor_credito, data_lancamento, secretaria_id
   } = req.body;
   const usuario = req.headers["x-user"] as string || "admin";
 
@@ -1086,6 +937,12 @@ app.put("/api/lancamentos/:id", (req, res) => {
 
   const oldVal = { ...db.lancamentos[index] };
 
+  if (item_despesa_id !== undefined) db.lancamentos[index].item_despesa_id = item_despesa_id;
+  if (mes_ano !== undefined) {
+    let cleanMesAno = mes_ano;
+    if (mes_ano.length === 7) cleanMesAno = `${mes_ano}-01`;
+    db.lancamentos[index].mes_ano = cleanMesAno;
+  }
   if (consumo !== undefined) db.lancamentos[index].consumo = parseFloat(consumo || 0);
   if (valor_total !== undefined) db.lancamentos[index].valor_total = parseFloat(valor_total || 0);
   if (valor_imposto !== undefined) db.lancamentos[index].valor_imposto = parseFloat(valor_imposto || 0);
@@ -1095,13 +952,13 @@ app.put("/api/lancamentos/:id", (req, res) => {
   if (valor_linha_privada !== undefined) db.lancamentos[index].valor_linha_privada = parseFloat(valor_linha_privada || 0);
   if (valor_credito !== undefined) db.lancamentos[index].valor_credito = parseFloat(valor_credito || 0);
   if (data_lancamento !== undefined) db.lancamentos[index].data_lancamento = data_lancamento;
-  if (req.body.secretaria_id) {
-    (db.lancamentos[index] as any).secretaria_id = req.body.secretaria_id;
+  if (secretaria_id) {
+    (db.lancamentos[index] as any).secretaria_id = secretaria_id;
     const item = db.itens_despesas.find(it => it.id === db.lancamentos[index].item_despesa_id);
     if (item) {
       const unidade = db.unidades.find(u => u.id === item.unidade_id);
       if (unidade) {
-        unidade.secretaria_id = req.body.secretaria_id;
+        unidade.secretaria_id = secretaria_id;
         unidade.atualizado_em = new Date().toISOString();
       }
     }

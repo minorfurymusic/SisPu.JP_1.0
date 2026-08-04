@@ -3,7 +3,8 @@ import {
   Building2, Receipt, Lightbulb, Droplets, History,
   TrendingUp, BarChart3, ShieldAlert, Search, Edit2, Trash2,
   Layers, Plus, Trash, Calendar, FolderCheck, CheckCircle2, X,
-  ClipboardList, Settings, Check, HelpCircle, AlertCircle
+  ClipboardList, Settings, Check, HelpCircle, AlertCircle,
+  ChevronDown, ChevronRight, Folder, FolderOpen, Zap, FileText, Filter
 } from "lucide-react";
 import { Secretaria, Unidade, Despesa, ItemDespesa, Lancamento, AuditoriaRegistro } from "../types";
 import DocumentManager from "./DocumentManager";
@@ -86,6 +87,78 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     title: string;
     description: string;
   } | null>(null);
+
+  // State for Concessionaire Filter
+  const [concessionaireFilter, setConcessionaireFilter] = useState<"ALL" | "CASAN" | "CELESC" | "OUTROS">("ALL");
+
+  // State for Lançamentos Monthly Blocks Tree View
+  const [lancSearchTerm, setLancSearchTerm] = useState("");
+  const [lancViewMode, setLancViewMode] = useState<"blocks" | "table">("blocks");
+  const [collapsedMonths, setCollapsedMonths] = useState<Record<string, boolean>>({});
+  const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
+
+  const toggleCategoryCollapse = (catKey: string) => {
+    setCollapsedCategories(prev => ({
+      ...prev,
+      [catKey]: !prev[catKey]
+    }));
+  };
+
+  // Edit Lançamento Modal State
+  const [editLancModal, setEditLancModal] = useState<{
+    isOpen: boolean;
+    lancamento: any;
+    item_despesa_id: string;
+    mes_ano: string;
+    data_lancamento: string;
+    secretaria_id: string;
+    consumo: string;
+    valor_total: string;
+    valor_imposto: string;
+    valor_celular: string;
+    valor_internet: string;
+    valor_diversos: string;
+    valor_linha_privada: string;
+    valor_credito: string;
+  } | null>(null);
+
+  const toggleMonthCollapse = (mKey: string) => {
+    setCollapsedMonths(prev => ({
+      ...prev,
+      [mKey]: !prev[mKey]
+    }));
+  };
+
+  const expandAllMonths = (mKeys: string[]) => {
+    const newState: Record<string, boolean> = {};
+    mKeys.forEach(k => { newState[k] = false; });
+    setCollapsedMonths(newState);
+  };
+
+  const collapseAllMonths = (mKeys: string[]) => {
+    const newState: Record<string, boolean> = {};
+    mKeys.forEach(k => { newState[k] = true; });
+    setCollapsedMonths(newState);
+  };
+
+  const formatMonthTitle = (mKey: string) => {
+    if (mKey === "sem_data") return "Sem Mês / Data Não Definida";
+    const [year, monthStr] = mKey.split("-");
+    const monthIdx = parseInt(monthStr, 10) - 1;
+    const monthNames = [
+      "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+      "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
+    ];
+    const name = monthNames[monthIdx] || monthStr;
+    return `${monthStr}/${year} — ${name} de ${year}`;
+  };
+
+  const formatShortRef = (mesAno: string) => {
+    if (!mesAno) return "-";
+    const d = new Date(mesAno);
+    if (isNaN(d.getTime())) return mesAno;
+    return `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+  };
 
   useEffect(() => {
     loadAllData();
@@ -409,14 +482,64 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   };
 
   const handleEditLancamento = (l: any) => {
-    setEditingLancId(l.id);
-    setLancItemId(l.item_despesa_id || "");
-    setLancMesAno(l.mes_ano ? l.mes_ano.substring(0, 10) : "");
-    setLancConsumo(String(l.consumo));
-    setLancTotal(String(l.valor_total));
-    setLancImposto(String(l.valor_imposto));
-    setLancamentoSubView("list");
-    showSuccess(`Editando lançamento ID: ${l.id}`);
+    const item = itens.find(it => String(it.id) === String(l.item_despesa_id));
+    const defaultSecId = l.secretaria_id || (item ? (unidades.find(u => String(u.id) === String(item.unidade_id))?.secretaria_id || "") : "");
+
+    setEditLancModal({
+      isOpen: true,
+      lancamento: l,
+      item_despesa_id: String(l.item_despesa_id || ""),
+      mes_ano: l.mes_ano ? l.mes_ano.substring(0, 10) : "",
+      data_lancamento: l.data_lancamento ? l.data_lancamento.substring(0, 10) : "",
+      secretaria_id: String(defaultSecId),
+      consumo: String(l.consumo ?? 0),
+      valor_total: String(l.valor_total ?? 0),
+      valor_imposto: String(l.valor_imposto ?? 0),
+      valor_celular: String(l.valor_celular ?? 0),
+      valor_internet: String(l.valor_internet ?? 0),
+      valor_diversos: String(l.valor_diversos ?? 0),
+      valor_linha_privada: String(l.valor_linha_privada ?? 0),
+      valor_credito: String(l.valor_credito ?? 0)
+    });
+  };
+
+  const handleSaveEditLancamentoModal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editLancModal || !editLancModal.lancamento) return;
+    const { lancamento } = editLancModal;
+    try {
+      const payload = {
+        item_despesa_id: editLancModal.item_despesa_id,
+        mes_ano: editLancModal.mes_ano,
+        data_lancamento: editLancModal.data_lancamento,
+        secretaria_id: editLancModal.secretaria_id,
+        consumo: parseFloat(editLancModal.consumo || "0"),
+        valor_total: parseFloat(editLancModal.valor_total || "0"),
+        valor_imposto: parseFloat(editLancModal.valor_imposto || "0"),
+        valor_celular: parseFloat(editLancModal.valor_celular || "0"),
+        valor_internet: parseFloat(editLancModal.valor_internet || "0"),
+        valor_diversos: parseFloat(editLancModal.valor_diversos || "0"),
+        valor_linha_privada: parseFloat(editLancModal.valor_linha_privada || "0"),
+        valor_credito: parseFloat(editLancModal.valor_credito || "0")
+      };
+
+      const res = await fetch(`/api/lancamentos/${lancamento.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "x-user": "gestor_web" },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        showSuccess(`Lançamento ID #${lancamento.id} alterado com sucesso!`);
+        setEditLancModal(null);
+        notifyChange();
+      } else {
+        const err = await res.json();
+        showError(err.error || "Erro ao salvar alterações no lançamento.");
+      }
+    } catch (err: any) {
+      showError(err.message);
+    }
   };
 
   const handleDeleteLancamento = (id: string) => {
@@ -468,18 +591,56 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   const totalSpend = lancamentos.reduce((acc, l) => acc + (l.valor_total || 0), 0);
 
   const isCelesc = (l: any) => {
-    if (l.codigo_numero && l.codigo_numero.toLowerCase().includes('celesc')) return true;
+    if (!l) return false;
+    const textDirect = `${l.codigo_numero || ''} ${l.unidade_nome || ''} ${l.secretaria_nome || ''} ${l.despesa_descricao || ''}`.toLowerCase();
+    if (textDirect.includes('celesc') || textDirect.includes('energia') || textDirect.includes('luz') || textDirect.includes('elétric') || textDirect.includes('eletric') || textDirect.includes('kwh')) return true;
+
     const item = itens.find(it => String(it.id) === String(l.item_despesa_id));
-    if (item && item.despesa_descricao && item.despesa_descricao.toLowerCase().includes('celesc')) return true;
-    if (item && item.codigo_numero && item.codigo_numero.toLowerCase().includes('celesc')) return true;
+    if (item) {
+      const itemText = `${item.codigo_numero || ''} ${item.despesa_descricao || ''} ${item.medidor || ''}`.toLowerCase();
+      if (itemText.includes('celesc') || itemText.includes('energia') || itemText.includes('luz') || itemText.includes('elétric') || itemText.includes('eletric') || itemText.includes('kwh')) return true;
+
+      const despesa = despesas.find(d => String(d.id) === String(item.despesa_id));
+      if (despesa) {
+        const desText = `${despesa.descricao || ''}`.toLowerCase();
+        if (desText.includes('celesc') || desText.includes('energia') || desText.includes('luz') || desText.includes('elétric') || desText.includes('eletric') || desText.includes('kwh')) return true;
+      }
+    }
+
+    // System-wide context fallback: if registered despesas has only CELESC/Energy and no CASAN
+    if (despesas.length > 0) {
+      const hasCelesc = despesas.some(d => (d.descricao || '').toLowerCase().includes('celesc') || (d.descricao || '').toLowerCase().includes('energia') || (d.descricao || '').toLowerCase().includes('luz'));
+      const hasCasan = despesas.some(d => (d.descricao || '').toLowerCase().includes('casan') || (d.descricao || '').toLowerCase().includes('água') || (d.descricao || '').toLowerCase().includes('agua') || (d.descricao || '').toLowerCase().includes('esgoto'));
+      if (hasCelesc && !hasCasan) return true;
+    }
+
     return false;
   };
 
   const isCasan = (l: any) => {
-    if (l.codigo_numero && l.codigo_numero.toLowerCase().includes('casan')) return true;
+    if (!l) return false;
+    const textDirect = `${l.codigo_numero || ''} ${l.unidade_nome || ''} ${l.secretaria_nome || ''} ${l.despesa_descricao || ''}`.toLowerCase();
+    if (textDirect.includes('casan') || textDirect.includes('água') || textDirect.includes('agua') || textDirect.includes('esgoto') || textDirect.includes('saneamento') || textDirect.includes('hídric') || textDirect.includes('hidric')) return true;
+
     const item = itens.find(it => String(it.id) === String(l.item_despesa_id));
-    if (item && item.despesa_descricao && item.despesa_descricao.toLowerCase().includes('casan')) return true;
-    if (item && item.codigo_numero && item.codigo_numero.toLowerCase().includes('casan')) return true;
+    if (item) {
+      const itemText = `${item.codigo_numero || ''} ${item.despesa_descricao || ''} ${item.medidor || ''}`.toLowerCase();
+      if (itemText.includes('casan') || itemText.includes('água') || itemText.includes('agua') || itemText.includes('esgoto') || itemText.includes('saneamento') || itemText.includes('hídric') || itemText.includes('hidric')) return true;
+
+      const despesa = despesas.find(d => String(d.id) === String(item.despesa_id));
+      if (despesa) {
+        const desText = `${despesa.descricao || ''}`.toLowerCase();
+        if (desText.includes('casan') || desText.includes('água') || desText.includes('agua') || desText.includes('esgoto') || desText.includes('saneamento') || desText.includes('hídric') || desText.includes('hidric')) return true;
+      }
+    }
+
+    // System-wide context fallback: if registered despesas has only CASAN/Water and no CELESC
+    if (despesas.length > 0) {
+      const hasCelesc = despesas.some(d => (d.descricao || '').toLowerCase().includes('celesc') || (d.descricao || '').toLowerCase().includes('energia') || (d.descricao || '').toLowerCase().includes('luz'));
+      const hasCasan = despesas.some(d => (d.descricao || '').toLowerCase().includes('casan') || (d.descricao || '').toLowerCase().includes('água') || (d.descricao || '').toLowerCase().includes('agua') || (d.descricao || '').toLowerCase().includes('esgoto'));
+      if (hasCasan && !hasCelesc) return true;
+    }
+
     return false;
   };
 
@@ -494,12 +655,47 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   const monthNames = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
   
   const getHistoricalChartData = () => {
-    const months = ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"];
-    return months.map((m, idx) => {
+    // Collect 12 months of 2026 by default plus any months present in lancamentos
+    const monthSet = new Set<string>();
+    for (let m = 1; m <= 12; m++) {
+      monthSet.add(`2026-${String(m).padStart(2, '0')}`);
+    }
+
+    lancamentos.forEach(l => {
+      if (!l.mes_ano) return;
+      let ym = "";
+      if (l.mes_ano.length >= 7) {
+        ym = l.mes_ano.substring(0, 7);
+      } else {
+        const itemDate = new Date(l.mes_ano);
+        if (!isNaN(itemDate.getTime())) {
+          ym = `${itemDate.getFullYear()}-${String(itemDate.getMonth() + 1).padStart(2, '0')}`;
+        }
+      }
+      if (ym && ym.match(/^\d{4}-\d{2}$/)) {
+        monthSet.add(ym);
+      }
+    });
+
+    const sortedMonths = Array.from(monthSet).sort();
+
+    return sortedMonths.map((m) => {
+      const [yearStr, monthStr] = m.split("-");
+      const monthIdx = parseInt(monthStr, 10) - 1;
+      const baseLabel = monthNames[monthIdx] || monthStr;
+      const displayLabel = sortedMonths.length > 12 ? `${baseLabel}/${yearStr.slice(2)}` : baseLabel;
+
       const matches = lancamentos.filter(l => {
         if (!l.mes_ano) return false;
-        const itemDate = new Date(l.mes_ano);
-        const refStr = l.mes_ano.length >= 7 ? l.mes_ano.substring(0, 7) : `${itemDate.getFullYear()}-${String(itemDate.getMonth() + 1).padStart(2, '0')}`;
+        let refStr = "";
+        if (l.mes_ano.length >= 7) {
+          refStr = l.mes_ano.substring(0, 7);
+        } else {
+          const itemDate = new Date(l.mes_ano);
+          if (!isNaN(itemDate.getTime())) {
+            refStr = `${itemDate.getFullYear()}-${String(itemDate.getMonth() + 1).padStart(2, '0')}`;
+          }
+        }
         return refStr === m;
       });
 
@@ -512,7 +708,8 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
       const m3Cost = filterM3.reduce((acc, l) => acc + (l.valor_total || 0), 0);
 
       return {
-        label: monthNames[idx],
+        key: m,
+        label: displayLabel,
         kw: kwVal,
         m3: m3Val,
         kwCost: kwCost,
@@ -749,6 +946,91 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
             <span>{globalError}</span>
           </div>
         )}
+
+        {/* 🎛️ Special Concessionaire / Supply Type Selector Bar */}
+        <div className="bg-[#141417] p-4 rounded-xl border border-white/10 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-md">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-indigo-500/15 text-indigo-400 rounded-xl border border-indigo-500/30 shrink-0">
+              <Filter className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-bold text-white">
+                  Seletor de Concessionária / Suprimento
+                </h4>
+                {concessionaireFilter !== 'ALL' && (
+                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                    Filtro Exclusivo: {concessionaireFilter}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-gray-400">
+                Filtre os relatórios e indicadores para separar faturas de Água (CASAN - m³) ou Energia Elétrica (CELESC - kWh)
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 bg-black/60 p-1.5 rounded-xl border border-white/10 shrink-0 w-full md:w-auto">
+            <button
+              onClick={() => setConcessionaireFilter('ALL')}
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-2 ${
+                concessionaireFilter === 'ALL'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-gray-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <span>🌐 Todos os Registros</span>
+              <span className="text-[10px] bg-white/20 px-1.5 py-0.2 rounded-full font-mono">
+                {lancamentos.length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setConcessionaireFilter('CASAN')}
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-2 ${
+                concessionaireFilter === 'CASAN'
+                  ? 'bg-cyan-600 text-white shadow-sm'
+                  : 'text-gray-400 hover:text-cyan-300 hover:bg-cyan-500/10'
+              }`}
+            >
+              <Droplets className="w-4 h-4 text-cyan-300" />
+              <span>💧 CASAN (Água / m³)</span>
+              <span className="text-[10px] bg-cyan-900/40 text-cyan-200 border border-cyan-400/30 px-1.5 py-0.2 rounded-full font-mono">
+                {lancamentos.filter(isCasan).length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setConcessionaireFilter('CELESC')}
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-2 ${
+                concessionaireFilter === 'CELESC'
+                  ? 'bg-amber-600 text-white shadow-sm'
+                  : 'text-gray-400 hover:text-amber-300 hover:bg-amber-500/10'
+              }`}
+            >
+              <Lightbulb className="w-4 h-4 text-amber-300" />
+              <span>⚡ CELESC (Energia / kWh)</span>
+              <span className="text-[10px] bg-amber-900/40 text-amber-200 border border-amber-400/30 px-1.5 py-0.2 rounded-full font-mono">
+                {lancamentos.filter(isCelesc).length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setConcessionaireFilter('OUTROS')}
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-2 ${
+                concessionaireFilter === 'OUTROS'
+                  ? 'bg-purple-600 text-white shadow-sm'
+                  : 'text-gray-400 hover:text-purple-300 hover:bg-purple-500/10'
+              }`}
+            >
+              <FileText className="w-4 h-4 text-purple-300" />
+              <span>📑 Outros</span>
+              <span className="text-[10px] bg-purple-900/40 text-purple-200 border border-purple-400/30 px-1.5 py-0.2 rounded-full font-mono">
+                {lancamentos.filter(l => !isCasan(l) && !isCelesc(l)).length}
+              </span>
+            </button>
+          </div>
+        </div>
 
         {/* SECTION: DASHBOARD */}
         {activeSection === 'dashboard' && (
@@ -1408,7 +1690,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               <div className="space-y-6">
                 <div className="bg-[#0f0f0f] border border-white/10 p-6 rounded-xl shadow-sm space-y-4">
                   <h4 className="font-bold text-white text-base">
-                    {editingLancId ? "✏️ Editar Lançamento Administrativo" : "➕ Novo Lançamento de Fatura Mensal Manual"}
+                    ➕ Novo Lançamento de Fatura Mensal Manual
                   </h4>
                   <form onSubmit={handleSaveLancamento} className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end text-xs font-semibold text-gray-300">
                     <div className="space-y-1.5">
@@ -1471,76 +1753,390 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     </div>
                     <div className="md:col-span-5 flex justify-end gap-2 border-t border-white/10 pt-3.5">
                       <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-6 py-2.5 rounded-lg shadow transition">
-                        {editingLancId ? "Salvar" : "Registrar Lançamento"}
+                        Registrar Lançamento
                       </button>
-                      {editingLancId && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingLancId(null);
-                            setLancConsumo("");
-                            setLancTotal("");
-                            setLancImposto("");
-                          }}
-                          className="bg-white/5 hover:bg-white/10 text-gray-300 font-bold px-4 py-2.5 rounded-lg transition"
-                        >
-                          Cancelar
-                        </button>
-                      )}
                     </div>
                   </form>
                 </div>
 
-                <div className="bg-[#0f0f0f] border border-white/10 p-6 rounded-xl shadow-sm space-y-4">
-                  <h4 className="font-bold text-white text-base">Registros de Despesas e Faturas Homologadas</h4>
-                  <div className="text-gray-300">
-                    <SmartTable
-                      tableId="web_lancamentos"
-                      data={lancamentos}
-                      searchPlaceholder="Filtrar por CODNUM, Unidade..."
-                      columns={[
-                        { key: "id", label: "ID", searchable: true },
-                        { 
-                          key: "mes_ano", 
-                          label: "Comp. / Ref", 
-                          searchable: true,
-                          render: (item) => {
-                            const dateObj = new Date(item.mes_ano);
-                            return <span className="font-mono font-bold">{`${String(dateObj.getMonth() + 1).padStart(2, '0')}/${dateObj.getFullYear()}`}</span>;
-                          }
-                        },
-                        { key: "codigo_numero", label: "CODNUM", searchable: true },
-                        { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
-                        { key: "consumo", label: "Consumo", searchable: true },
-                        { 
-                          key: "valor_total", 
-                          label: "Valor Total", 
-                          searchable: true,
-                          render: (item) => <span className="font-bold text-indigo-400 font-mono">R$ {Number(item.valor_total || 0).toFixed(2)}</span>
-                        },
-                        { 
-                          key: "valor_imposto", 
-                          label: "Impostos", 
-                          searchable: true,
-                          render: (item) => <span className="text-gray-450 font-mono">R$ {Number(item.valor_imposto || 0).toFixed(2)}</span>
-                        },
-                        {
-                          key: "acoes",
-                          label: "Ações",
-                          render: (item) => (
-                            <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                              <button onClick={(e) => { e.stopPropagation(); handleEditLancamento(item); }} className="p-1.5 hover:bg-indigo-900/30 text-indigo-400 rounded-lg transition" title="Editar lançamento">
-                                <Edit2 className="h-3.5 w-3.5" />
-                              </button>
-                              <button onClick={(e) => { e.stopPropagation(); handleDeleteLancamento(item.id); }} className="p-1.5 hover:bg-rose-900/30 text-rose-400 rounded-lg transition" title="Excluir lançamento">
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                          )
-                        }
-                      ]}
-                    />
+                <div className="bg-[#0f0f0f] border border-white/10 p-6 rounded-xl shadow-sm space-y-5">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/10 pb-4">
+                    <div>
+                      <h4 className="font-bold text-white text-base flex items-center gap-2">
+                        <Layers className="h-5 w-5 text-indigo-400" />
+                        Árvore de Lançamentos Agrupados por Mês
+                      </h4>
+                      <p className="text-xs text-gray-400">
+                        Registros organizados em blocos mensais para facilitar a busca, conferência e auditoria de faturas
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="relative">
+                        <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                        <input
+                          type="text"
+                          placeholder="Buscar CODNUM, Unidade, ID..."
+                          value={lancSearchTerm}
+                          onChange={(e) => setLancSearchTerm(e.target.value)}
+                          className="bg-[#141414] border border-white/10 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 w-56 sm:w-64 transition"
+                        />
+                      </div>
+
+                      <div className="bg-[#141414] border border-white/10 rounded-xl p-1 flex items-center text-xs font-bold">
+                        <button
+                          onClick={() => setLancViewMode("blocks")}
+                          className={`px-3 py-1 rounded-lg transition ${
+                            lancViewMode === "blocks"
+                              ? "bg-indigo-600 text-white shadow-sm"
+                              : "text-gray-400 hover:text-white"
+                          }`}
+                        >
+                          📁 Blocos por Mês
+                        </button>
+                        <button
+                          onClick={() => setLancViewMode("table")}
+                          className={`px-3 py-1 rounded-lg transition ${
+                            lancViewMode === "table"
+                              ? "bg-indigo-600 text-white shadow-sm"
+                              : "text-gray-400 hover:text-white"
+                          }`}
+                        >
+                          📋 Lista Geral
+                        </button>
+                      </div>
+                    </div>
                   </div>
+
+                  {lancViewMode === "table" ? (
+                    <div className="text-gray-300">
+                      <SmartTable
+                        tableId="web_lancamentos"
+                        data={lancamentos.filter(l => {
+                          if (concessionaireFilter === 'CASAN') return isCasan(l);
+                          if (concessionaireFilter === 'CELESC') return isCelesc(l);
+                          if (concessionaireFilter === 'OUTROS') return !isCasan(l) && !isCelesc(l);
+                          return true;
+                        })}
+                        searchPlaceholder="Filtrar por CODNUM, Unidade..."
+                        columns={[
+                          { key: "id", label: "ID", searchable: true },
+                          { 
+                            key: "mes_ano", 
+                            label: "Comp. / Ref", 
+                            searchable: true,
+                            render: (item) => {
+                              const dateObj = new Date(item.mes_ano);
+                              return <span className="font-mono font-bold">{`${String(dateObj.getMonth() + 1).padStart(2, '0')}/${dateObj.getFullYear()}`}</span>;
+                            }
+                          },
+                          { key: "codigo_numero", label: "CODNUM", searchable: true },
+                          { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
+                          { key: "consumo", label: "Consumo", searchable: true },
+                          { 
+                            key: "valor_total", 
+                            label: "Valor Total", 
+                            searchable: true,
+                            render: (item) => <span className="font-bold text-indigo-400 font-mono">R$ {Number(item.valor_total || 0).toFixed(2)}</span>
+                          },
+                          { 
+                            key: "valor_imposto", 
+                            label: "Impostos", 
+                            searchable: true,
+                            render: (item) => <span className="text-gray-450 font-mono">R$ {Number(item.valor_imposto || 0).toFixed(2)}</span>
+                          },
+                          {
+                            key: "acoes",
+                            label: "Ações",
+                            render: (item) => (
+                              <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                                <button onClick={(e) => { e.stopPropagation(); handleEditLancamento(item); }} className="p-1.5 hover:bg-indigo-900/30 text-indigo-400 rounded-lg transition" title="Editar lançamento">
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                </button>
+                                <button onClick={(e) => { e.stopPropagation(); handleDeleteLancamento(item.id); }} className="p-1.5 hover:bg-rose-900/30 text-rose-400 rounded-lg transition" title="Excluir lançamento">
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            )
+                          }
+                        ]}
+                      />
+                    </div>
+                  ) : (() => {
+                    // Filter items
+                    const filtered = lancamentos.filter(l => {
+                      if (concessionaireFilter === 'CASAN' && !isCasan(l)) return false;
+                      if (concessionaireFilter === 'CELESC' && !isCelesc(l)) return false;
+                      if (concessionaireFilter === 'OUTROS' && (isCasan(l) || isCelesc(l))) return false;
+
+                      if (!lancSearchTerm) return true;
+                      const term = lancSearchTerm.toLowerCase();
+                      const idStr = String(l.id || "").toLowerCase();
+                      const codNum = String(l.codigo_numero || "").toLowerCase();
+                      const unidade = String(l.unidade_nome || "").toLowerCase();
+                      const ref = String(l.mes_ano || "").toLowerCase();
+                      return idStr.includes(term) || codNum.includes(term) || unidade.includes(term) || ref.includes(term);
+                    });
+
+                    // Group by YYYY-MM
+                    const groups: Record<string, any[]> = {};
+                    filtered.forEach(l => {
+                      let key = "sem_data";
+                      if (l.mes_ano && l.mes_ano.length >= 7) {
+                        key = l.mes_ano.substring(0, 7);
+                      }
+                      if (!groups[key]) groups[key] = [];
+                      groups[key].push(l);
+                    });
+
+                    const sortedKeys = Object.keys(groups).sort((a, b) => {
+                      if (a === "sem_data") return 1;
+                      if (b === "sem_data") return -1;
+                      return b.localeCompare(a);
+                    });
+
+                    if (sortedKeys.length === 0) {
+                      return (
+                        <div className="text-center py-12 bg-[#121214] rounded-xl border border-white/5 space-y-3">
+                          <Folder className="h-10 w-10 text-gray-600 mx-auto" />
+                          <p className="text-sm font-medium text-gray-400">Nenhum lançamento encontrado para a busca especificada.</p>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between text-xs text-gray-400 px-1">
+                          <span>Exibindo <strong>{sortedKeys.length}</strong> {sortedKeys.length === 1 ? 'bloco mensal' : 'blocos mensais'} ({filtered.length} lançamentos no total)</span>
+                          <div className="flex gap-2 font-semibold">
+                            <button
+                              onClick={() => expandAllMonths(sortedKeys)}
+                              className="hover:text-indigo-400 transition"
+                            >
+                              Expandir Todos
+                            </button>
+                            <span>•</span>
+                            <button
+                              onClick={() => collapseAllMonths(sortedKeys)}
+                              className="hover:text-indigo-400 transition"
+                            >
+                              Recolher Todos
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-3">
+                          {sortedKeys.map(mKey => {
+                            const items = groups[mKey];
+                            const isCollapsed = collapsedMonths[mKey] === true;
+                            const totalValor = items.reduce((acc, it) => acc + (Number(it.valor_total) || 0), 0);
+                            const totalConsumo = items.reduce((acc, it) => acc + (Number(it.consumo) || 0), 0);
+
+                            // Categorize items inside the month
+                            const celescItems = items.filter(isCelesc);
+                            const casanItems = items.filter(isCasan);
+                            const outrosItems = items.filter(it => !isCelesc(it) && !isCasan(it));
+
+                            const categories = [
+                              {
+                                id: 'celesc',
+                                name: 'CELESC — Energia Elétrica',
+                                items: celescItems,
+                                unit: 'kWh',
+                                badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+                                headerBg: 'bg-[#1a1712] border-amber-500/20 hover:bg-[#241f17]',
+                                iconContainer: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+                                textColor: 'text-amber-400',
+                                Icon: Lightbulb
+                              },
+                              {
+                                id: 'casan',
+                                name: 'CASAN — Água e Esgoto',
+                                items: casanItems,
+                                unit: 'm³',
+                                badgeColor: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30',
+                                headerBg: 'bg-[#111a20] border-cyan-500/20 hover:bg-[#16222b]',
+                                iconContainer: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
+                                textColor: 'text-cyan-400',
+                                Icon: Droplets
+                              },
+                              {
+                                id: 'outros',
+                                name: 'Outros Tipos de Fatura',
+                                items: outrosItems,
+                                unit: 'unid.',
+                                badgeColor: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30',
+                                headerBg: 'bg-[#14141f] border-indigo-500/20 hover:bg-[#1b1b2a]',
+                                iconContainer: 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30',
+                                textColor: 'text-indigo-400',
+                                Icon: FileText
+                              }
+                            ];
+
+                            return (
+                              <div key={mKey} className="bg-[#141414] border border-white/10 rounded-xl overflow-hidden shadow-sm transition">
+                                <div
+                                  onClick={() => toggleMonthCollapse(mKey)}
+                                  className="w-full flex items-center justify-between p-4 bg-[#18181b] hover:bg-[#202024] cursor-pointer transition select-none"
+                                >
+                                  <div className="flex items-center gap-3">
+                                    <div className={`p-2 rounded-lg border transition ${isCollapsed ? 'bg-indigo-950/40 border-indigo-800/40 text-indigo-400' : 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-600/30'}`}>
+                                      {isCollapsed ? <Folder className="h-5 w-5" /> : <FolderOpen className="h-5 w-5" />}
+                                    </div>
+                                    <div>
+                                      <div className="flex items-center gap-2">
+                                        <span className="font-bold text-white text-sm">
+                                          {formatMonthTitle(mKey)}
+                                        </span>
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                        <span className="bg-indigo-500/20 text-indigo-300 text-[11px] font-mono font-bold px-2 py-0.5 rounded-full border border-indigo-500/30">
+                                          {items.length} {items.length === 1 ? 'lançamento' : 'lançamentos'}
+                                        </span>
+                                        {celescItems.length > 0 && (
+                                          <span className="bg-amber-500/20 text-amber-300 text-[11px] font-mono font-bold px-2 py-0.5 rounded-full border border-amber-500/30 flex items-center gap-1">
+                                            ⚡ CELESC: {celescItems.length}
+                                          </span>
+                                        )}
+                                        {casanItems.length > 0 && (
+                                          <span className="bg-cyan-500/20 text-cyan-300 text-[11px] font-mono font-bold px-2 py-0.5 rounded-full border border-cyan-500/30 flex items-center gap-1">
+                                            💧 CASAN: {casanItems.length}
+                                          </span>
+                                        )}
+                                        {outrosItems.length > 0 && (
+                                          <span className="bg-indigo-500/20 text-indigo-300 text-[11px] font-mono font-bold px-2 py-0.5 rounded-full border border-indigo-500/30 flex items-center gap-1">
+                                            📑 Outros: {outrosItems.length}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-3">
+                                    <div className="hidden md:flex items-center gap-2 text-xs">
+                                      <div className="bg-black/50 px-3 py-1 rounded-lg border border-white/5">
+                                        <span className="text-gray-400">Consumo Total: </span>
+                                        <span className="font-bold text-white font-mono">{totalConsumo.toLocaleString('pt-BR')}</span>
+                                      </div>
+                                      <div className="bg-black/50 px-3 py-1 rounded-lg border border-white/5">
+                                        <span className="text-gray-400">Total Faturado: </span>
+                                        <span className="font-bold text-indigo-400 font-mono">R$ {totalValor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                      </div>
+                                    </div>
+                                    <div className="text-gray-400 hover:text-white p-1">
+                                      {isCollapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {!isCollapsed && (
+                                  <div className="p-4 border-t border-white/10 bg-[#0c0c0e] space-y-4">
+                                    {categories.filter(c => c.items.length > 0).map(cat => {
+                                      const catKey = `${mKey}_${cat.id}`;
+                                      const isCatCollapsed = collapsedCategories[catKey] === true;
+                                      const catTotalValor = cat.items.reduce((acc, it) => acc + (Number(it.valor_total) || 0), 0);
+                                      const catTotalConsumo = cat.items.reduce((acc, it) => acc + (Number(it.consumo) || 0), 0);
+                                      const CatIcon = cat.Icon;
+
+                                      return (
+                                        <div key={cat.id} className="border border-white/10 rounded-lg overflow-hidden bg-[#111114]">
+                                          {/* Category Sub-Header */}
+                                          <div
+                                            onClick={() => toggleCategoryCollapse(catKey)}
+                                            className={`w-full flex items-center justify-between p-3 border-b border-white/10 ${cat.headerBg} cursor-pointer transition select-none`}
+                                          >
+                                            <div className="flex items-center gap-2.5">
+                                              <div className={`p-1.5 rounded-md border ${cat.iconContainer}`}>
+                                                <CatIcon className="h-4 w-4" />
+                                              </div>
+                                              <div>
+                                                <div className="flex items-center gap-2">
+                                                  <span className="font-bold text-white text-xs sm:text-sm">
+                                                    {cat.name}
+                                                  </span>
+                                                  <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${cat.badgeColor}`}>
+                                                    {cat.items.length} {cat.items.length === 1 ? 'fatura' : 'faturas'}
+                                                  </span>
+                                                </div>
+                                              </div>
+                                            </div>
+
+                                            <div className="flex items-center gap-3">
+                                              <div className="hidden sm:flex items-center gap-2 text-[11px]">
+                                                <span className="text-gray-400">Consumo: <strong className="text-white font-mono">{catTotalConsumo.toLocaleString('pt-BR')} {cat.unit}</strong></span>
+                                                <span className="text-gray-500">•</span>
+                                                <span className="text-gray-400">Total: <strong className={`${cat.textColor} font-mono`}>R$ {catTotalValor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>
+                                              </div>
+                                              <div className="text-gray-400 hover:text-white p-1">
+                                                {isCatCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                                              </div>
+                                            </div>
+                                          </div>
+
+                                          {/* Category Table */}
+                                          {!isCatCollapsed && (
+                                            <div className="overflow-x-auto p-2 bg-[#09090b]">
+                                              <table className="w-full text-left text-xs text-gray-300 border-collapse">
+                                                <thead>
+                                                  <tr className="border-b border-white/10 text-gray-400 font-semibold uppercase tracking-wider text-[10px] bg-black/40">
+                                                    <th className="py-2 px-3">ID</th>
+                                                    <th className="py-2 px-3">Comp. / Ref</th>
+                                                    <th className="py-2 px-3">CODNUM</th>
+                                                    <th className="py-2 px-3">Unidade Gestora</th>
+                                                    <th className="py-2 px-3 text-right">Consumo ({cat.unit})</th>
+                                                    <th className="py-2 px-3 text-right">Valor Total</th>
+                                                    <th className="py-2 px-3 text-right">Impostos</th>
+                                                    <th className="py-2 px-3 text-center">Ações</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-white/5">
+                                                  {cat.items.map(item => (
+                                                    <tr key={item.id} className="hover:bg-white/5 transition">
+                                                      <td className="py-2 px-3 font-mono text-gray-400">#{item.id}</td>
+                                                      <td className="py-2 px-3 font-mono font-bold text-white">
+                                                        {item.mes_ano ? formatShortRef(item.mes_ano) : '-'}
+                                                      </td>
+                                                      <td className="py-2 px-3 font-mono text-indigo-300 font-semibold">{item.codigo_numero}</td>
+                                                      <td className="py-2 px-3 font-medium text-gray-200">{item.unidade_nome || 'NÃO IDENTIFICADA'}</td>
+                                                      <td className="py-2 px-3 text-right font-mono text-gray-300">{Number(item.consumo || 0).toLocaleString('pt-BR')}</td>
+                                                      <td className={`py-2 px-3 text-right font-mono font-bold ${cat.textColor}`}>R$ {Number(item.valor_total || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                                      <td className="py-2 px-3 text-right font-mono text-gray-400">R$ {Number(item.valor_imposto || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                                      <td className="py-2 px-3 text-center">
+                                                        <div className="flex items-center justify-center gap-1.5">
+                                                          <button
+                                                            onClick={() => handleEditLancamento(item)}
+                                                            className="p-1.5 hover:bg-indigo-900/40 text-indigo-400 rounded-lg transition"
+                                                            title="Editar lançamento completo"
+                                                          >
+                                                            <Edit2 className="h-3.5 w-3.5" />
+                                                          </button>
+                                                          <button
+                                                            onClick={() => handleDeleteLancamento(item.id)}
+                                                            className="p-1.5 hover:bg-rose-900/40 text-rose-400 rounded-lg transition"
+                                                            title="Excluir lançamento"
+                                                          >
+                                                            <Trash2 className="h-3.5 w-3.5" />
+                                                          </button>
+                                                        </div>
+                                                      </td>
+                                                    </tr>
+                                                  ))}
+                                                </tbody>
+                                              </table>
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             )}
@@ -1553,7 +2149,10 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
           <AuditoriaDashboard 
             lancamentos={lancamentos} 
             secretarias={secretarias} 
-            unidades={unidades} 
+            unidades={unidades}
+            despesas={despesas}
+            itens={itens}
+            externalConcessionaireFilter={concessionaireFilter}
           />
         )}
 
@@ -1853,6 +2452,214 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                 {isResetting ? "Zerando Banco..." : "Confirmar e Zerar Banco"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Lançamento Modal */}
+      {editLancModal && editLancModal.isOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-[#121214] border border-white/10 rounded-2xl max-w-3xl w-full p-6 space-y-6 shadow-2xl my-8 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-indigo-600/20 text-indigo-400 rounded-xl border border-indigo-500/20">
+                  <Edit2 className="h-6 w-6" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-white text-lg">Editar Lançamento Completo</h3>
+                  <p className="text-xs text-gray-400">ID Registrado: #{editLancModal.lancamento?.id}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setEditLancModal(null)}
+                className="text-gray-400 hover:text-white p-2 rounded-lg hover:bg-white/5 transition"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditLancamentoModal} className="space-y-6">
+              {/* Bloco 1: Identificação e Referência */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">1. Contrato e Vínculo Organizacional</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-gray-300">Contrato CODNUM Associado:</label>
+                    <select
+                      required
+                      value={editLancModal.item_despesa_id}
+                      onChange={(e) => setEditLancModal({ ...editLancModal, item_despesa_id: e.target.value })}
+                      className="w-full bg-[#18181b] border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                    >
+                      <option value="">Selecione o CODNUM...</option>
+                      {itens.map(it => (
+                        <option key={it.id} value={it.id}>
+                          {it.codigo_numero} — {it.unidade_nome || 'Sem Unidade'}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-gray-300">Secretaria Gestora de Vínculo:</label>
+                    <select
+                      value={editLancModal.secretaria_id}
+                      onChange={(e) => setEditLancModal({ ...editLancModal, secretaria_id: e.target.value })}
+                      className="w-full bg-[#18181b] border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                    >
+                      <option value="">Automático pelo Contrato (Manter padrão)</option>
+                      {secretarias.map(s => (
+                        <option key={s.id} value={s.id}>{s.nome}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Bloco 2: Datas e Competência */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">2. Datas e Mês de Referência</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-gray-300">Mês de Referência / Competência:</label>
+                    <input
+                      type="date"
+                      required
+                      value={editLancModal.mes_ano}
+                      onChange={(e) => setEditLancModal({ ...editLancModal, mes_ano: e.target.value })}
+                      className="w-full bg-[#18181b] border border-white/10 rounded-xl px-3.5 py-2.5 font-mono text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-gray-300">Data do Lançamento / Vencimento:</label>
+                    <input
+                      type="date"
+                      value={editLancModal.data_lancamento}
+                      onChange={(e) => setEditLancModal({ ...editLancModal, data_lancamento: e.target.value })}
+                      className="w-full bg-[#18181b] border border-white/10 rounded-xl px-3.5 py-2.5 font-mono text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Bloco 3: Consumos e Valores do Faturamento */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">3. Valorações e Consumo Faturado</h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-gray-300">Consumo Registrado (kWh / m³):</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={editLancModal.consumo}
+                      onChange={(e) => setEditLancModal({ ...editLancModal, consumo: e.target.value })}
+                      className="w-full bg-[#18181b] border border-white/10 rounded-xl px-3.5 py-2.5 font-mono text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                      placeholder="0"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-gray-300">Valor Total Faturado (R$):</label>
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      value={editLancModal.valor_total}
+                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_total: e.target.value })}
+                      className="w-full bg-[#18181b] border border-indigo-500/50 text-indigo-400 font-bold rounded-xl px-3.5 py-2.5 font-mono text-xs focus:outline-none focus:border-indigo-400 transition"
+                      placeholder="0.00"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-gray-300">Valor dos Impostos (R$):</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={editLancModal.valor_imposto}
+                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_imposto: e.target.value })}
+                      className="w-full bg-[#18181b] border border-white/10 rounded-xl px-3.5 py-2.5 font-mono text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Bloco 4: Desmembramento e Complementos */}
+              <div className="space-y-3 bg-[#18181b]/50 border border-white/5 p-4 rounded-xl">
+                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">4. Desmembramento de Serviços Complementares (Opcional)</h4>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
+                  <div className="space-y-1">
+                    <label className="text-gray-400 text-[11px]">Celular (R$)</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={editLancModal.valor_celular}
+                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_celular: e.target.value })}
+                      className="w-full bg-[#121214] border border-white/10 rounded-lg px-2.5 py-1.5 font-mono text-white text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-gray-400 text-[11px]">Internet (R$)</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={editLancModal.valor_internet}
+                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_internet: e.target.value })}
+                      className="w-full bg-[#121214] border border-white/10 rounded-lg px-2.5 py-1.5 font-mono text-white text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-gray-400 text-[11px]">Diversos (R$)</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={editLancModal.valor_diversos}
+                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_diversos: e.target.value })}
+                      className="w-full bg-[#121214] border border-white/10 rounded-lg px-2.5 py-1.5 font-mono text-white text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-gray-400 text-[11px]">Linha Priv. (R$)</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={editLancModal.valor_linha_privada}
+                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_linha_privada: e.target.value })}
+                      className="w-full bg-[#121214] border border-white/10 rounded-lg px-2.5 py-1.5 font-mono text-white text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-gray-400 text-[11px]">Créditos (R$)</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={editLancModal.valor_credito}
+                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_credito: e.target.value })}
+                      className="w-full bg-[#121214] border border-white/10 rounded-lg px-2.5 py-1.5 font-mono text-white text-xs"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Botoes Acoes */}
+              <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
+                <button
+                  type="button"
+                  onClick={() => setEditLancModal(null)}
+                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-white/5 hover:bg-white/10 text-gray-300 transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-6 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition shadow-lg shadow-indigo-600/30"
+                >
+                  Salvar Lançamento
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

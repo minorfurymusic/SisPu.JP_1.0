@@ -4,19 +4,89 @@ import {
   DollarSign, Activity, Building2, Flame, Award, HelpCircle, Filter, 
   BarChart3, PieChart, FileText, CheckCircle2, ArrowUpRight, Search, RefreshCw, Eye
 } from "lucide-react";
-import { Lancamento, Secretaria, Unidade } from "../types";
+import { Lancamento, Secretaria, Unidade, Despesa, ItemDespesa } from "../types";
 
 interface AuditoriaDashboardProps {
   lancamentos: Lancamento[];
   secretarias: Secretaria[];
   unidades: Unidade[];
+  despesas?: Despesa[];
+  itens?: ItemDespesa[];
+  externalConcessionaireFilter?: "ALL" | "CASAN" | "CELESC" | "OUTROS";
 }
 
-export default function AuditoriaDashboard({ lancamentos = [], secretarias = [], unidades = [] }: AuditoriaDashboardProps) {
+export default function AuditoriaDashboard({ 
+  lancamentos = [], 
+  secretarias = [], 
+  unidades = [],
+  despesas = [],
+  itens = [],
+  externalConcessionaireFilter
+}: AuditoriaDashboardProps) {
   const [selectedMonth, setSelectedMonth] = useState<string>("ALL");
   const [selectedSecretaria, setSelectedSecretaria] = useState<string>("ALL");
-  const [selectedConcessionaire, setSelectedConcessionaire] = useState<"ALL" | "CELESC" | "CASAN">("ALL");
+  const [selectedConcessionaire, setSelectedConcessionaire] = useState<"ALL" | "CELESC" | "CASAN" | "OUTROS">("ALL");
   const [activeTab, setActiveTab] = useState<"ANOMALIAS" | "RANKING" | "SOLAR" | "IMPOSTOS_PERDAS" | "BANDEIRAS">("ANOMALIAS");
+
+  // Sync external filter from parent top bar if provided
+  React.useEffect(() => {
+    if (externalConcessionaireFilter) {
+      setSelectedConcessionaire(externalConcessionaireFilter);
+    }
+  }, [externalConcessionaireFilter]);
+
+  // Helper to accurately classify CASAN (water/m³) vs CELESC (electricity/kWh)
+  const getConcessionaireInfo = (l: Lancamento) => {
+    const textDirect = `${l.codigo_numero || ''} ${l.unidade_nome || ''} ${l.secretaria_nome || ''}`.toLowerCase();
+    
+    let isCasan = textDirect.includes('casan') || textDirect.includes('água') || textDirect.includes('agua') || textDirect.includes('esgoto') || textDirect.includes('saneamento') || textDirect.includes('hídric') || textDirect.includes('hidric');
+    let isCelesc = textDirect.includes('celesc') || textDirect.includes('energia') || textDirect.includes('luz') || textDirect.includes('elétric') || textDirect.includes('eletric') || textDirect.includes('kwh');
+
+    if (!isCasan && !isCelesc && l.item_despesa_id && itens.length > 0) {
+      const item = itens.find(it => String(it.id) === String(l.item_despesa_id));
+      if (item) {
+        const desDesc = (item as any).despesa_descricao || '';
+        const itemText = `${item.codigo_numero || ''} ${desDesc} ${item.medidor || ''}`.toLowerCase();
+        if (itemText.includes('casan') || itemText.includes('água') || itemText.includes('agua') || itemText.includes('esgoto') || itemText.includes('saneamento') || itemText.includes('hídric') || itemText.includes('hidric')) {
+          isCasan = true;
+        } else if (itemText.includes('celesc') || itemText.includes('energia') || itemText.includes('luz') || itemText.includes('elétric') || itemText.includes('eletric') || itemText.includes('kwh')) {
+          isCelesc = true;
+        }
+
+        if (!isCasan && !isCelesc && item.despesa_id && despesas.length > 0) {
+          const despesa = despesas.find(d => String(d.id) === String(item.despesa_id));
+          if (despesa) {
+            const desText = `${despesa.descricao || ''}`.toLowerCase();
+            if (desText.includes('casan') || desText.includes('água') || desText.includes('agua') || desText.includes('esgoto') || desText.includes('saneamento') || desText.includes('hídric') || desText.includes('hidric')) {
+              isCasan = true;
+            } else if (desText.includes('celesc') || desText.includes('energia') || desText.includes('luz') || desText.includes('elétric') || desText.includes('eletric') || desText.includes('kwh')) {
+              isCelesc = true;
+            }
+          }
+        }
+      }
+    }
+
+    // System-wide fallback: If user registered ONLY CASAN / Water despesas in despesas table
+    if (!isCasan && !isCelesc && despesas.length > 0) {
+      const hasCasanDespesa = despesas.some(d => {
+        const txt = (d.descricao || '').toLowerCase();
+        return txt.includes('casan') || txt.includes('água') || txt.includes('agua') || txt.includes('esgoto') || txt.includes('saneamento');
+      });
+      const hasCelescDespesa = despesas.some(d => {
+        const txt = (d.descricao || '').toLowerCase();
+        return txt.includes('celesc') || txt.includes('energia') || txt.includes('luz');
+      });
+
+      if (hasCasanDespesa && !hasCelescDespesa) {
+        isCasan = true;
+      } else if (hasCelescDespesa && !hasCasanDespesa) {
+        isCelesc = true;
+      }
+    }
+
+    return { isCasan, isCelesc };
+  };
 
   // Filter options for months
   const availableMonths = useMemo(() => {
@@ -30,15 +100,15 @@ export default function AuditoriaDashboard({ lancamentos = [], secretarias = [],
       if (selectedMonth !== "ALL" && l.mes_ano !== selectedMonth) return false;
       if (selectedSecretaria !== "ALL" && l.secretaria_id !== selectedSecretaria && l.secretaria_nome !== selectedSecretaria) return false;
       
-      const isCelesc = l.codigo_numero?.includes("CELESC") || l.unidade_nome?.toLowerCase().includes("celesc") || (!l.unidade_nome?.toLowerCase().includes("casan") && l.consumo > 100);
-      const isCasan = l.codigo_numero?.includes("CASAN") || l.unidade_nome?.toLowerCase().includes("casan");
+      const { isCasan, isCelesc } = getConcessionaireInfo(l);
 
       if (selectedConcessionaire === "CELESC" && !isCelesc) return false;
       if (selectedConcessionaire === "CASAN" && !isCasan) return false;
+      if (selectedConcessionaire === "OUTROS" && (isCasan || isCelesc)) return false;
 
       return true;
     });
-  }, [lancamentos, selectedMonth, selectedSecretaria, selectedConcessionaire]);
+  }, [lancamentos, selectedMonth, selectedSecretaria, selectedConcessionaire, despesas, itens]);
 
   // Global KPIs calculation
   const stats = useMemo(() => {
@@ -46,28 +116,30 @@ export default function AuditoriaDashboard({ lancamentos = [], secretarias = [],
     let totalM3 = 0;
     let totalValor = 0;
     let totalImposto = 0;
+    let totalCredito = 0;
     let count = filteredLancamentos.length;
 
     filteredLancamentos.forEach(l => {
-      const isWater = l.unidade_nome?.toLowerCase().includes("casan") || l.codigo_numero?.toLowerCase().includes("casan") || l.codigo_numero?.startsWith("02.");
-      if (isWater) {
+      const { isCasan } = getConcessionaireInfo(l);
+      if (isCasan) {
         totalM3 += Number(l.consumo || 0);
       } else {
         totalKwh += Number(l.consumo || 0);
       }
       totalValor += Number(l.valor_total || 0);
       totalImposto += Number(l.valor_imposto || 0);
+      totalCredito += Number(l.valor_credito || 0);
     });
 
-    return { totalKwh, totalM3, totalValor, totalImposto, count };
-  }, [filteredLancamentos]);
+    return { totalKwh, totalM3, totalValor, totalImposto, totalCredito, count };
+  }, [filteredLancamentos, despesas, itens]);
 
   // Anomaly Detection Algorithm (> 20% variance compared to unit average)
   const anomalies = useMemo(() => {
     // Group lancamentos by unit (unidade_nome or item_despesa_id)
     const unitGroups: { [key: string]: Lancamento[] } = {};
 
-    lancamentos.forEach(l => {
+    filteredLancamentos.forEach(l => {
       const key = l.unidade_nome || l.item_despesa_id || "Unidade Desconhecida";
       if (!unitGroups[key]) unitGroups[key] = [];
       unitGroups[key].push(l);
@@ -100,7 +172,7 @@ export default function AuditoriaDashboard({ lancamentos = [], secretarias = [],
         const variance = ((latest.consumo - historyAvgConsumo) / historyAvgConsumo) * 100;
 
         if (variance >= 20) {
-          const isWater = unitName.toLowerCase().includes("casan") || latest.codigo_numero?.toLowerCase().includes("casan") || latest.codigo_numero?.startsWith("02.");
+          const { isCasan } = getConcessionaireInfo(latest);
           detectedAnomalies.push({
             unitName,
             secretariaNome: latest.secretaria_nome || "Não informada",
@@ -109,7 +181,7 @@ export default function AuditoriaDashboard({ lancamentos = [], secretarias = [],
             currentConsumo: latest.consumo,
             avgConsumo: historyAvgConsumo,
             variancePercent: Math.round(variance),
-            type: isWater ? "VAZAMENTO_AGUA" : "FUGA_ENERGIA",
+            type: isCasan ? "VAZAMENTO_AGUA" : "FUGA_ENERGIA",
             lancamento: latest
           });
         }
@@ -117,7 +189,7 @@ export default function AuditoriaDashboard({ lancamentos = [], secretarias = [],
     });
 
     return detectedAnomalies.sort((a, b) => b.variancePercent - a.variancePercent);
-  }, [lancamentos]);
+  }, [filteredLancamentos, despesas, itens]);
 
   // Ranking of Highest Consuming Units
   const unitRanking = useMemo(() => {
@@ -131,8 +203,8 @@ export default function AuditoriaDashboard({ lancamentos = [], secretarias = [],
         rankingMap[name] = { name, sec, totalVal: 0, totalConsumoKwh: 0, totalConsumoM3: 0, count: 0 };
       }
 
-      const isWater = name.toLowerCase().includes("casan") || l.codigo_numero?.toLowerCase().includes("casan");
-      if (isWater) {
+      const { isCasan } = getConcessionaireInfo(l);
+      if (isCasan) {
         rankingMap[name].totalConsumoM3 += Number(l.consumo || 0);
       } else {
         rankingMap[name].totalConsumoKwh += Number(l.consumo || 0);
@@ -142,57 +214,130 @@ export default function AuditoriaDashboard({ lancamentos = [], secretarias = [],
     });
 
     return Object.values(rankingMap).sort((a, b) => b.totalVal - a.totalVal);
-  }, [filteredLancamentos]);
+  }, [filteredLancamentos, despesas, itens]);
 
-  // Solar Distributed Generation
+  // Solar Distributed Generation - 100% Real calculation from filtered database records
   const solarData = useMemo(() => {
-    // Generate realistic solar microgeneration insights based on energy bills
-    const solarUnits = [
-      { name: "SME - E.B.M. Pedro II (Geradora Solar UC 40192)", generatedKwh: 12450, compensatedVal: 11827.50, beneficiaryUnitsCount: 8, status: "Geradora Principal" },
-      { name: "SMS - Posto de Saúde Central (UC 50211)", generatedKwh: 6800, compensatedVal: 6460.00, beneficiaryUnitsCount: 4, status: "Autoconsumo Remoto" },
-      { name: "SOSP - Galpão de Obras (UC 30910)", generatedKwh: 4300, compensatedVal: 4085.00, beneficiaryUnitsCount: 2, status: "Microgeração Local" }
-    ];
+    if (selectedConcessionaire === "CASAN") {
+      return {
+        isWaterConcessionaire: true,
+        solarUnits: [],
+        totalKwhGenerated: 0,
+        totalCompensatedR$: 0,
+        message: "Faturas da CASAN referem-se ao abastecimento de água e saneamento hídrico. O sistema de microgeração fotovoltaica (GD) opera exclusivamente integrado à rede elétrica (CELESC)."
+      };
+    }
 
-    const totalKwhGenerated = solarUnits.reduce((acc, u) => acc + u.generatedKwh, 0);
-    const totalCompensatedR$ = solarUnits.reduce((acc, u) => acc + u.compensatedVal, 0);
+    // Filter real lancamentos that have credit values
+    const solarLancamentos = filteredLancamentos.filter(l => Number(l.valor_credito || 0) > 0);
 
-    return { solarUnits, totalKwhGenerated, totalCompensatedR$ };
-  }, []);
+    const solarUnitsMap: { [unitName: string]: { name: string; totalKwh: number; compensatedVal: number; count: number } } = {};
 
-  // Taxes and Technical Losses
-  const taxLossesData = useMemo(() => {
-    const totalTax = stats.totalImposto || (stats.totalValor * 0.22); // Estimativa de impostos se zerado
-    const icms = totalTax * 0.65;
-    const pisCofins = totalTax * 0.20;
-    const cosip = totalTax * 0.15;
+    let totalCompensatedR$ = 0;
+    let totalKwhGenerated = 0;
 
-    // Technical losses & penalties
-    const reativoExcedente = stats.totalValor * 0.024; // Fator de potência < 0,92
-    const ultrapassagemDemanda = stats.totalValor * 0.018; // Demanda contratada excedida
-    const perdasTransformacao = stats.totalValor * 0.012; // Perdas técnicas no transformador municipal
+    solarLancamentos.forEach(l => {
+      const name = l.unidade_nome || "Unidade com Crédito GD";
+      if (!solarUnitsMap[name]) {
+        solarUnitsMap[name] = { name, totalKwh: 0, compensatedVal: 0, count: 0 };
+      }
+      solarUnitsMap[name].compensatedVal += Number(l.valor_credito || 0);
+      solarUnitsMap[name].totalKwh += Number(l.consumo || 0);
+      solarUnitsMap[name].count += 1;
+
+      totalCompensatedR$ += Number(l.valor_credito || 0);
+      totalKwhGenerated += Number(l.consumo || 0);
+    });
+
+    const solarUnits = Object.values(solarUnitsMap);
 
     return {
-      icms,
-      pisCofins,
-      cosip,
-      totalTax,
-      reativoExcedente,
-      ultrapassagemDemanda,
-      perdasTransformacao,
-      totalLosses: reativoExcedente + ultrapassagemDemanda + perdasTransformacao
+      isWaterConcessionaire: false,
+      solarUnits,
+      totalKwhGenerated,
+      totalCompensatedR$,
+      hasRecords: solarUnits.length > 0,
+      message: solarUnits.length === 0 
+        ? "Nenhum crédito de energia solar (campo valor_credito) registrado nos lançamentos auditados desta seleção." 
+        : `Identificados ${solarUnits.length} unidades com créditos de geração distribuída.`
     };
-  }, [stats]);
+  }, [filteredLancamentos, selectedConcessionaire]);
 
-  // Tariff Flags Analysis
+  // Taxes and Technical Losses - 100% Real calculation from database records
+  const taxLossesData = useMemo(() => {
+    let totalTax = 0;
+    let totalValor = stats.totalValor;
+    let countWithTax = 0;
+
+    filteredLancamentos.forEach(l => {
+      if (Number(l.valor_imposto || 0) > 0) {
+        totalTax += Number(l.valor_imposto);
+        countWithTax += 1;
+      }
+    });
+
+    const effectiveTaxPercent = totalValor > 0 ? (totalTax / totalValor) * 100 : 0;
+
+    return {
+      totalTax,
+      effectiveTaxPercent,
+      countWithTax,
+      totalValor,
+      isCasanOnly: selectedConcessionaire === "CASAN",
+      isCelescOnly: selectedConcessionaire === "CELESC",
+      avgWaterPricePerM3: stats.totalM3 > 0 ? (stats.totalValor / stats.totalM3) : 0,
+      avgEnergyPricePerKwh: stats.totalKwh > 0 ? (stats.totalValor / stats.totalKwh) : 0,
+    };
+  }, [filteredLancamentos, stats, selectedConcessionaire]);
+
+  // Tariff Flags Analysis - 100% Real calculation based on measured kWh from database
   const flagAnalysis = useMemo(() => {
-    const totalVal = stats.totalValor || 10000;
-    return [
-      { flag: "Bandeira Verde", description: "Condições favoráveis de geração (sem adicional)", percent: 55, amount: totalVal * 0.55, badgeBg: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30" },
-      { flag: "Bandeira Amarela", description: "Geração menos favorável (+R$ 0,01885 por kWh)", percent: 25, amount: totalVal * 0.25, badgeBg: "bg-amber-500/20 text-amber-300 border-amber-500/30" },
-      { flag: "Bandeira Vermelha P1", description: "Uso ostensivo de termelétricas (+R$ 0,04463 por kWh)", percent: 12, amount: totalVal * 0.12, badgeBg: "bg-red-500/20 text-red-300 border-red-500/30" },
-      { flag: "Bandeira Vermelha P2", description: "Alto custo de acionamento de usinas (+R$ 0,07877 por kWh)", percent: 8, amount: totalVal * 0.08, badgeBg: "bg-rose-600/30 text-rose-200 border-rose-500/40" },
-    ];
-  }, [stats]);
+    if (selectedConcessionaire === "CASAN") {
+      return {
+        isWaterConcessionaire: true,
+        message: "As Bandeiras Tarifárias ANEEL (Verde, Amarela, Vermelha) aplicam-se exclusivamente às faturas de Energia Elétrica (CELESC). Faturas da CASAN são regidas pelas tabelas da ARESC/CISAN baseadas em faixas de consumo de água (m³) e taxa de esgoto."
+      };
+    }
+
+    const totalKwh = stats.totalKwh;
+    const totalVal = stats.totalValor;
+
+    return {
+      isWaterConcessionaire: false,
+      totalKwh,
+      totalVal,
+      flags: [
+        {
+          flag: "Bandeira Verde",
+          description: "Condições favoráveis de geração na bacia hidrográfica (Sem acréscimo tarifário)",
+          additionPerKwh: 0,
+          estimatedAdditionalCost: 0,
+          badgeBg: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+        },
+        {
+          flag: "Bandeira Amarela",
+          description: "Geração térmica menos favorável (+R$ 0,01885 por kWh consumido)",
+          additionPerKwh: 0.01885,
+          estimatedAdditionalCost: totalKwh * 0.01885,
+          badgeBg: "bg-amber-500/20 text-amber-300 border-amber-500/30"
+        },
+        {
+          flag: "Bandeira Vermelha P1",
+          description: "Acionamento ostensivo de usinas termelétricas (+R$ 0,04463 por kWh consumido)",
+          additionPerKwh: 0.04463,
+          estimatedAdditionalCost: totalKwh * 0.04463,
+          badgeBg: "bg-red-500/20 text-red-300 border-red-500/30"
+        },
+        {
+          flag: "Bandeira Vermelha P2",
+          description: "Escassez hídrica e alto custo de combustíveis (+R$ 0,07877 por kWh consumido)",
+          additionPerKwh: 0.07877,
+          estimatedAdditionalCost: totalKwh * 0.07877,
+          badgeBg: "bg-rose-600/30 text-rose-200 border-rose-500/40"
+        }
+      ]
+    };
+  }, [stats, selectedConcessionaire]);
 
   return (
     <div className="space-y-6">
@@ -245,6 +390,7 @@ export default function AuditoriaDashboard({ lancamentos = [], secretarias = [],
               <option value="ALL">Todas Concessionárias</option>
               <option value="CELESC">CELESC (Energia)</option>
               <option value="CASAN">CASAN (Água)</option>
+              <option value="OUTROS">Outros Serviços</option>
             </select>
           </div>
         </div>
@@ -566,12 +712,12 @@ export default function AuditoriaDashboard({ lancamentos = [], secretarias = [],
                 </span>
                 <h3 className="text-lg font-bold text-white mt-1">Balanço do Sistema de Geração Fotovoltaica</h3>
                 <p className="text-xs text-gray-400 mt-1 max-w-xl">
-                  Créditos de energia solar injetados na rede elétrica da CELESC e compensados nas unidades consumidoras municipais.
+                  Créditos reais de energia solar (valor_credito) apurados nas faturas auditadas.
                 </p>
               </div>
 
               <div className="bg-black/50 p-4 rounded-xl border border-emerald-500/30 text-right">
-                <span className="text-[10px] text-gray-400 uppercase font-bold block">Economia Direta Acumulada</span>
+                <span className="text-[10px] text-gray-400 uppercase font-bold block">Créditos Financeiros Auditados</span>
                 <span className="text-2xl font-mono font-extrabold text-emerald-400">
                   R$ {solarData.totalCompensatedR$.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                 </span>
@@ -579,36 +725,54 @@ export default function AuditoriaDashboard({ lancamentos = [], secretarias = [],
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {solarData.solarUnits.map((item, idx) => (
-              <div key={idx} className="bg-[#141414] p-5 rounded-xl border border-white/10 hover:border-emerald-500/30 transition space-y-3">
-                <div className="flex justify-between items-start">
-                  <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg">
-                    <Sun className="w-5 h-5" />
+          {solarData.isWaterConcessionaire ? (
+            <div className="bg-[#141414] border border-blue-500/30 rounded-2xl p-8 text-center space-y-3">
+              <Droplets className="w-10 h-10 text-blue-400 mx-auto" />
+              <h4 className="text-sm font-bold text-white">Geração Solar Não Aplicável para CASAN</h4>
+              <p className="text-xs text-gray-400 max-w-lg mx-auto">
+                {solarData.message}
+              </p>
+            </div>
+          ) : !solarData.hasRecords ? (
+            <div className="bg-[#141414] border border-white/10 rounded-2xl p-8 text-center space-y-3">
+              <Sun className="w-10 h-10 text-emerald-400/50 mx-auto" />
+              <h4 className="text-sm font-bold text-white">Nenhum Crédito de Energia Solar no Banco de Dados</h4>
+              <p className="text-xs text-gray-400 max-w-lg mx-auto">
+                {solarData.message}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {solarData.solarUnits.map((item, idx) => (
+                <div key={idx} className="bg-[#141414] p-5 rounded-xl border border-white/10 hover:border-emerald-500/30 transition space-y-3">
+                  <div className="flex justify-between items-start">
+                    <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg">
+                      <Sun className="w-5 h-5" />
+                    </div>
+                    <span className="text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/20">
+                      Geração Distribuída
+                    </span>
                   </div>
-                  <span className="text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/20">
-                    {item.status}
-                  </span>
-                </div>
 
-                <div>
-                  <h4 className="text-sm font-bold text-white">{item.name}</h4>
-                  <p className="text-xs text-gray-400 mt-0.5">Compensado em {item.beneficiaryUnitsCount} unidades consumidoras</p>
-                </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-white">{item.name}</h4>
+                    <p className="text-xs text-gray-400 mt-0.5">{item.count} faturas com crédito apurado</p>
+                  </div>
 
-                <div className="pt-3 border-t border-white/5 space-y-1 font-mono text-xs">
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Injeção Gerada:</span>
-                    <strong className="text-emerald-400">{item.generatedKwh.toLocaleString("pt-BR")} kWh</strong>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Crédito Financeiro:</span>
-                    <strong className="text-white">R$ {item.compensatedVal.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</strong>
+                  <div className="pt-3 border-t border-white/5 space-y-1 font-mono text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Consumo Auditado:</span>
+                      <strong className="text-amber-300">{item.totalKwh.toLocaleString("pt-BR")} kWh</strong>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Crédito (valor_credito):</span>
+                      <strong className="text-emerald-400">R$ {item.compensatedVal.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</strong>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -621,84 +785,110 @@ export default function AuditoriaDashboard({ lancamentos = [], secretarias = [],
             <div className="flex items-center gap-2 pb-3 border-b border-white/10">
               <PieChart className="w-5 h-5 text-amber-400" />
               <div>
-                <h3 className="text-sm font-bold text-white">Discriminação de Tributos Fiscais</h3>
-                <p className="text-xs text-gray-400">Composição de impostos nas faturas municipais</p>
+                <h3 className="text-sm font-bold text-white">Tributos Fiscais Auditados</h3>
+                <p className="text-xs text-gray-400">Valores extraídos diretamente do campo 'valor_imposto' das faturas</p>
               </div>
             </div>
 
             <div className="space-y-3">
-              <div className="bg-black/40 p-3 rounded-xl border border-white/5 flex justify-between items-center">
+              <div className="bg-black/40 p-4 rounded-xl border border-white/5 flex justify-between items-center">
                 <div>
-                  <span className="text-xs font-bold text-white block">ICMS (Imposto de Circulação de Mercadorias)</span>
-                  <span className="text-[10px] text-gray-400">Alíquota média praticada em energia e saneamento</span>
+                  <span className="text-xs font-bold text-white block">Total de Impostos Registrados</span>
+                  <span className="text-[10px] text-gray-400">Soma real de 'valor_imposto' de {taxLossesData.countWithTax} faturas com imposto preenchido</span>
                 </div>
-                <span className="text-sm font-mono font-bold text-amber-300">
-                  R$ {taxLossesData.icms.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                <span className="text-base font-mono font-bold text-amber-300">
+                  R$ {taxLossesData.totalTax.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                 </span>
               </div>
 
-              <div className="bg-black/40 p-3 rounded-xl border border-white/5 flex justify-between items-center">
+              <div className="bg-black/40 p-4 rounded-xl border border-white/5 flex justify-between items-center">
                 <div>
-                  <span className="text-xs font-bold text-white block">PIS / COFINS</span>
-                  <span className="text-[10px] text-gray-400">Contribuições sociais federais repassadas</span>
+                  <span className="text-xs font-bold text-white block">Carga Tributária Efetiva</span>
+                  <span className="text-[10px] text-gray-400">Proporção dos impostos sobre o total auditado</span>
                 </div>
-                <span className="text-sm font-mono font-bold text-amber-300">
-                  R$ {taxLossesData.pisCofins.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                <span className="text-base font-mono font-bold text-amber-300">
+                  {taxLossesData.effectiveTaxPercent.toFixed(2)}%
                 </span>
               </div>
 
-              <div className="bg-black/40 p-3 rounded-xl border border-white/5 flex justify-between items-center">
-                <div>
-                  <span className="text-xs font-bold text-white block">CIP / COSIP (Iluminação Pública)</span>
-                  <span className="text-[10px] text-gray-400">Contribuição municipal de iluminação pública</span>
+              {taxLossesData.totalTax === 0 && (
+                <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-300/80">
+                  Nota: O total de impostos é R$ 0,00 porque o campo 'valor_imposto' nos registros cadastrados está zerado ou não foi informado nas faturas importadas.
                 </div>
-                <span className="text-sm font-mono font-bold text-amber-300">
-                  R$ {taxLossesData.cosip.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                </span>
-              </div>
+              )}
             </div>
           </div>
 
-          {/* Perdas Técnicas e Multas Evitáveis */}
+          {/* Análise Tarifária e Eficiência */}
           <div className="bg-[#141414] p-6 rounded-2xl border border-white/10 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-white/10">
-              <ShieldAlert className="w-5 h-5 text-red-400" />
+              <ShieldAlert className="w-5 h-5 text-indigo-400" />
               <div>
-                <h3 className="text-sm font-bold text-white">Análise de Multas e Perdas Técnicas</h3>
-                <p className="text-xs text-gray-400">Valores passíveis de otimização e correção técnica</p>
+                <h3 className="text-sm font-bold text-white">Análise Tarifária & Eficiência</h3>
+                <p className="text-xs text-gray-400">Métricas calculadas a partir do volume e custo das faturas</p>
               </div>
             </div>
 
             <div className="space-y-3">
-              <div className="bg-red-950/20 p-3 rounded-xl border border-red-500/30 flex justify-between items-center">
-                <div>
-                  <span className="text-xs font-bold text-red-200 block">Reativo Excedente (Fator de Potência &lt; 0,92)</span>
-                  <span className="text-[10px] text-red-300/70">Causado por motores e equipamentos antigos sem banco de capacitores</span>
-                </div>
-                <span className="text-sm font-mono font-bold text-red-400">
-                  R$ {taxLossesData.reativoExcedente.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                </span>
-              </div>
+              {taxLossesData.isCasanOnly ? (
+                <>
+                  <div className="bg-blue-950/20 p-3.5 rounded-xl border border-blue-500/30 flex justify-between items-center">
+                    <div>
+                      <span className="text-xs font-bold text-blue-200 block">Volume Total Hídrico Medido</span>
+                      <span className="text-[10px] text-blue-300/70">Consumo em metros cúbicos (CASAN)</span>
+                    </div>
+                    <span className="text-sm font-mono font-bold text-blue-300">
+                      {stats.totalM3.toLocaleString("pt-BR")} m³
+                    </span>
+                  </div>
 
-              <div className="bg-red-950/20 p-3 rounded-xl border border-red-500/30 flex justify-between items-center">
-                <div>
-                  <span className="text-xs font-bold text-red-200 block">Ultrapassagem de Demanda Contratada</span>
-                  <span className="text-[10px] text-red-300/70">Picos de demanda de energia acima do limite de contrato</span>
-                </div>
-                <span className="text-sm font-mono font-bold text-red-400">
-                  R$ {taxLossesData.ultrapassagemDemanda.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                </span>
-              </div>
+                  <div className="bg-blue-950/20 p-3.5 rounded-xl border border-blue-500/30 flex justify-between items-center">
+                    <div>
+                      <span className="text-xs font-bold text-blue-200 block">Custo Médio por m³ de Água</span>
+                      <span className="text-[10px] text-blue-300/70">Total faturado CASAN / Volume medido</span>
+                    </div>
+                    <span className="text-sm font-mono font-bold text-blue-300">
+                      R$ {taxLossesData.avgWaterPricePerM3.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} / m³
+                    </span>
+                  </div>
 
-              <div className="bg-red-950/20 p-3 rounded-xl border border-red-500/30 flex justify-between items-center">
-                <div>
-                  <span className="text-xs font-bold text-red-200 block">Perdas de Transformação e Juros por Atraso</span>
-                  <span className="text-[10px] text-red-300/70">Perdas operacionais internas na rede do prédio público</span>
-                </div>
-                <span className="text-sm font-mono font-bold text-red-400">
-                  R$ {taxLossesData.perdasTransformacao.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                </span>
-              </div>
+                  <div className="bg-blue-950/20 p-3.5 rounded-xl border border-blue-500/30">
+                    <span className="text-xs font-bold text-blue-200 block mb-1">Tarifa de Esgoto Sanitário</span>
+                    <p className="text-[11px] text-gray-400 leading-relaxed">
+                      Em Santa Catarina, a CASAN aplica adicional de 100% sobre o valor da água para saneamento básico. Monitorar vazamentos evita a cobrança duplicada.
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="bg-amber-950/20 p-3.5 rounded-xl border border-amber-500/30 flex justify-between items-center">
+                    <div>
+                      <span className="text-xs font-bold text-amber-200 block">Consumo Elétrico Acumulado</span>
+                      <span className="text-[10px] text-amber-300/70">Consumo em kWh (CELESC)</span>
+                    </div>
+                    <span className="text-sm font-mono font-bold text-amber-300">
+                      {stats.totalKwh.toLocaleString("pt-BR")} kWh
+                    </span>
+                  </div>
+
+                  <div className="bg-amber-950/20 p-3.5 rounded-xl border border-amber-500/30 flex justify-between items-center">
+                    <div>
+                      <span className="text-xs font-bold text-amber-200 block">Custo Médio por kWh</span>
+                      <span className="text-[10px] text-amber-300/70">Total faturado CELESC / Consumo kWh</span>
+                    </div>
+                    <span className="text-sm font-mono font-bold text-amber-300">
+                      R$ {taxLossesData.avgEnergyPricePerKwh.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} / kWh
+                    </span>
+                  </div>
+
+                  <div className="bg-red-950/20 p-3.5 rounded-xl border border-red-500/30">
+                    <span className="text-xs font-bold text-red-200 block mb-1">Demanda Contratada & Fator de Potência</span>
+                    <p className="text-[11px] text-gray-400 leading-relaxed">
+                      Para unidades de grande porte, verifique se a demanda medida ultrapassa o contrato ou se há cobrança por reativo excedente (FP &lt; 0,92).
+                    </p>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
@@ -714,33 +904,43 @@ export default function AuditoriaDashboard({ lancamentos = [], secretarias = [],
               Detalhamento por Bandeira Tarifária ANEEL
             </h3>
             <p className="text-xs text-gray-400 mt-1">
-              Avaliação do impacto adicional no orçamento municipal causado pelo acionamento de bandeiras amarela, vermelhas e escassez hídrica.
+              Avaliação do impacto adicional no orçamento municipal calculado a partir do consumo elétrico medido de {stats.totalKwh.toLocaleString("pt-BR")} kWh.
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {flagAnalysis.map((f, idx) => (
-              <div key={idx} className="bg-black/40 p-4 rounded-xl border border-white/10 space-y-3">
-                <span className={`inline-block px-2.5 py-1 rounded-md text-xs font-bold border ${f.badgeBg}`}>
-                  {f.flag}
-                </span>
-                <p className="text-[11px] text-gray-400 leading-snug">{f.description}</p>
+          {flagAnalysis.isWaterConcessionaire ? (
+            <div className="bg-blue-950/20 border border-blue-500/30 rounded-2xl p-8 text-center space-y-3">
+              <Droplets className="w-10 h-10 text-blue-400 mx-auto" />
+              <h4 className="text-sm font-bold text-white">Bandeiras Tarifárias Não se Aplicam a CASAN</h4>
+              <p className="text-xs text-gray-400 max-w-xl mx-auto leading-relaxed">
+                {flagAnalysis.message}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {flagAnalysis.flags?.map((f, idx) => (
+                <div key={idx} className="bg-black/40 p-4 rounded-xl border border-white/10 space-y-3">
+                  <span className={`inline-block px-2.5 py-1 rounded-md text-xs font-bold border ${f.badgeBg}`}>
+                    {f.flag}
+                  </span>
+                  <p className="text-[11px] text-gray-400 leading-snug">{f.description}</p>
 
-                <div className="pt-2 border-t border-white/5 flex justify-between items-end">
-                  <div>
-                    <span className="text-[10px] text-gray-500 uppercase block">Representação</span>
-                    <span className="text-base font-mono font-extrabold text-white">{f.percent}%</span>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-[10px] text-gray-500 uppercase block">Custo Estimado</span>
-                    <span className="text-sm font-mono font-bold text-purple-300">
-                      R$ {f.amount.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                    </span>
+                  <div className="pt-2 border-t border-white/5 flex justify-between items-end">
+                    <div>
+                      <span className="text-[10px] text-gray-500 uppercase block">Adicional / kWh</span>
+                      <span className="text-xs font-mono font-bold text-white">R$ {f.additionPerKwh.toFixed(5)}</span>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] text-gray-500 uppercase block">Custo Estimado</span>
+                      <span className="text-sm font-mono font-bold text-purple-300">
+                        R$ {f.estimatedAdditionalCost.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
