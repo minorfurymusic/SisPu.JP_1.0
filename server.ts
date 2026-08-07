@@ -2,7 +2,6 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import dotenv from "dotenv";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import { 
   Usuario, Secretaria, Unidade, Despesa, ItemDespesa, 
@@ -1924,6 +1923,10 @@ LAYOUT DE ENTRADA: ${layout || (isCasan ? "CASAN_FATURA" : "CELESC_FATURA")}
       } catch (err: any) {
         lastModelError = err;
         console.warn(`Model ${modelName} attempt failed: ${err.message || err}`);
+        // If quota rate limit (429) or temporary error occurs, pause briefly before retrying
+        if (err.message && (err.message.includes("429") || err.message.includes("RESOURCE_EXHAUSTED") || err.message.includes("503"))) {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+        }
       }
     }
 
@@ -2144,6 +2147,11 @@ async function runAsyncExtractionJob(jobId: string, payload: {
       job.pageStats = pageStats;
       job.createdDocs = createdDocs;
       job.updated_em = new Date().toISOString();
+
+      // Pacing delay between chunk iterations to respect Gemini API rate limits (429 prevention)
+      if (i + CONCURRENCY < totalPages) {
+        await new Promise(resolve => setTimeout(resolve, 800));
+      }
     }
 
     job.status = 'COMPLETED';
@@ -2205,13 +2213,8 @@ app.get("/api/documentos/jobs/:id", (req, res) => {
 // --- INTEGRATE VITE FOR HOT CLIENT-SIDE SERVING ---
 
 async function startServer() {
-  try {
-    await initDatabasePersistence();
-  } catch (err) {
-    console.error("[DB] Falha no startup de persistência:", err);
-  }
-
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -2233,6 +2236,11 @@ async function startServer() {
   server.timeout = 1200000; // 20 minutes
   server.keepAliveTimeout = 120000; // 2 minutes
   server.headersTimeout = 125000;
+
+  // Non-blocking background database persistence initialization so Cloud Run health check binds port 3000 immediately
+  initDatabasePersistence().catch(err => {
+    console.error("[DB] Falha no startup de persistência em background:", err);
+  });
 }
 
 startServer();
