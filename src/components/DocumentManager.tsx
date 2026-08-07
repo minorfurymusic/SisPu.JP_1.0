@@ -459,7 +459,46 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   // Pipeline-queue states for asynchronously processing multi-document/large reports
   const [processingQueue, setProcessingQueue] = useState<boolean>(false);
   const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0, phase: "" });
-  const [sessionDocs, setSessionDocs] = useState<DocumentoProcessado[]>([]);
+
+  // sessionDocs holds every lançamento parsed for the current batch, up until "Salvar
+  // Lançamentos" persists it to the backend. It used to live only in memory: refreshing the
+  // page, switching to another tab in WebPortal (which unmounts this component), or the OS
+  // locking the screen while the tab was idle all discarded the queue with no way back. It's
+  // now mirrored to localStorage on every change and restored on mount, so the draft survives
+  // reloads/remounts and is only cleared once it's actually saved (see the effect below).
+  const SESSION_DOCS_STORAGE_KEY = "sispu_session_docs_draft";
+  const [sessionDocs, setSessionDocs] = useState<DocumentoProcessado[]>(() => {
+    try {
+      const saved = localStorage.getItem(SESSION_DOCS_STORAGE_KEY);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      if (sessionDocs.length > 0) {
+        localStorage.setItem(SESSION_DOCS_STORAGE_KEY, JSON.stringify(sessionDocs));
+      } else {
+        localStorage.removeItem(SESSION_DOCS_STORAGE_KEY);
+      }
+    } catch (err) {
+      console.error("Não foi possível salvar o rascunho do lote localmente:", err);
+    }
+  }, [sessionDocs]);
+
+  // One-time notice when a draft is recovered after a reload/remount, so the user knows it
+  // wasn't lost and can review before clicking "Salvar Lançamentos".
+  useEffect(() => {
+    if (sessionDocs.length > 0) {
+      setMessage({
+        type: 'warning',
+        text: `Rascunho recuperado: ${sessionDocs.length} lançamento(s) que ainda não tinham sido salvos foram restaurados. Revise e clique em "Salvar Lançamentos" para persistir.`
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Batch Competência state & Manual entry form states requested by user
   const [batchCompetencia, setBatchCompetencia] = useState<string>("06/2026");

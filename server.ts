@@ -86,11 +86,23 @@ function loadDB(): DatabaseState {
   return { ...emptyDBState };
 }
 
+// Guards against wiping real Neon data: saveAllStateToPostgres() deletes from every table
+// anything whose id isn't in the in-memory arrays it's given. Right after a cold start (or a
+// fresh /api/db-config connection), `db` is still the empty seed state until the real rows are
+// pulled back from Postgres — a save that races ahead of that pull would look like "the user
+// deleted everything" and drop every table. This flag only turns true once we know `db` truly
+// reflects Postgres's contents, so the sync-by-diff logic never fires against a hollow cache.
+let postgresHydrated = false;
+
 function saveDB(state: DatabaseState) {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
   } catch (err) {
     console.error("Error saving DB file:", err);
+  }
+  if (!postgresHydrated) {
+    console.warn("[DB] Sincronização com o PostgreSQL adiada: estado local ainda não foi confirmado contra o banco (evitando apagar dados reais).");
+    return;
   }
   // Asynchronously persist state to PostgreSQL
   saveAllStateToPostgres(state).catch(err => {
@@ -104,25 +116,33 @@ let db: DatabaseState = loadDB();
 async function initDatabasePersistence() {
   try {
     const initialized = await initPostgresSchema();
-    if (initialized) {
-      const pgState = await loadStateFromPostgres();
-      if (pgState) {
-        db = {
-          usuarios: pgState.usuarios?.length > 0 ? pgState.usuarios : db.usuarios,
-          secretarias: pgState.secretarias || [],
-          unidades: pgState.unidades || [],
-          despesas: pgState.despesas || [],
-          itens_despesas: pgState.itens_despesas || [],
-          lancamentos: pgState.lancamentos || [],
-          pessoas: pgState.pessoas || [],
-          contatos_email: pgState.contatos_email || [],
-          logs_erros: pgState.logs_erros || [],
-          auditoria_registros: pgState.auditoria_registros || [],
-          documentos_processados: pgState.documentos_processados || [],
-        };
-        fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
-        console.log("[DB] Estado carregado do PostgreSQL (Neon) com sucesso (sem re-seeding automático)!");
-      }
+    if (!initialized) {
+      // No DATABASE_URL configured (or Postgres unreachable) — nothing to protect, the JSON
+      // file is the only store, so saves are safe immediately.
+      postgresHydrated = true;
+      return;
+    }
+    const pgState = await loadStateFromPostgres();
+    if (pgState) {
+      db = {
+        usuarios: pgState.usuarios?.length > 0 ? pgState.usuarios : db.usuarios,
+        secretarias: pgState.secretarias || [],
+        unidades: pgState.unidades || [],
+        despesas: pgState.despesas || [],
+        itens_despesas: pgState.itens_despesas || [],
+        lancamentos: pgState.lancamentos || [],
+        pessoas: pgState.pessoas || [],
+        contatos_email: pgState.contatos_email || [],
+        logs_erros: pgState.logs_erros || [],
+        auditoria_registros: pgState.auditoria_registros || [],
+        documentos_processados: pgState.documentos_processados || [],
+      };
+      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
+      console.log("[DB] Estado carregado do PostgreSQL (Neon) com sucesso (sem re-seeding automático)!");
+      // Only now does `db` provably match Postgres — safe to let saves sync/delete by diff.
+      postgresHydrated = true;
+    } else {
+      console.error("[DB] Não foi possível confirmar o estado do PostgreSQL; mantendo sincronização em pausa até o próximo carregamento bem-sucedido.");
     }
   } catch (err) {
     console.error("[DB] Erro ao inicializar banco PostgreSQL:", err);
