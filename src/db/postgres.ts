@@ -176,6 +176,21 @@ export async function initPostgresSchema(): Promise<boolean> {
           criado_em TEXT,
           atualizado_em TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS cadastro_mestre_ucs (
+          id TEXT PRIMARY KEY,
+          uc TEXT UNIQUE NOT NULL,
+          codnum TEXT NOT NULL,
+          concessionaria TEXT NOT NULL,
+          secretaria TEXT,
+          unidade_administrativa TEXT,
+          endereco TEXT,
+          classe TEXT,
+          grupo_tarifario TEXT,
+          situacao TEXT DEFAULT 'Ativa',
+          criado_em TEXT,
+          atualizado_em TEXT
+        );
       `);
       console.log("[DB] Schema do PostgreSQL verificado e inicializado com sucesso.");
       return true;
@@ -206,6 +221,7 @@ export async function loadStateFromPostgres(): Promise<any | null> {
       const resLogsErros = await client.query(`SELECT * FROM logs_erros ORDER BY id DESC`);
       const resAuditoria = await client.query(`SELECT * FROM auditoria_registros ORDER BY id DESC`);
       const resDocumentos = await client.query(`SELECT * FROM documentos_processados ORDER BY id DESC`);
+      const resCadastroMestreUcs = await client.query(`SELECT * FROM cadastro_mestre_ucs ORDER BY uc`);
 
       return {
         usuarios: resUsuarios.rows,
@@ -235,7 +251,8 @@ export async function loadStateFromPostgres(): Promise<any | null> {
           logs_validacao: typeof d.logs_validacao === 'string' ? JSON.parse(d.logs_validacao) : (d.logs_validacao || []),
           historico_alteracoes: typeof d.historico_alteracoes === 'string' ? JSON.parse(d.historico_alteracoes) : (d.historico_alteracoes || []),
           score_logs: typeof d.score_logs === 'string' ? JSON.parse(d.score_logs) : d.score_logs
-        }))
+        })),
+        cadastro_mestre_ucs: resCadastroMestreUcs.rows
       };
     } finally {
       client.release();
@@ -389,6 +406,21 @@ export async function saveAllStateToPostgres(state: any): Promise<void> {
         );
       }
 
+      // Cadastro Mestre de UCs
+      for (const u of state.cadastro_mestre_ucs || []) {
+        await client.query(
+          `INSERT INTO cadastro_mestre_ucs (id, uc, codnum, concessionaria, secretaria, unidade_administrativa, endereco, classe, grupo_tarifario, situacao, criado_em, atualizado_em)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           ON CONFLICT (id) DO UPDATE SET
+             uc = EXCLUDED.uc, codnum = EXCLUDED.codnum, concessionaria = EXCLUDED.concessionaria, secretaria = EXCLUDED.secretaria, unidade_administrativa = EXCLUDED.unidade_administrativa, endereco = EXCLUDED.endereco, classe = EXCLUDED.classe, grupo_tarifario = EXCLUDED.grupo_tarifario, situacao = EXCLUDED.situacao, atualizado_em = EXCLUDED.atualizado_em`,
+          [
+            u.id, u.uc, u.codnum, u.concessionaria, u.secretaria || null, u.unidade_administrativa || null,
+            u.endereco || null, u.classe || null, u.grupo_tarifario || null, u.situacao || 'Ativa',
+            u.criado_em, u.atualizado_em || u.criado_em
+          ]
+        );
+      }
+
       // Sync Deletions for all tables
       const syncDeletes = async (table: string, list: any[]) => {
         const validIds = (list || []).map((x: any) => String(x.id)).filter(Boolean);
@@ -408,6 +440,7 @@ export async function saveAllStateToPostgres(state: any): Promise<void> {
       await syncDeletes('pessoas', state.pessoas);
       await syncDeletes('contatos_email', state.contatos_email);
       await syncDeletes('documentos_processados', state.documentos_processados);
+      await syncDeletes('cadastro_mestre_ucs', state.cadastro_mestre_ucs);
       await syncDeletes('usuarios', state.usuarios);
 
       await client.query('COMMIT');

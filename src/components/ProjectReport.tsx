@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { CheckCircle2, AlertTriangle, FileText, ClipboardList, ShieldAlert, TrendingUp, DollarSign, Activity } from "lucide-react";
+import { CheckCircle2, FileText, ClipboardList, DollarSign, Activity } from "lucide-react";
 import { Secretaria, Unidade, Despesa, Lancamento, AuditoriaRegistro } from "../types";
 
 export default function ProjectReport() {
@@ -11,15 +11,6 @@ export default function ProjectReport() {
     totalValor: 0,
     totalConsumo: 0
   });
-
-  const [legacyErrors] = useState([
-    { date: "12/06/2026 12:58", component: "Lançamento de Despesa", msg: "A conexão com o servidor de dados foi encerrada inesperadamente durante a gravação." },
-    { date: "12/05/2026 13:00", component: "Lançamento de Despesa", msg: "Valor inserido incorretamente: '11775,482' não é aceito como formato de conta inteira." },
-    { date: "17/02/2026 11:22", component: "Painel de Lançamentos", msg: "Estouro de limite de memória ao renderizar listagem volumosa de consumo." },
-    { date: "11/12/2025 09:48", component: "Cadastro de Item", msg: "O valor decimal '614,12' falhou ao ser importado como código de identificação." },
-    { date: "15/06/2023 13:25", component: "Lançamento de Despesa", msg: "Valor de fatura '646,65' inserido fora das regras de formatação decimal do sistema." },
-    { date: "04/11/2021 07:53", component: "Cadastro de Pessoas", msg: "A tabela de dados requerida de Contribuintes/Pessoas não foi localizada na base." }
-  ]);
 
   const [audits, setAuditorias] = useState<AuditoriaRegistro[]>([]);
 
@@ -113,9 +104,9 @@ export default function ProjectReport() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        
-        {/* Left: Audit Compliance */}
+      <div className="grid grid-cols-1 gap-6">
+
+        {/* Audit Compliance */}
         <div className="bg-[#141414] p-5 rounded-xl border border-white/10 space-y-4">
           <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
             <CheckCircle2 className="h-4 w-4 text-emerald-500" />
@@ -142,31 +133,6 @@ export default function ProjectReport() {
               <span className="text-gray-300 font-medium">Auditoria Automática de Faturas</span>
               <span className="text-emerald-500 font-semibold flex items-center gap-1">Integrado</span>
             </div>
-          </div>
-        </div>
-
-        {/* Right: Legacy system errors, translated to functional */}
-        <div className="bg-[#141414] p-5 rounded-xl border border-white/10 space-y-4">
-          <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
-            <ShieldAlert className="h-4 w-4 text-amber-500" />
-            Histórico de Inconsistências do Sistema Legado
-          </h3>
-          <p className="text-xs text-gray-300 text-justify leading-relaxed">
-            Registro de ocorrências históricas recuperadas dos arquivos de log de erros do sistema legado. Foram catalogadas e normalizadas para fins de diagnóstico e saneamento de cadastros de despesas.
-          </p>
-
-          <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-            {legacyErrors.map((err, i) => (
-              <div key={i} className="bg-black/25 p-2 rounded border border-white/5 space-y-1">
-                <div className="flex justify-between items-center text-[10px]">
-                  <span className="font-mono text-gray-400">{err.date}</span>
-                  <span className="bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider font-semibold">
-                    {err.component}
-                  </span>
-                </div>
-                <p className="text-[11px] text-gray-300 text-justify font-sans">{err.msg}</p>
-              </div>
-            ))}
           </div>
         </div>
 
@@ -227,87 +193,6 @@ export default function ProjectReport() {
         )}
       </div>
 
-      {/* 📜 SPRINT 1 OFFICIAL DOCUMENTATION REPORT (10-POINT DIRECTIVE) */}
-      <div className="bg-[#141414] p-6 rounded-xl border border-white/10 space-y-6">
-        <div className="border-b border-white/10 pb-3">
-          <h3 className="text-sm font-extrabold text-white uppercase tracking-wider flex items-center gap-2">
-            <ClipboardList className="h-5 w-5 text-indigo-400" />
-            RELATÓRIO DA SPRINT 1 — EQUIVALÊNCIA DESKTOP/WEB E EVOLUÇÃO
-          </h3>
-          <p className="text-[10px] text-gray-400 font-mono uppercase tracking-wide">Documento gerado em conformidade com as diretrizes do SisPu.JP 2.0</p>
-        </div>
-
-        <div className="space-y-4 text-xs text-gray-300 leading-relaxed font-sans">
-          <div>
-            <h4 className="font-bold text-white text-[11px] uppercase tracking-wider mb-1">1. Arquivos Alterados</h4>
-            <ul className="list-disc pl-5 space-y-0.5 font-mono text-[10px] text-gray-400">
-              <li>/src/components/WebPortal.tsx</li>
-              <li>/src/components/DesktopSimulator.tsx</li>
-            </ul>
-          </div>
-
-          <div>
-            <h4 className="font-bold text-white text-[11px] uppercase tracking-wider mb-1">2. Arquivos Criados</h4>
-            <ul className="list-disc pl-5 space-y-0.5 font-mono text-[10px] text-gray-400">
-              <li>/src/components/SmartTable.tsx</li>
-            </ul>
-          </div>
-
-          <div>
-            <h4 className="font-bold text-white text-[11px] uppercase tracking-wider mb-1">3. Arquivos Removidos</h4>
-            <p className="text-gray-400 italic">Nenhum arquivo removido; as modificações foram realizadas por refatoração em massa.</p>
-          </div>
-
-          <div>
-            <h4 className="font-bold text-white text-[11px] uppercase tracking-wider mb-1">4. O que foi modificado</h4>
-            <p className="text-gray-400">
-              Implementou-se a nova engine de tabelas <strong>SmartTable</strong>. Renomeou-se o campo "Código Legado" para "Unidade Consumidora (UC/Matrícula)" nas duas plataformas. Adicionaram-se botões flutuantes de edição (✏️) e exclusão (🗑️) com confirmação. Adicionou-se a visualização bento grid com gráficos SVG interativos tanto no Portal quanto no Terminal Desktop.
-            </p>
-          </div>
-
-          <div>
-            <h4 className="font-bold text-white text-[11px] uppercase tracking-wider mb-1">5. Motivo da alteração</h4>
-            <p className="text-gray-400">
-              Garantir a equivalência de experiência de uso (UX) e facilidade de operação exigidas pelos servidores públicos de Rio do Sul, além de normalizar faturamentos e auditorias.
-            </p>
-          </div>
-
-          <div>
-            <h4 className="font-bold text-white text-[11px] uppercase tracking-wider mb-1">6. Como ficou o funcionamento</h4>
-            <p className="text-gray-400">
-              As operações de inserção, edição e remoção persistem em tempo real no banco. Ao passar o mouse sobre as linhas das tabelas em ambos os ambientes, as ações administrativas aparecem instantaneamente.
-            </p>
-          </div>
-
-          <div>
-            <h4 className="font-bold text-white text-[11px] uppercase tracking-wider mb-1">7. Fluxo atualizado</h4>
-            <p className="text-gray-400">
-              O operador pode alternar livremente entre o Terminal e o Web Portal; os dados de faturas são lidos via Central de Documentos e imputados nas tabelas de forma sincronizada através de chamadas REST automáticas.
-            </p>
-          </div>
-
-          <div>
-            <h4 className="font-bold text-white text-[11px] uppercase tracking-wider mb-1">8. Impacto nas demais funcionalidades</h4>
-            <p className="text-gray-400">
-              Zero quebras. A compatibilidade estrita do arquivo `types.ts` assegura que faturas importadas do leitor PDF persistam de forma transparente na base integrada do município.
-            </p>
-          </div>
-
-          <div>
-            <h4 className="font-bold text-white text-[11px] uppercase tracking-wider mb-1">9. Testes realizados e resultados</h4>
-            <p className="text-emerald-400 font-semibold">
-              ✔ Build compilada e testada com sucesso (tsc --noEmit). Linting aprovado sem pendências. Teste de arrastar/reordenar colunas, redimensionar larguras, ordenação e filtros operando perfeitamente.
-            </p>
-          </div>
-
-          <div>
-            <h4 className="font-bold text-white text-[11px] uppercase tracking-wider mb-1">10. Conclusão da Sprint</h4>
-            <p className="text-indigo-400 font-bold">
-              Sprint 1 concluída com 100% de conformidade técnica e equivalência funcional absoluta. O sistema está pronto para ser homologado pelos servidores do município.
-            </p>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

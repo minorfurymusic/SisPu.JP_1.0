@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { 
   FileText, Upload, CheckCircle2, AlertTriangle, Play, Save, 
   History, Check, RefreshCw, FileCode, Landmark, Eye, EyeOff,
@@ -55,125 +55,6 @@ export function computeConsumoKWh(itens: any[], isCelesc: boolean = true): numbe
   return genericCons.reduce((sum, it) => sum + Number(it.quantidade || 0), 0);
 }
 
-export const DEFAULT_MASTER_UCS: CadastroMestreUC[] = [
-  {
-    id: "UC-01",
-    uc: "CELESC-PREF-101",
-    codnum: "CELESC-PREF-101",
-    concessionaria: "CELESC",
-    secretaria: "Secretaria de Administração",
-    unidade_administrativa: "Prédio da Prefeitura Principal",
-    endereco: "Praça dos Três Poderes, 100",
-    classe: "Poder Público",
-    grupo_tarifario: "B3",
-    situacao: "Ativa",
-    criado_em: "2026-01-01T00:00:00.000Z"
-  },
-  {
-    id: "UC-02",
-    uc: "CELESC-SEC-101",
-    codnum: "CELESC-SEC-101",
-    concessionaria: "CELESC",
-    secretaria: "Secretaria de Educação",
-    unidade_administrativa: "Escola Básica Municipal Getúlio Vargas",
-    endereco: "Rua das Flores, 450",
-    classe: "Poder Público",
-    grupo_tarifario: "B3",
-    situacao: "Ativa",
-    criado_em: "2026-01-01T00:00:00.000Z"
-  },
-  {
-    id: "UC-03",
-    uc: "CELESC-SEC-102",
-    codnum: "CELESC-SEC-102",
-    concessionaria: "CELESC",
-    secretaria: "Secretaria de Saúde",
-    unidade_administrativa: "Unidade de Pronto Atendimento (UPA) 24h",
-    endereco: "Avenida Marechal Deodoro, 1200",
-    classe: "Poder Público",
-    grupo_tarifario: "A4",
-    situacao: "Ativa",
-    criado_em: "2026-01-01T00:00:00.000Z"
-  },
-  {
-    id: "UC-04",
-    uc: "CELESC-SEC-103",
-    codnum: "CELESC-SEC-103",
-    concessionaria: "CELESC",
-    secretaria: "Secretaria de Infraestrutura",
-    unidade_administrativa: "Garagem Municipal e Oficina",
-    endereco: "Rua Industrial, 75",
-    classe: "Poder Público",
-    grupo_tarifario: "B3",
-    situacao: "Ativa",
-    criado_em: "2026-01-01T00:00:00.000Z"
-  },
-  {
-    id: "UC-05",
-    uc: "CELESC-SEC-104",
-    codnum: "CELESC-SEC-104",
-    concessionaria: "CELESC",
-    secretaria: "Secretaria de Assistência Social",
-    unidade_administrativa: "CRAS Central",
-    endereco: "Rua XV de Novembro, 300",
-    classe: "Poder Público",
-    grupo_tarifario: "B3",
-    situacao: "Ativa",
-    criado_em: "2026-01-01T00:00:00.000Z"
-  },
-  {
-    id: "UC-06",
-    uc: "CELESC-SEC-105",
-    codnum: "CELESC-SEC-105",
-    concessionaria: "CELESC",
-    secretaria: "Secretaria de Cultura, Esporte e Turismo",
-    unidade_administrativa: "Ginásio de Esportes Municipal",
-    endereco: "Avenida Beira Rio, S/N",
-    classe: "Poder Público",
-    grupo_tarifario: "A4",
-    situacao: "Ativa",
-    criado_em: "2026-01-01T00:00:00.000Z"
-  },
-  {
-    id: "UC-07",
-    uc: "0059215242",
-    codnum: "0059215242",
-    concessionaria: "CELESC",
-    secretaria: "Secretaria de Planejamento",
-    unidade_administrativa: "Anexo Administrativo II",
-    endereco: "Rua Saldanha Marinho, 88",
-    classe: "Poder Público",
-    grupo_tarifario: "B3",
-    situacao: "Ativa",
-    criado_em: "2026-01-01T00:00:00.000Z"
-  },
-  {
-    id: "UC-08",
-    uc: "0045538486",
-    codnum: "0045538486",
-    concessionaria: "CELESC",
-    secretaria: "Secretaria de Desenvolvimento Urbano",
-    unidade_administrativa: "Diretoria de Habitação",
-    endereco: "Rua do Bosque, 12",
-    classe: "Poder Público",
-    grupo_tarifario: "B3",
-    situacao: "Ativa",
-    criado_em: "2026-01-01T00:00:00.000Z"
-  },
-  {
-    id: "UC-09",
-    uc: "CELESC-VAL-201",
-    codnum: "CELESC-VAL-201",
-    concessionaria: "CELESC",
-    secretaria: "Secretaria de Agricultura",
-    unidade_administrativa: "Vila Germânica Eventos",
-    endereco: "Parque de Exposições, Bloco A",
-    classe: "Poder Público",
-    grupo_tarifario: "B3",
-    situacao: "Ativa",
-    criado_em: "2026-01-01T00:00:00.000Z"
-  }
-];
 
 // High-fidelity templates of invoices for realistic and robust mock-up processing
 const MOCK_SAMPLES = {
@@ -500,6 +381,35 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Resumo do lote em conferência: totais por concessionária, para o usuário bater com a fatura
+  // consolidada antes de clicar em "Salvar Lançamentos" (o lote ainda não foi persistido).
+  const batchTotals = useMemo(() => {
+    const valid = sessionDocs.filter(d => d.status !== 'IGNORADA');
+    const sum = (list: DocumentoProcessado[], key: 'valor_total' | 'consumo' | 'energia_injetada') =>
+      list.reduce((acc, d) => acc + Number((d.dados_extraidos as any)?.[key] || 0), 0);
+
+    const celesc = valid.filter(d => d.layout?.startsWith('CELESC'));
+    const casan = valid.filter(d => d.layout?.startsWith('CASAN'));
+
+    return {
+      total: valid.length,
+      celesc: celesc.length > 0 ? {
+        unidades: celesc.length,
+        valorTotal: sum(celesc, 'valor_total'),
+        consumo: sum(celesc, 'consumo'),
+        energiaInjetada: sum(celesc, 'energia_injetada'),
+      } : null,
+      casan: casan.length > 0 ? {
+        unidades: casan.length,
+        valorTotal: sum(casan, 'valor_total'),
+        consumo: sum(casan, 'consumo'),
+      } : null,
+    };
+  }, [sessionDocs]);
+
+  const fmtMoeda = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtNum = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
+
   // Batch Competência state & Manual entry form states requested by user
   const [batchCompetencia, setBatchCompetencia] = useState<string>("06/2026");
   const [manualUc, setManualUc] = useState("");
@@ -624,23 +534,28 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     }
   };
 
-  // Master Registry of UCs (Etapa 1)
-  const [masterUcs, setMasterUcs] = useState<CadastroMestreUC[]>(() => {
-    const saved = localStorage.getItem("sispu_cadastro_mestre_ucs");
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        // ignore
-      }
-    }
-    return DEFAULT_MASTER_UCS;
-  });
+  // Master Registry of UCs (Etapa 1) — persistido no backend (JSON local + Postgres/Neon),
+  // igual a todo o resto do sistema. Antes vivia só no localStorage do navegador com uma lista
+  // fixa de UCs de exemplo (DEFAULT_MASTER_UCS) como fallback: qualquer exclusão só valia
+  // naquele navegador, e sem esse localStorage os exemplos fabricados reapareciam como se
+  // fossem cadastros reais.
+  const [masterUcs, setMasterUcs] = useState<CadastroMestreUC[]>([]);
+  const [loadingMasterUcs, setLoadingMasterUcs] = useState(true);
 
-  const saveMasterUcs = (newUcs: CadastroMestreUC[]) => {
-    setMasterUcs(newUcs);
-    localStorage.setItem("sispu_cadastro_mestre_ucs", JSON.stringify(newUcs));
+  const loadMasterUcs = () => {
+    setLoadingMasterUcs(true);
+    fetch("/api/cadastro-mestre-ucs")
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data)) setMasterUcs(data);
+      })
+      .catch(err => console.error("Erro ao carregar Cadastro Mestre de UCs:", err))
+      .finally(() => setLoadingMasterUcs(false));
   };
+
+  useEffect(() => {
+    loadMasterUcs();
+  }, []);
 
   // State to hold comparison data (Etapa 3)
   const [lastComparison, setLastComparison] = useState<{
@@ -661,9 +576,12 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     invalidas: number;
   } | null>(null);
 
-  // Form states for creating a new Master UC (Etapa 1)
+  // Form states for creating/editing a Master UC (Etapa 1). editingUcId === null means the
+  // form (when open) is for a new UC; otherwise it's editing that existing UC's id.
   const [showAddUcForm, setShowAddUcForm] = useState(false);
-  const [newUcData, setNewUcData] = useState({
+  const [editingUcId, setEditingUcId] = useState<string | null>(null);
+  const [savingUc, setSavingUc] = useState(false);
+  const blankUcForm = {
     uc: "",
     codnum: "",
     concessionaria: "CELESC" as 'CELESC' | 'CASAN',
@@ -673,58 +591,97 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     classe: "Público / Governamental",
     grupo_tarifario: "B3",
     situacao: "Ativa" as 'Ativa' | 'Inativa'
-  });
+  };
+  const [newUcData, setNewUcData] = useState(blankUcForm);
   const [ucSearchQuery, setUcSearchQuery] = useState("");
 
-  const handleAddUc = (e: React.FormEvent) => {
+  const handleStartEditUc = (item: CadastroMestreUC) => {
+    setEditingUcId(item.id);
+    setNewUcData({
+      uc: item.uc,
+      codnum: item.codnum,
+      concessionaria: item.concessionaria,
+      secretaria: item.secretaria,
+      unidade_administrativa: item.unidade_administrativa,
+      endereco: item.endereco,
+      classe: item.classe,
+      grupo_tarifario: item.grupo_tarifario,
+      situacao: item.situacao
+    });
+    setShowAddUcForm(true);
+  };
+
+  const handleCancelUcForm = () => {
+    setShowAddUcForm(false);
+    setEditingUcId(null);
+    setNewUcData(blankUcForm);
+  };
+
+  const handleSubmitUc = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUcData.uc || !newUcData.codnum) {
       alert("Por favor, preencha a UC e o CODNUM.");
       return;
     }
-    
-    // Check if already exists
-    if (masterUcs.some(u => u.uc === newUcData.uc)) {
-      alert("Esta UC já está cadastrada no Cadastro Mestre.");
-      return;
-    }
 
-    const created: CadastroMestreUC = {
-      id: `UC-${Date.now()}`,
-      ...newUcData,
-      criado_em: new Date().toISOString()
-    };
-
-    saveMasterUcs([...masterUcs, created]);
-    setShowAddUcForm(false);
-    setNewUcData({
-      uc: "",
-      codnum: "",
-      concessionaria: "CELESC",
-      secretaria: "",
-      unidade_administrativa: "",
-      endereco: "",
-      classe: "Público / Governamental",
-      grupo_tarifario: "B3",
-      situacao: "Ativa"
-    });
-    setMessage({ type: 'success', text: `Unidade Consumidora ${created.uc} cadastrada com sucesso no cadastro permanente.` });
-  };
-
-  const handleToggleUcStatus = (id: string) => {
-    const updated = masterUcs.map(u => {
-      if (u.id === id) {
-        return { ...u, situacao: (u.situacao === 'Ativa' ? 'Inativa' : 'Ativa') as 'Ativa' | 'Inativa' };
+    setSavingUc(true);
+    try {
+      const isEditing = !!editingUcId;
+      const res = await fetch(
+        isEditing ? `/api/cadastro-mestre-ucs/${editingUcId}` : "/api/cadastro-mestre-ucs",
+        {
+          method: isEditing ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(newUcData)
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "Erro ao salvar a UC no Cadastro Mestre.");
+        return;
       }
-      return u;
-    });
-    saveMasterUcs(updated);
+
+      loadMasterUcs();
+      handleCancelUcForm();
+      setMessage({
+        type: 'success',
+        text: isEditing
+          ? `Unidade Consumidora ${data.uc} atualizada no cadastro permanente.`
+          : `Unidade Consumidora ${data.uc} cadastrada com sucesso no cadastro permanente.`
+      });
+    } catch (err: any) {
+      alert(`Erro de rede ao salvar a UC: ${err.message}`);
+    } finally {
+      setSavingUc(false);
+    }
   };
 
-  const handleDeleteUc = (id: string, code: string) => {
-    const filtered = masterUcs.filter(u => u.id !== id);
-    saveMasterUcs(filtered);
-    setMessage({ type: 'warning', text: `UC ${code} removida do cadastro permanente.` });
+  const handleToggleUcStatus = async (item: CadastroMestreUC) => {
+    try {
+      const res = await fetch(`/api/cadastro-mestre-ucs/${item.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ situacao: item.situacao === 'Ativa' ? 'Inativa' : 'Ativa' })
+      });
+      if (res.ok) loadMasterUcs();
+    } catch (err) {
+      console.error("Erro ao alternar situação da UC:", err);
+    }
+  };
+
+  const handleDeleteUc = async (id: string, code: string) => {
+    try {
+      const res = await fetch(`/api/cadastro-mestre-ucs/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        loadMasterUcs();
+        setMessage({ type: 'warning', text: `UC ${code} removida do cadastro permanente.` });
+      } else {
+        const data = await res.json();
+        alert(data.error || "Erro ao remover a UC.");
+      }
+    } catch (err: any) {
+      alert(`Erro de rede ao remover a UC: ${err.message}`);
+    }
   };
 
   const addLog = (msg: string) => {
@@ -1818,7 +1775,10 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
     setLoading(true);
     let successCount = 0;
-    let failedCount = 0;
+    // Docs that fail to save/homologar go back into the queue instead of being silently
+    // discarded — a duplicate-competência rejection (or any transient error) shouldn't cost
+    // the user re-typing or re-importing what they already reviewed.
+    const failedDocs: DocumentoProcessado[] = [];
 
     try {
       for (const doc of docsToSave) {
@@ -1840,7 +1800,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
           // Homologar imediatamente para lançar na tabela central de lançamentos e gerar auditoria
           const homolRes = await fetch(`/api/documentos/${dbDoc.id}/homologar`, {
             method: "POST",
-            headers: { 
+            headers: {
               "Content-Type": "application/json",
               "x-user": currentUser
             }
@@ -1848,28 +1808,31 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
           if (homolRes.ok) {
             successCount++;
           } else {
-            failedCount++;
+            failedDocs.push(doc);
           }
         } else {
-          failedCount++;
+          failedDocs.push(doc);
         }
       }
 
-      setSessionDocs([]);
+      // Mantém na fila os que falharam e os que o usuário já tinha marcado como IGNORADA
+      // (esses nunca foram enviados); só remove os que realmente foram homologados.
+      const ignoradas = sessionDocs.filter(d => d.status === 'IGNORADA');
+      setSessionDocs([...failedDocs, ...ignoradas]);
       setCustomText("");
       setFileName("");
-      
+
       if (onDocumentProcessed) onDocumentProcessed();
 
-      if (failedCount === 0) {
-        setMessage({ 
-          type: 'success', 
-          text: `Sucesso! Todos os ${successCount} lançamentos do lote foram homologados na tabela central com auditoria e atualizados no painel geral.` 
+      if (failedDocs.length === 0) {
+        setMessage({
+          type: 'success',
+          text: `Sucesso! Todos os ${successCount} lançamentos do lote foram homologados na tabela central com auditoria e atualizados no painel geral.`
         });
       } else {
-        setMessage({ 
-          type: 'warning', 
-          text: `Lançamentos processados: ${successCount} com sucesso. ${failedCount} falhas devido a duplicidades de competência.` 
+        setMessage({
+          type: 'warning',
+          text: `Lançamentos processados: ${successCount} com sucesso. ${failedDocs.length} permanecem na fila (falha ao salvar, ex: duplicidade de competência) — revise e tente salvar novamente.`
         });
       }
 
@@ -1915,15 +1878,44 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
       <div className="p-5 space-y-5">
         
-        {/* Status Message */}
-        {message && (
-          <div className={`p-4 rounded-lg flex items-start gap-3 border text-xs leading-relaxed ${
-            message.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' :
-            message.type === 'warning' ? 'bg-amber-500/10 border-amber-500/20 text-amber-300' :
-            'bg-rose-500/10 border-rose-500/20 text-rose-300'
-          }`}>
-            {message.type === 'success' ? <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" /> : <AlertTriangle className="h-5 w-5 shrink-0 text-amber-400" />}
-            <span>{message.text}</span>
+        {/* Status Message + Resumo do Lote em Conferência */}
+        {(message || sessionDocs.length > 0) && (
+          <div className="flex flex-col lg:flex-row gap-3 items-stretch">
+            {message && (
+              <div className={`flex-1 p-4 rounded-lg flex items-start gap-3 border text-xs leading-relaxed ${
+                message.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' :
+                message.type === 'warning' ? 'bg-amber-500/10 border-amber-500/20 text-amber-300' :
+                'bg-rose-500/10 border-rose-500/20 text-rose-300'
+              }`}>
+                {message.type === 'success' ? <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" /> : <AlertTriangle className="h-5 w-5 shrink-0 text-amber-400" />}
+                <span>{message.text}</span>
+              </div>
+            )}
+
+            {sessionDocs.length > 0 && (
+              <div className="lg:w-[420px] shrink-0 bg-[#121212] border border-white/10 rounded-lg p-3 text-[11px] font-mono">
+                <div className="text-gray-400 uppercase tracking-wider font-bold text-[10px] mb-2">
+                  Resumo do Lote em Conferência ({batchTotals.total} conta{batchTotals.total !== 1 ? 's' : ''})
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {batchTotals.celesc && (
+                    <div className="bg-amber-500/5 border border-amber-500/20 rounded p-2 space-y-1 col-span-2 sm:col-span-1">
+                      <div className="text-amber-400 font-bold text-[10px]">⚡ CELESC — {batchTotals.celesc.unidades} unidade{batchTotals.celesc.unidades !== 1 ? 's' : ''}</div>
+                      <div className="text-gray-300">Valor total: <span className="text-white font-bold">{fmtMoeda(batchTotals.celesc.valorTotal)}</span></div>
+                      <div className="text-gray-300">Consumo: <span className="text-white font-bold">{fmtNum(batchTotals.celesc.consumo)} kWh</span></div>
+                      <div className="text-gray-300">Energia injetada: <span className="text-white font-bold">{fmtNum(batchTotals.celesc.energiaInjetada)} kWh</span></div>
+                    </div>
+                  )}
+                  {batchTotals.casan && (
+                    <div className="bg-blue-500/5 border border-blue-500/20 rounded p-2 space-y-1 col-span-2 sm:col-span-1">
+                      <div className="text-blue-400 font-bold text-[10px]">💧 CASAN — {batchTotals.casan.unidades} unidade{batchTotals.casan.unidades !== 1 ? 's' : ''}</div>
+                      <div className="text-gray-300">Valor total: <span className="text-white font-bold">{fmtMoeda(batchTotals.casan.valorTotal)}</span></div>
+                      <div className="text-gray-300">Consumo: <span className="text-white font-bold">{fmtNum(batchTotals.casan.consumo)} m³</span></div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1940,17 +1932,19 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                 </p>
               </div>
               <button
-                onClick={() => setShowAddUcForm(!showAddUcForm)}
+                onClick={() => (showAddUcForm ? handleCancelUcForm() : setShowAddUcForm(true))}
                 className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs px-3 py-1.5 rounded flex items-center gap-1.5 transition"
               >
                 {showAddUcForm ? "Fechar" : <><Plus className="h-3.5 w-3.5" /> Adicionar UC</>}
               </button>
             </div>
 
-            {/* Add Form */}
+            {/* Add/Edit Form */}
             {showAddUcForm && (
-              <form onSubmit={handleAddUc} className="bg-black/30 border border-white/10 rounded-xl p-5 space-y-4">
-                <h5 className="text-xs font-bold text-indigo-400 uppercase tracking-wide font-mono">Nova Unidade Consumidora</h5>
+              <form onSubmit={handleSubmitUc} className="bg-black/30 border border-white/10 rounded-xl p-5 space-y-4">
+                <h5 className="text-xs font-bold text-indigo-400 uppercase tracking-wide font-mono">
+                  {editingUcId ? `Editar Unidade Consumidora — ${newUcData.uc}` : "Nova Unidade Consumidora"}
+                </h5>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
                   <div>
                     <label className="block text-gray-400 mb-1">Unidade Consumidora (UC) *</label>
@@ -2050,16 +2044,17 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                 <div className="flex justify-end gap-2 text-xs pt-2">
                   <button
                     type="button"
-                    onClick={() => setShowAddUcForm(false)}
+                    onClick={handleCancelUcForm}
                     className="bg-white/5 hover:bg-white/10 text-gray-300 px-3 py-1.5 rounded transition font-semibold"
                   >
                     Cancelar
                   </button>
                   <button
                     type="submit"
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded transition font-semibold"
+                    disabled={savingUc}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded transition font-semibold disabled:opacity-50"
                   >
-                    Salvar UC no Cadastro Mestre
+                    {savingUc ? "Salvando..." : editingUcId ? "Salvar Alterações" : "Salvar UC no Cadastro Mestre"}
                   </button>
                 </div>
               </form>
@@ -2093,7 +2088,12 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5 font-mono">
-                  {masterUcs
+                  {loadingMasterUcs && (
+                    <tr>
+                      <td colSpan={8} className="px-4 py-8 text-center text-gray-500">Carregando cadastro...</td>
+                    </tr>
+                  )}
+                  {!loadingMasterUcs && masterUcs
                     .filter(u => {
                       const query = ucSearchQuery.toLowerCase();
                       return u.uc.toLowerCase().includes(query) ||
@@ -2124,10 +2124,10 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                         </td>
                         <td className="px-4 py-3 text-center">
                           <button
-                            onClick={() => handleToggleUcStatus(item.id)}
+                            onClick={() => handleToggleUcStatus(item)}
                             className={`px-2 py-0.5 rounded-full font-bold text-[9px] transition ${
-                              item.situacao === "Ativa" 
-                                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/10 hover:bg-emerald-500/25" 
+                              item.situacao === "Ativa"
+                                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/10 hover:bg-emerald-500/25"
                                 : "bg-rose-500/10 text-rose-400 border border-rose-500/10 hover:bg-rose-500/25"
                             }`}
                           >
@@ -2136,6 +2136,13 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                         </td>
                         <td className="px-4 py-3 text-center">
                           <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              onClick={() => handleStartEditUc(item)}
+                              className="bg-white/5 hover:bg-indigo-600/20 hover:text-indigo-400 text-gray-400 p-1.5 rounded border border-white/5 transition"
+                              title="Editar UC do Cadastro"
+                            >
+                              <Edit2 className="h-3.5 w-3.5" />
+                            </button>
                             <button
                               onClick={() => handleDeleteUc(item.id, item.uc)}
                               className="bg-white/5 hover:bg-rose-600/20 hover:text-rose-400 text-gray-400 p-1.5 rounded border border-white/5 transition"
@@ -2147,7 +2154,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                         </td>
                       </tr>
                     ))}
-                  {masterUcs.filter(u => {
+                  {!loadingMasterUcs && masterUcs.filter(u => {
                     const query = ucSearchQuery.toLowerCase();
                     return u.uc.toLowerCase().includes(query) ||
                            u.codnum.toLowerCase().includes(query) ||

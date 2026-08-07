@@ -3,10 +3,10 @@ import path from "path";
 import fs from "fs";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
-import { 
-  Usuario, Secretaria, Unidade, Despesa, ItemDespesa, 
-  Lancamento, Pessoa, ContatoEmail, LogError, AuditoriaRegistro, 
-  DocumentoProcessado 
+import {
+  Usuario, Secretaria, Unidade, Despesa, ItemDespesa,
+  Lancamento, Pessoa, ContatoEmail, LogError, AuditoriaRegistro,
+  DocumentoProcessado, CadastroMestreUC
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
 import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool } from "./src/db/postgres";
@@ -53,14 +53,12 @@ interface DatabaseState {
   logs_erros: LogError[];
   auditoria_registros: AuditoriaRegistro[];
   documentos_processados: DocumentoProcessado[];
+  cadastro_mestre_ucs: CadastroMestreUC[];
 }
 
 // Initial Empty DB State (No auto-seeding)
 const emptyDBState: DatabaseState = {
-  usuarios: [
-    { id: "1", login: "admin", nome: "Administrador", ativo: true, criado_em: new Date().toISOString() },
-    { id: "2", login: "joao", nome: "João Silva", ativo: true, criado_em: new Date().toISOString() }
-  ],
+  usuarios: [],
   secretarias: [],
   unidades: [],
   despesas: [],
@@ -70,7 +68,8 @@ const emptyDBState: DatabaseState = {
   contatos_email: [],
   logs_erros: [],
   auditoria_registros: [],
-  documentos_processados: []
+  documentos_processados: [],
+  cadastro_mestre_ucs: []
 };
 
 // Database utility functions with automatic write persistence (PostgreSQL + Local Cache)
@@ -136,6 +135,7 @@ async function initDatabasePersistence() {
         logs_erros: pgState.logs_erros || [],
         auditoria_registros: pgState.auditoria_registros || [],
         documentos_processados: pgState.documentos_processados || [],
+        cadastro_mestre_ucs: pgState.cadastro_mestre_ucs || [],
       };
       fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
       console.log("[DB] Estado carregado do PostgreSQL (Neon) com sucesso (sem re-seeding automático)!");
@@ -475,6 +475,104 @@ app.delete("/api/secretarias/:id", (req, res) => {
   res.json({ message: "Secretaria excluída com sucesso." });
 });
 
+// --- CADASTRO MESTRE DE UNIDADES CONSUMIDORAS (UCs) ---
+// Antes vivia só no localStorage do navegador com uma lista fixa de exemplos no código-fonte
+// (DEFAULT_MASTER_UCS): qualquer exclusão sumia ao trocar de navegador/dispositivo, e ao reabrir
+// o sistema em um contexto sem esse localStorage os exemplos fabricados voltavam a aparecer como
+// se fossem cadastros reais. Agora é uma entidade normal, persistida no mesmo banco (JSON local +
+// Postgres/Neon) que todo o resto do sistema.
+app.get("/api/cadastro-mestre-ucs", (req, res) => {
+  const list = [...db.cadastro_mestre_ucs].sort((a, b) => a.uc.localeCompare(b.uc));
+  res.json(list);
+});
+
+app.post("/api/cadastro-mestre-ucs", (req, res) => {
+  const { uc, codnum, concessionaria, secretaria, unidade_administrativa, endereco, classe, grupo_tarifario, situacao } = req.body;
+  const usuario = req.headers["x-user"] as string || "admin";
+
+  if (!uc || !codnum) {
+    return res.status(400).json({ error: "Informe a UC e o CODNUM." });
+  }
+  if (db.cadastro_mestre_ucs.some(u => u.uc === uc)) {
+    return res.status(400).json({ error: "Esta UC já está cadastrada no Cadastro Mestre." });
+  }
+
+  const newId = `UC-${(Math.max(0, ...db.cadastro_mestre_ucs.map(u => parseInt(u.id.replace("UC-", ""), 10) || 0)) + 1).toString().padStart(2, "0")}`;
+  const newUc: CadastroMestreUC = {
+    id: newId,
+    uc,
+    codnum,
+    concessionaria: concessionaria === "CASAN" ? "CASAN" : "CELESC",
+    secretaria: secretaria || "",
+    unidade_administrativa: unidade_administrativa || "",
+    endereco: endereco || "",
+    classe: classe || "",
+    grupo_tarifario: grupo_tarifario || "",
+    situacao: situacao === "Inativa" ? "Inativa" : "Ativa",
+    criado_em: new Date().toISOString(),
+    atualizado_em: new Date().toISOString()
+  };
+
+  db.cadastro_mestre_ucs.push(newUc);
+  saveDB(db);
+  logAudit("cadastro_mestre_ucs", newId, "INSERT", usuario, null, newUc);
+
+  res.status(201).json(newUc);
+});
+
+app.put("/api/cadastro-mestre-ucs/:id", (req, res) => {
+  const { id } = req.params;
+  const { uc, codnum, concessionaria, secretaria, unidade_administrativa, endereco, classe, grupo_tarifario, situacao } = req.body;
+  const usuario = req.headers["x-user"] as string || "admin";
+
+  const index = db.cadastro_mestre_ucs.findIndex(u => u.id === id);
+  if (index === -1) {
+    return res.status(404).json({ error: "UC não encontrada no Cadastro Mestre." });
+  }
+
+  if (uc) {
+    const duplicate = db.cadastro_mestre_ucs.find(u => u.uc === uc && u.id !== id);
+    if (duplicate) {
+      return res.status(400).json({ error: "Já existe outra UC cadastrada com este código." });
+    }
+  }
+
+  const oldVal = { ...db.cadastro_mestre_ucs[index] };
+  db.cadastro_mestre_ucs[index] = {
+    ...db.cadastro_mestre_ucs[index],
+    uc: uc ?? db.cadastro_mestre_ucs[index].uc,
+    codnum: codnum ?? db.cadastro_mestre_ucs[index].codnum,
+    concessionaria: concessionaria ?? db.cadastro_mestre_ucs[index].concessionaria,
+    secretaria: secretaria ?? db.cadastro_mestre_ucs[index].secretaria,
+    unidade_administrativa: unidade_administrativa ?? db.cadastro_mestre_ucs[index].unidade_administrativa,
+    endereco: endereco ?? db.cadastro_mestre_ucs[index].endereco,
+    classe: classe ?? db.cadastro_mestre_ucs[index].classe,
+    grupo_tarifario: grupo_tarifario ?? db.cadastro_mestre_ucs[index].grupo_tarifario,
+    situacao: situacao ?? db.cadastro_mestre_ucs[index].situacao,
+    atualizado_em: new Date().toISOString()
+  };
+  saveDB(db);
+  logAudit("cadastro_mestre_ucs", id, "UPDATE", usuario, oldVal, db.cadastro_mestre_ucs[index]);
+
+  res.json(db.cadastro_mestre_ucs[index]);
+});
+
+app.delete("/api/cadastro-mestre-ucs/:id", (req, res) => {
+  const { id } = req.params;
+  const usuario = req.headers["x-user"] as string || "admin";
+
+  const index = db.cadastro_mestre_ucs.findIndex(u => u.id === id);
+  if (index === -1) {
+    return res.status(404).json({ error: "UC não encontrada no Cadastro Mestre." });
+  }
+
+  const oldVal = { ...db.cadastro_mestre_ucs[index] };
+  db.cadastro_mestre_ucs.splice(index, 1);
+  saveDB(db);
+  logAudit("cadastro_mestre_ucs", id, "DELETE", usuario, oldVal, null);
+
+  res.json({ message: "UC removida do Cadastro Mestre com sucesso." });
+});
 
 // --- UNIDADES ---
 app.get("/api/unidades", (req, res) => {
