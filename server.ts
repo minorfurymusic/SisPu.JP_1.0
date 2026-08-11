@@ -1131,26 +1131,6 @@ app.post("/api/lancamentos", (req, res) => {
     cleanMesAno = `${mes_ano}-01`;
   }
 
-  // Check unique constraints: (item_despesa_id, mes_ano) - if exists, update it
-  const exists = db.lancamentos.find(l => l.item_despesa_id === item_despesa_id && l.mes_ano.substring(0, 7) === cleanMesAno.substring(0, 7));
-  if (exists) {
-    const oldVal = { ...exists };
-    exists.consumo = parseFloat(consumo || 0);
-    exists.valor_total = parseFloat(valor_total || 0);
-    exists.valor_imposto = parseFloat(valor_imposto || 0);
-    exists.valor_celular = parseFloat(valor_celular || 0);
-    exists.valor_internet = parseFloat(valor_internet || 0);
-    exists.valor_diversos = parseFloat(valor_diversos || 0);
-    exists.valor_linha_privada = parseFloat(valor_linha_privada || 0);
-    exists.valor_credito = parseFloat(valor_credito || 0);
-    if (data_lancamento) exists.data_lancamento = data_lancamento;
-    exists.atualizado_em = new Date().toISOString();
-    saveDB(db);
-
-    logAudit("lancamentos", exists.id, "UPDATE", usuario, oldVal, exists);
-    return res.status(200).json(exists);
-  }
-
   const newId = (Math.max(...db.lancamentos.map(l => (l?.id ? parseInt(l.id) : 0) || 0), 0) + 1).toString();
   const newLancamento: Lancamento = {
     id: newId,
@@ -1521,29 +1501,6 @@ app.post("/api/documentos/:id/homologar", (req, res) => {
   // Persist to lancamentos (shared table)
   const mesAnoDate = extr?.mes_ano || new Date().toISOString().split('T')[0];
   
-  // Check if exists - if exists, update it instead of failing
-  const existingLanc = db.lancamentos.find(l => l?.item_despesa_id === item?.id && l?.mes_ano?.substring(0, 7) === mesAnoDate.substring(0, 7));
-  if (existingLanc) {
-    const oldVal = { ...existingLanc };
-    existingLanc.consumo = parseFloat(extr?.consumo as any || 0);
-    existingLanc.valor_total = parseFloat(extr?.valor_total as any || 0);
-    existingLanc.valor_imposto = parseFloat(extr?.valor_imposto as any || 0);
-    existingLanc.valor_celular = parseFloat(extr?.valor_celular as any || 0);
-    existingLanc.valor_internet = parseFloat(extr?.valor_internet as any || 0);
-    existingLanc.valor_diversos = parseFloat(extr?.valor_diversos as any || 0);
-    existingLanc.valor_linha_privada = parseFloat(extr?.valor_linha_privada as any || 0);
-    existingLanc.valor_credito = parseFloat(extr?.valor_credito as any || 0);
-    existingLanc.data_lancamento = new Date().toISOString().split('T')[0];
-    existingLanc.atualizado_em = new Date().toISOString();
-    if (doc) doc.status = 'HOMOLOGADO';
-    saveDB(db);
-
-    logAudit("lancamentos", existingLanc.id, "UPDATE", usuario, oldVal, existingLanc);
-    if (doc) logAudit("documentos_processados", doc.id, "UPDATE", usuario, { status: doc.status }, { status: "HOMOLOGADO" });
-
-    return res.json({ message: "Lançamento atualizado e homologado com sucesso!", lancamento: existingLanc });
-  }
-
   const newLancId = (Math.max(...db.lancamentos.map(l => (l?.id ? parseInt(l.id) : 0) || 0), 0) + 1).toString();
   const newLanc: Lancamento = {
     id: newLancId,
