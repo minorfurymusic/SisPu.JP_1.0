@@ -1,20 +1,44 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { 
   Building2, Receipt, Lightbulb, Droplets, History,
   TrendingUp, BarChart3, ShieldAlert, Search, Edit2, Trash2,
   Layers, Plus, Trash, Calendar, FolderCheck, CheckCircle2, X,
-  ClipboardList, Settings, Check, HelpCircle, AlertCircle,
-  ChevronDown, ChevronRight, Folder, FolderOpen, Zap, FileText, Filter
+  ClipboardList, Settings, Check, HelpCircle, Filter, FolderTree, Table
 } from "lucide-react";
 import { Secretaria, Unidade, Despesa, ItemDespesa, Lancamento, AuditoriaRegistro } from "../types";
 import DocumentManager from "./DocumentManager";
 import SmartTable, { SmartTableColumn } from "./SmartTable";
-import AuditoriaDashboard from "./AuditoriaDashboard";
+import FaturasTreeView from "./FaturasTreeView";
+import EditFaturaModal from "./EditFaturaModal";
 
 interface WebPortalProps {
   onRefreshTrigger?: number;
   onDataChanged?: () => void;
 }
+
+// Helper para renderizar badge da Concessionária (CELESC / CASAN)
+const renderConcessionariaBadge = (desc?: string) => {
+  const d = (desc || "").toUpperCase();
+  if (d.includes("CASAN") || d.includes("ÁGUA") || d.includes("AGUA")) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20">
+        💧 CASAN
+      </span>
+    );
+  }
+  if (d.includes("CELESC") || d.includes("ENERGIA") || d.includes("LUZ")) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+        ⚡ CELESC
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 dark:bg-slate-500/10 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-500/20">
+      {desc || "N/A"}
+    </span>
+  );
+};
 
 export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortalProps) {
   // Shared States
@@ -28,17 +52,8 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
   // Layout & Sections
   const [activeSection, setActiveSection] = useState<
-    "dashboard" | "secretarias" | "unidades" | "despesas" | "itens" | "lancamentos" | "documentos" | "auditoria" | "log" | "pendencias" | "configuracoes"
+    "dashboard" | "secretarias" | "unidades" | "despesas" | "itens" | "lancamentos" | "documentos" | "auditoria"
   >("dashboard");
-
-  // TODO: REMOVER ESTE BOTÃO ANTES DE IR PARA USO REAL DEFINITIVO
-  const [showResetModal, setShowResetModal] = useState(false);
-  const [resetConfirmInput, setResetConfirmInput] = useState("");
-  const [isResetting, setIsResetting] = useState(false);
-  const [resetResultMsg, setResetResultMsg] = useState<string | null>(null);
-
-  const [pendingSelSec, setPendingSelSec] = useState<{ [lancId: string]: string }>({});
-  const [submittingPending, setSubmittingPending] = useState<string | null>(null);
 
   const [chartMode, setChartMode] = useState<'energia' | 'agua'>('energia');
 
@@ -46,6 +61,8 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   const [expandedUnitId, setExpandedUnitId] = useState<string | null>(null);
 
   // Form edit modes and states
+  const [formModal, setFormModal] = useState<'secretaria' | 'unidade' | 'despesa' | 'item' | null>(null);
+
   const [editingSecId, setEditingSecId] = useState<string | null>(null);
   const [secNome, setSecNome] = useState("");
   const [secCodigo, setSecCodigo] = useState("");
@@ -68,97 +85,95 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   const [itemMedidor, setItemMedidor] = useState("");
 
   const [editingLancId, setEditingLancId] = useState<string | null>(null);
+  const [modalEditItem, setModalEditItem] = useState<any | null>(null);
   const [lancItemId, setLancItemId] = useState("");
   const [lancMesAno, setLancMesAno] = useState("");
   const [lancConsumo, setLancConsumo] = useState("");
   const [lancTotal, setLancTotal] = useState("");
   const [lancImposto, setLancImposto] = useState("");
   const [lancamentoSubView, setLancamentoSubView] = useState<'list' | 'new'>('list');
+  const [faturasViewMode, setFaturasViewMode] = useState<'tree' | 'table'>('tree');
+
+  // CODNUM Filter & View Mode
+  const [itemConcessionariaFilter, setItemConcessionariaFilter] = useState<'ambos' | 'celesc' | 'casan'>('ambos');
+  const [itemViewMode, setItemViewMode] = useState<'tabela' | 'arvore'>('tabela');
+
+  // Unidades Gestoras Concessionária Filter
+  const [unidadesConcessionariaFilter, setUnidadesConcessionariaFilter] = useState<'ambos' | 'celesc' | 'casan'>('ambos');
+
+  const filteredUnidades = useMemo(() => {
+    return unidades.filter(u => {
+      if (!u) return false;
+      if (unidadesConcessionariaFilter === 'ambos') return true;
+      
+      const uConcess = (u.concessionaria || "").toUpperCase();
+      const isDirectMatch = unidadesConcessionariaFilter === 'celesc'
+        ? (uConcess.includes("CELESC") || uConcess.includes("ENERGIA") || uConcess.includes("LUZ"))
+        : (uConcess.includes("CASAN") || uConcess.includes("ÁGUA") || uConcess.includes("AGUA"));
+
+      if (isDirectMatch) return true;
+
+      // Check linked items
+      const unitItens = itens.filter(i => String(i.unidade_id) === String(u.id));
+      return unitItens.some(i => {
+        const desc = (i.despesa_descricao || "").toUpperCase();
+        if (unidadesConcessionariaFilter === 'celesc') {
+          return desc.includes("CELESC") || desc.includes("ENERGIA") || desc.includes("LUZ");
+        } else {
+          return desc.includes("CASAN") || desc.includes("ÁGUA") || desc.includes("AGUA");
+        }
+      });
+    });
+  }, [unidades, unidadesConcessionariaFilter, itens]);
+
+  const filteredItens = useMemo(() => {
+    return itens.filter(item => {
+      if (!item) return false;
+      const desc = (item.despesa_descricao || "").toUpperCase();
+      if (itemConcessionariaFilter === 'celesc') {
+        return desc.includes("CELESC") || desc.includes("ENERGIA") || desc.includes("LUZ");
+      }
+      if (itemConcessionariaFilter === 'casan') {
+        return desc.includes("CASAN") || desc.includes("ÁGUA") || desc.includes("AGUA");
+      }
+      return true;
+    });
+  }, [itens, itemConcessionariaFilter]);
+
+  const celescItens = useMemo(() => {
+    return itens.filter(i => {
+      const desc = (i?.despesa_descricao || "").toUpperCase();
+      return desc.includes("CELESC") || desc.includes("ENERGIA") || desc.includes("LUZ");
+    });
+  }, [itens]);
+
+  const casanItens = useMemo(() => {
+    return itens.filter(i => {
+      const desc = (i?.despesa_descricao || "").toUpperCase();
+      return desc.includes("CASAN") || desc.includes("ÁGUA") || desc.includes("AGUA");
+    });
+  }, [itens]);
+
+  const outrosItens = useMemo(() => {
+    return itens.filter(i => {
+      const desc = (i?.despesa_descricao || "").toUpperCase();
+      const isCelesc = desc.includes("CELESC") || desc.includes("ENERGIA") || desc.includes("LUZ");
+      const isCasan = desc.includes("CASAN") || desc.includes("ÁGUA") || desc.includes("AGUA");
+      return !isCelesc && !isCasan;
+    });
+  }, [itens]);
 
   // Status/Notifications
   const [globalError, setGlobalError] = useState("");
   const [globalSuccess, setGlobalSuccess] = useState("");
 
-  // Confirmation Modal State
+  // Confirmation Modal
   const [deleteModal, setDeleteModal] = useState<{
     isOpen: boolean;
-    type: 'secretaria' | 'unidade' | 'despesa' | 'item' | 'lancamento';
-    id: string;
     title: string;
     description: string;
+    onConfirm: () => void;
   } | null>(null);
-
-  // State for Concessionaire Filter
-  const [concessionaireFilter, setConcessionaireFilter] = useState<"ALL" | "CASAN" | "CELESC" | "OUTROS">("ALL");
-
-  // State for Lançamentos Monthly Blocks Tree View
-  const [lancSearchTerm, setLancSearchTerm] = useState("");
-  const [lancViewMode, setLancViewMode] = useState<"blocks" | "table">("blocks");
-  const [collapsedMonths, setCollapsedMonths] = useState<Record<string, boolean>>({});
-  const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
-
-  const toggleCategoryCollapse = (catKey: string) => {
-    setCollapsedCategories(prev => ({
-      ...prev,
-      [catKey]: !prev[catKey]
-    }));
-  };
-
-  // Edit Lançamento Modal State
-  const [editLancModal, setEditLancModal] = useState<{
-    isOpen: boolean;
-    lancamento: any;
-    item_despesa_id: string;
-    mes_ano: string;
-    data_lancamento: string;
-    secretaria_id: string;
-    consumo: string;
-    valor_total: string;
-    valor_imposto: string;
-    valor_celular: string;
-    valor_internet: string;
-    valor_diversos: string;
-    valor_linha_privada: string;
-    valor_credito: string;
-  } | null>(null);
-
-  const toggleMonthCollapse = (mKey: string) => {
-    setCollapsedMonths(prev => ({
-      ...prev,
-      [mKey]: !prev[mKey]
-    }));
-  };
-
-  const expandAllMonths = (mKeys: string[]) => {
-    const newState: Record<string, boolean> = {};
-    mKeys.forEach(k => { newState[k] = false; });
-    setCollapsedMonths(newState);
-  };
-
-  const collapseAllMonths = (mKeys: string[]) => {
-    const newState: Record<string, boolean> = {};
-    mKeys.forEach(k => { newState[k] = true; });
-    setCollapsedMonths(newState);
-  };
-
-  const formatMonthTitle = (mKey: string) => {
-    if (mKey === "sem_data") return "Sem Mês / Data Não Definida";
-    const [year, monthStr] = mKey.split("-");
-    const monthIdx = parseInt(monthStr, 10) - 1;
-    const monthNames = [
-      "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
-      "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
-    ];
-    const name = monthNames[monthIdx] || monthStr;
-    return `${monthStr}/${year} — ${name} de ${year}`;
-  };
-
-  const formatShortRef = (mesAno: string) => {
-    if (!mesAno) return "-";
-    const d = new Date(mesAno);
-    if (isNaN(d.getTime())) return mesAno;
-    return `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
-  };
 
   useEffect(() => {
     loadAllData();
@@ -209,6 +224,13 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   // --- CRUD ACTIONS ---
 
   // Secretarias
+  const handleOpenCreateSecretaria = () => {
+    setEditingSecId(null);
+    setSecNome("");
+    setSecCodigo("");
+    setFormModal('secretaria');
+  };
+
   const handleSaveSecretaria = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!secNome.trim()) {
@@ -234,6 +256,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         setSecNome("");
         setSecCodigo("");
         setEditingSecId(null);
+        setFormModal(null);
         notifyChange();
       } else {
         const err = await res.json();
@@ -245,25 +268,51 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   };
 
   const handleEditSecretaria = (s: Secretaria) => {
+    if (!s || !s.id) return;
     setEditingSecId(s.id);
     setSecNome(s.nome);
     setSecCodigo(s.codigo_legado ? String(s.codigo_legado) : "");
-    showSuccess(`Editando secretaria: ${s.nome}`);
+    setFormModal('secretaria');
   };
 
   const handleDeleteSecretaria = (id: string) => {
-    const s = secretarias.find(x => String(x.id) === String(id));
-    if (!s) return;
+    if (!id) return;
+    const s = secretarias.find(x => String(x?.id) === String(id));
+
     setDeleteModal({
       isOpen: true,
-      type: 'secretaria',
-      id: String(id),
-      title: 'Excluir Secretaria',
-      description: `Tem certeza que deseja excluir a secretaria "${s.nome}"?`
+      title: "Excluir Secretaria",
+      description: `Tem certeza que deseja excluir a secretaria "${s?.nome || id}"?`,
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/secretarias/${id}`, {
+            method: "DELETE",
+            headers: { "x-user": "gestor_web" }
+          });
+          if (res.ok) {
+            showSuccess(`Secretaria "${s?.nome || id}" excluída com sucesso.`);
+            notifyChange();
+          } else {
+            const err = await res.json().catch(() => ({}));
+            showError(err.error || "Erro ao excluir secretaria.");
+          }
+        } catch (err: any) {
+          showError(err.message || "Erro de conexão ao excluir.");
+        }
+      }
     });
   };
 
   // Unidades
+  const handleOpenCreateUnidade = () => {
+    setEditingUniId(null);
+    setUniNome("");
+    setUniSecretariaId("");
+    setUniEndereco("");
+    setUniCodigo("");
+    setFormModal('unidade');
+  };
+
   const handleSaveUnidade = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!uniNome.trim() || !uniSecretariaId) {
@@ -293,6 +342,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         setUniEndereco("");
         setUniCodigo("");
         setEditingUniId(null);
+        setFormModal(null);
         notifyChange();
       } else {
         const err = await res.json();
@@ -304,27 +354,51 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   };
 
   const handleEditUnidade = (u: any) => {
+    if (!u || !u.id) return;
     setEditingUniId(u.id);
     setUniNome(u.nome);
     setUniSecretariaId(u.secretaria_id || "");
     setUniEndereco(u.endereco || "");
     setUniCodigo(u.codigo_legado ? String(u.codigo_legado) : "");
-    showSuccess(`Editando Unidade: ${u.nome}`);
+    setFormModal('unidade');
   };
 
   const handleDeleteUnidade = (id: string) => {
-    const u = unidades.find(x => String(x.id) === String(id));
-    if (!u) return;
+    if (!id) return;
+    const u = unidades.find(x => String(x?.id) === String(id));
+
     setDeleteModal({
       isOpen: true,
-      type: 'unidade',
-      id: String(id),
-      title: 'Excluir Unidade Gestora',
-      description: `Tem certeza que deseja excluir a unidade "${u.nome}"?`
+      title: "Excluir Unidade",
+      description: `Tem certeza que deseja excluir a unidade "${u?.nome || id}"?`,
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/unidades/${id}`, {
+            method: "DELETE",
+            headers: { "x-user": "gestor_web" }
+          });
+          if (res.ok) {
+            showSuccess(`Unidade "${u?.nome || id}" excluída com sucesso.`);
+            notifyChange();
+          } else {
+            const err = await res.json().catch(() => ({}));
+            showError(err.error || "Erro ao excluir unidade.");
+          }
+        } catch (err: any) {
+          showError(err.message || "Erro de conexão ao excluir.");
+        }
+      }
     });
   };
 
   // Despesas
+  const handleOpenCreateDespesa = () => {
+    setEditingDesId(null);
+    setDesDescricao("");
+    setDesCodigo("");
+    setFormModal('despesa');
+  };
+
   const handleSaveDespesa = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!desDescricao.trim()) {
@@ -350,6 +424,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         setDesDescricao("");
         setDesCodigo("");
         setEditingDesId(null);
+        setFormModal(null);
         notifyChange();
       } else {
         const err = await res.json();
@@ -361,25 +436,52 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   };
 
   const handleEditDespesa = (d: Despesa) => {
+    if (!d || !d.id) return;
     setEditingDesId(d.id);
     setDesDescricao(d.descricao);
     setDesCodigo(d.codigo_legado ? String(d.codigo_legado) : "");
-    showSuccess(`Editando Despesa: ${d.descricao}`);
+    setFormModal('despesa');
   };
 
   const handleDeleteDespesa = (id: string) => {
-    const d = despesas.find(x => String(x.id) === String(id));
-    if (!d) return;
+    if (!id) return;
+    const d = despesas.find(x => String(x?.id) === String(id));
+
     setDeleteModal({
       isOpen: true,
-      type: 'despesa',
-      id: String(id),
-      title: 'Excluir Despesa',
-      description: `Tem certeza que deseja excluir a despesa "${d.descricao}"?`
+      title: "Excluir Despesa",
+      description: `Tem certeza que deseja excluir a despesa "${d?.descricao || id}"?`,
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/despesas/${id}`, {
+            method: "DELETE",
+            headers: { "x-user": "gestor_web" }
+          });
+          if (res.ok) {
+            showSuccess(`Despesa "${d?.descricao || id}" excluída com sucesso.`);
+            notifyChange();
+          } else {
+            const err = await res.json().catch(() => ({}));
+            showError(err.error || "Erro ao excluir despesa.");
+          }
+        } catch (err: any) {
+          showError(err.message || "Erro de conexão ao excluir.");
+        }
+      }
     });
   };
 
   // Itens de Despesa / CODNUM Contracts
+  const handleOpenCreateItem = () => {
+    setEditingItemId(null);
+    setItemCodigoNumero("");
+    setItemDespesaId("");
+    setItemUnidadeId("");
+    setItemTipoFone("");
+    setItemMedidor("");
+    setFormModal('item');
+  };
+
   const handleSaveItem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!itemCodigoNumero.trim() || !itemDespesaId || !itemUnidadeId) {
@@ -409,6 +511,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         setItemTipoFone("");
         setItemMedidor("");
         setEditingItemId(null);
+        setFormModal(null);
         notifyChange();
       } else {
         const err = await res.json();
@@ -420,24 +523,41 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   };
 
   const handleEditItem = (it: any) => {
+    if (!it || !it.id) return;
     setEditingItemId(it.id);
     setItemCodigoNumero(it.codigo_numero);
     setItemDespesaId(it.despesa_id);
     setItemUnidadeId(it.unidade_id);
     setItemTipoFone(it.tipo_fone || "");
     setItemMedidor(it.medidor || "");
-    showSuccess(`Editando contrato CODNUM: ${it.codigo_numero}`);
+    setFormModal('item');
   };
 
   const handleDeleteItem = (id: string) => {
-    const it = itens.find(x => String(x.id) === String(id));
-    if (!it) return;
+    if (!id) return;
+    const it = itens.find(x => String(x?.id) === String(id));
+
     setDeleteModal({
       isOpen: true,
-      type: 'item',
-      id: String(id),
-      title: 'Excluir Contrato / CODNUM',
-      description: `Tem certeza que deseja excluir o contrato CODNUM "${it.codigo_numero}"?`
+      title: "Excluir Contrato",
+      description: `Tem certeza que deseja excluir o contrato "${it?.codigo_numero || id}"?`,
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/itens_despesas/${id}`, {
+            method: "DELETE",
+            headers: { "x-user": "gestor_web" }
+          });
+          if (res.ok) {
+            showSuccess(`Contrato "${it?.codigo_numero || id}" excluído com sucesso.`);
+            notifyChange();
+          } else {
+            const err = await res.json().catch(() => ({}));
+            showError(err.error || "Erro ao excluir contrato.");
+          }
+        } catch (err: any) {
+          showError(err.message || "Erro de conexão ao excluir.");
+        }
+      }
     });
   };
 
@@ -482,247 +602,194 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   };
 
   const handleEditLancamento = (l: any) => {
-    const item = itens.find(it => String(it.id) === String(l.item_despesa_id));
-    const defaultSecId = l.secretaria_id || (item ? (unidades.find(u => String(u.id) === String(item.unidade_id))?.secretaria_id || "") : "");
-
-    setEditLancModal({
-      isOpen: true,
-      lancamento: l,
-      item_despesa_id: String(l.item_despesa_id || ""),
-      mes_ano: l.mes_ano ? l.mes_ano.substring(0, 10) : "",
-      data_lancamento: l.data_lancamento ? l.data_lancamento.substring(0, 10) : "",
-      secretaria_id: String(defaultSecId),
-      consumo: String(l.consumo ?? 0),
-      valor_total: String(l.valor_total ?? 0),
-      valor_imposto: String(l.valor_imposto ?? 0),
-      valor_celular: String(l.valor_celular ?? 0),
-      valor_internet: String(l.valor_internet ?? 0),
-      valor_diversos: String(l.valor_diversos ?? 0),
-      valor_linha_privada: String(l.valor_linha_privada ?? 0),
-      valor_credito: String(l.valor_credito ?? 0)
-    });
-  };
-
-  const handleSaveEditLancamentoModal = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editLancModal || !editLancModal.lancamento) return;
-    const { lancamento } = editLancModal;
-    try {
-      const payload = {
-        item_despesa_id: editLancModal.item_despesa_id,
-        mes_ano: editLancModal.mes_ano,
-        data_lancamento: editLancModal.data_lancamento,
-        secretaria_id: editLancModal.secretaria_id,
-        consumo: parseFloat(editLancModal.consumo || "0"),
-        valor_total: parseFloat(editLancModal.valor_total || "0"),
-        valor_imposto: parseFloat(editLancModal.valor_imposto || "0"),
-        valor_celular: parseFloat(editLancModal.valor_celular || "0"),
-        valor_internet: parseFloat(editLancModal.valor_internet || "0"),
-        valor_diversos: parseFloat(editLancModal.valor_diversos || "0"),
-        valor_linha_privada: parseFloat(editLancModal.valor_linha_privada || "0"),
-        valor_credito: parseFloat(editLancModal.valor_credito || "0")
-      };
-
-      const res = await fetch(`/api/lancamentos/${lancamento.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", "x-user": "gestor_web" },
-        body: JSON.stringify(payload)
-      });
-
-      if (res.ok) {
-        showSuccess(`Lançamento ID #${lancamento.id} alterado com sucesso!`);
-        setEditLancModal(null);
-        notifyChange();
-      } else {
-        const err = await res.json();
-        showError(err.error || "Erro ao salvar alterações no lançamento.");
-      }
-    } catch (err: any) {
-      showError(err.message);
-    }
+    if (!l) return;
+    setModalEditItem(l);
   };
 
   const handleDeleteLancamento = (id: string) => {
-    const l = lancamentos.find(x => String(x.id) === String(id));
-    const desc = l ? `o lançamento do CODNUM "${l.codigo_numero}" (${l.mes_ano ? l.mes_ano.substring(0, 7) : ''})` : `este lançamento ID: ${id}`;
+    if (!id) return;
+    const l = lancamentos.find(x => String(x?.id) === String(id) || String(x?.doc_id) === String(id));
+    const label = l ? `${l.codigo_numero || 'Fatura'} - ${l.mes_ano ? l.mes_ano.substring(0,7) : id}` : id;
+
     setDeleteModal({
       isOpen: true,
-      type: 'lancamento',
-      id: String(id),
-      title: 'Excluir Lançamento',
-      description: `Tem certeza que deseja excluir ${desc}?`
+      title: "Excluir Lançamento / Fatura",
+      description: `Tem certeza que deseja excluir o lançamento "${label}"? Esta ação removerá a fatura permanentemente.`,
+      onConfirm: async () => {
+        try {
+          let res = await fetch(`/api/lancamentos/${id}`, {
+            method: "DELETE",
+            headers: { "x-user": "gestor_web" }
+          });
+
+          if (!res.ok && res.status === 404) {
+            res = await fetch(`/api/documentos/${id}`, {
+              method: "DELETE",
+              headers: { "x-user": "gestor_web" }
+            });
+          }
+
+          if (res.ok) {
+            showSuccess("Fatura / Lançamento excluído com sucesso.");
+            setLancamentos(prev => prev.filter(item => String(item?.id) !== String(id) && String((item as any)?.doc_id) !== String(id)));
+            notifyChange();
+          } else {
+            const err = await res.json().catch(() => ({}));
+            showError(err.error || "Erro ao excluir fatura.");
+          }
+        } catch (err: any) {
+          showError(err.message || "Erro de conexão ao excluir.");
+        }
+      }
     });
   };
 
-  const executeDelete = async () => {
-    if (!deleteModal) return;
-    const { type, id } = deleteModal;
-    setDeleteModal(null);
+  const handleDeleteMonth = (monthKey: string, items: any[], monthLabel: string) => {
+    if (!items || items.length === 0) return;
 
-    try {
-      let url = "";
-      if (type === 'secretaria') url = `/api/secretarias/${id}`;
-      else if (type === 'unidade') url = `/api/unidades/${id}`;
-      else if (type === 'despesa') url = `/api/despesas/${id}`;
-      else if (type === 'item') url = `/api/itens_despesas/${id}`;
-      else if (type === 'lancamento') url = `/api/lancamentos/${id}`;
+    setDeleteModal({
+      isOpen: true,
+      title: `Excluir Mês Completo (${monthLabel})`,
+      description: `Atenção: Você está prestes a excluir TODOS os ${items.length} lançamento(s) do mês de ${monthLabel}. Esta ação removerá permanentemente todas as faturas deste mês. Deseja continuar?`,
+      onConfirm: async () => {
+        try {
+          let successCount = 0;
+          let failCount = 0;
 
-      const res = await fetch(url, {
-        method: "DELETE",
-        headers: { "x-user": "gestor_web" }
-      });
+          for (const item of items) {
+            const targetId = item.id || item.doc_id;
+            if (!targetId) continue;
 
-      if (res.ok) {
-        showSuccess("Registro excluído com sucesso.");
-        if (type === 'lancamento') {
-          setLancamentos(prev => prev.filter(l => String(l.id) !== String(id)));
+            let res = await fetch(`/api/lancamentos/${targetId}`, {
+              method: "DELETE",
+              headers: { "x-user": "gestor_web" }
+            });
+
+            if (!res.ok && res.status === 404) {
+              res = await fetch(`/api/documentos/${targetId}`, {
+                method: "DELETE",
+                headers: { "x-user": "gestor_web" }
+              });
+            }
+
+            if (res.ok) {
+              successCount++;
+            } else {
+              failCount++;
+            }
+          }
+
+          if (successCount > 0) {
+            showSuccess(`${successCount} lançamento(s) do mês ${monthLabel} foram excluídos com sucesso.`);
+            loadAllData();
+            notifyChange();
+          }
+          if (failCount > 0) {
+            showError(`Não foi possível excluir ${failCount} lançamento(s).`);
+          }
+        } catch (err: any) {
+          showError("Erro de conexão ao processar exclusão do mês.");
         }
-        notifyChange();
-      } else {
-        const err = await res.json();
-        showError(err.error || "Erro ao excluir o registro.");
       }
-    } catch (err: any) {
-      showError(err.message || "Erro de comunicação ao excluir.");
-    }
+    });
   };
 
   // Stats Calculations
   const totalSpend = lancamentos.reduce((acc, l) => acc + (l.valor_total || 0), 0);
-
-  const isCelesc = (l: any) => {
-    if (!l) return false;
-    const textDirect = `${l.codigo_numero || ''} ${l.unidade_nome || ''} ${l.secretaria_nome || ''} ${l.despesa_descricao || ''}`.toLowerCase();
-    if (textDirect.includes('celesc') || textDirect.includes('energia') || textDirect.includes('luz') || textDirect.includes('elétric') || textDirect.includes('eletric') || textDirect.includes('kwh')) return true;
-
-    const item = itens.find(it => String(it.id) === String(l.item_despesa_id));
-    if (item) {
-      const itemText = `${item.codigo_numero || ''} ${item.despesa_descricao || ''} ${item.medidor || ''}`.toLowerCase();
-      if (itemText.includes('celesc') || itemText.includes('energia') || itemText.includes('luz') || itemText.includes('elétric') || itemText.includes('eletric') || itemText.includes('kwh')) return true;
-
-      const despesa = despesas.find(d => String(d.id) === String(item.despesa_id));
-      if (despesa) {
-        const desText = `${despesa.descricao || ''}`.toLowerCase();
-        if (desText.includes('celesc') || desText.includes('energia') || desText.includes('luz') || desText.includes('elétric') || desText.includes('eletric') || desText.includes('kwh')) return true;
-      }
-    }
-
-    // System-wide context fallback: if registered despesas has only CELESC/Energy and no CASAN
-    if (despesas.length > 0) {
-      const hasCelesc = despesas.some(d => (d.descricao || '').toLowerCase().includes('celesc') || (d.descricao || '').toLowerCase().includes('energia') || (d.descricao || '').toLowerCase().includes('luz'));
-      const hasCasan = despesas.some(d => (d.descricao || '').toLowerCase().includes('casan') || (d.descricao || '').toLowerCase().includes('água') || (d.descricao || '').toLowerCase().includes('agua') || (d.descricao || '').toLowerCase().includes('esgoto'));
-      if (hasCelesc && !hasCasan) return true;
-    }
-
-    return false;
-  };
-
-  const isCasan = (l: any) => {
-    if (!l) return false;
-    const textDirect = `${l.codigo_numero || ''} ${l.unidade_nome || ''} ${l.secretaria_nome || ''} ${l.despesa_descricao || ''}`.toLowerCase();
-    if (textDirect.includes('casan') || textDirect.includes('água') || textDirect.includes('agua') || textDirect.includes('esgoto') || textDirect.includes('saneamento') || textDirect.includes('hídric') || textDirect.includes('hidric')) return true;
-
-    const item = itens.find(it => String(it.id) === String(l.item_despesa_id));
-    if (item) {
-      const itemText = `${item.codigo_numero || ''} ${item.despesa_descricao || ''} ${item.medidor || ''}`.toLowerCase();
-      if (itemText.includes('casan') || itemText.includes('água') || itemText.includes('agua') || itemText.includes('esgoto') || itemText.includes('saneamento') || itemText.includes('hídric') || itemText.includes('hidric')) return true;
-
-      const despesa = despesas.find(d => String(d.id) === String(item.despesa_id));
-      if (despesa) {
-        const desText = `${despesa.descricao || ''}`.toLowerCase();
-        if (desText.includes('casan') || desText.includes('água') || desText.includes('agua') || desText.includes('esgoto') || desText.includes('saneamento') || desText.includes('hídric') || desText.includes('hidric')) return true;
-      }
-    }
-
-    // System-wide context fallback: if registered despesas has only CASAN/Water and no CELESC
-    if (despesas.length > 0) {
-      const hasCelesc = despesas.some(d => (d.descricao || '').toLowerCase().includes('celesc') || (d.descricao || '').toLowerCase().includes('energia') || (d.descricao || '').toLowerCase().includes('luz'));
-      const hasCasan = despesas.some(d => (d.descricao || '').toLowerCase().includes('casan') || (d.descricao || '').toLowerCase().includes('água') || (d.descricao || '').toLowerCase().includes('agua') || (d.descricao || '').toLowerCase().includes('esgoto'));
-      if (hasCasan && !hasCelesc) return true;
-    }
-
-    return false;
-  };
-
+  
   const totalEnergyCons = lancamentos
-    .filter(l => isCelesc(l))
+    .filter(l => l.codigo_numero && l.codigo_numero.toLowerCase().includes('celesc'))
     .reduce((acc, l) => acc + (l.consumo || 0), 0);
 
   const totalWaterCons = lancamentos
-    .filter(l => isCasan(l))
+    .filter(l => l.codigo_numero && l.codigo_numero.toLowerCase().includes('casan'))
     .reduce((acc, l) => acc + (l.consumo || 0), 0);
 
   const monthNames = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
-  
-  const getHistoricalChartData = () => {
-    // Collect 12 months of 2026 by default plus any months present in lancamentos
-    const monthSet = new Set<string>();
-    for (let m = 1; m <= 12; m++) {
-      monthSet.add(`2026-${String(m).padStart(2, '0')}`);
-    }
 
+  const availableYears = React.useMemo(() => {
+    const yearsSet = new Set<number>();
     lancamentos.forEach(l => {
-      if (!l.mes_ano) return;
-      let ym = "";
-      if (l.mes_ano.length >= 7) {
-        ym = l.mes_ano.substring(0, 7);
-      } else {
-        const itemDate = new Date(l.mes_ano);
-        if (!isNaN(itemDate.getTime())) {
-          ym = `${itemDate.getFullYear()}-${String(itemDate.getMonth() + 1).padStart(2, '0')}`;
+      if (l && l.mes_ano) {
+        const year = parseInt(String(l.mes_ano).substring(0, 4), 10);
+        if (!isNaN(year) && year > 1900 && year < 2100) {
+          yearsSet.add(year);
         }
       }
-      if (ym && ym.match(/^\d{4}-\d{2}$/)) {
-        monthSet.add(ym);
-      }
     });
+    const list = Array.from(yearsSet).sort((a, b) => b - a);
+    if (list.length === 0) {
+      list.push(2026);
+    }
+    return list;
+  }, [lancamentos]);
 
-    const sortedMonths = Array.from(monthSet).sort();
+  const [selectedYear, setSelectedYear] = useState<number>(2026);
 
-    return sortedMonths.map((m) => {
-      const [yearStr, monthStr] = m.split("-");
-      const monthIdx = parseInt(monthStr, 10) - 1;
-      const baseLabel = monthNames[monthIdx] || monthStr;
-      const displayLabel = sortedMonths.length > 12 ? `${baseLabel}/${yearStr.slice(2)}` : baseLabel;
+  useEffect(() => {
+    if (availableYears.length > 0 && !availableYears.includes(selectedYear)) {
+      setSelectedYear(availableYears[0]);
+    }
+  }, [availableYears]);
+
+  const yearlyChartData = React.useMemo(() => {
+    return monthNames.map((mName, idx) => {
+      const monthNumStr = String(idx + 1).padStart(2, '0');
+      const refPrefix = `${selectedYear}-${monthNumStr}`;
 
       const matches = lancamentos.filter(l => {
-        if (!l.mes_ano) return false;
-        let refStr = "";
-        if (l.mes_ano.length >= 7) {
-          refStr = l.mes_ano.substring(0, 7);
-        } else {
-          const itemDate = new Date(l.mes_ano);
-          if (!isNaN(itemDate.getTime())) {
-            refStr = `${itemDate.getFullYear()}-${String(itemDate.getMonth() + 1).padStart(2, '0')}`;
-          }
-        }
-        return refStr === m;
+        if (!l || !l.mes_ano) return false;
+        return String(l.mes_ano).substring(0, 7) === refPrefix;
       });
 
-      const filterKw = matches.filter(l => isCelesc(l));
-      const filterM3 = matches.filter(l => isCasan(l));
+      const filterCelesc = matches.filter(l => {
+        const desc = (l.despesa_descricao || "").toUpperCase();
+        const cod = (l.codigo_numero || "").toUpperCase();
+        const id = String(l.despesa_id || "");
+        return desc.includes("CELESC") || desc.includes("ENERGIA") || cod.includes("CELESC") || id === "1" || (!id && !desc.includes("CASAN"));
+      });
 
-      const kwVal = filterKw.reduce((acc, l) => acc + (l.consumo || 0), 0);
-      const m3Val = filterM3.reduce((acc, l) => acc + (l.consumo || 0), 0);
-      const kwCost = filterKw.reduce((acc, l) => acc + (l.valor_total || 0), 0);
-      const m3Cost = filterM3.reduce((acc, l) => acc + (l.valor_total || 0), 0);
+      const filterCasan = matches.filter(l => {
+        const desc = (l.despesa_descricao || "").toUpperCase();
+        const cod = (l.codigo_numero || "").toUpperCase();
+        const id = String(l.despesa_id || "");
+        return desc.includes("CASAN") || desc.includes("ÁGUA") || desc.includes("AGUA") || cod.includes("CASAN") || id === "2";
+      });
+
+      const listToUse = chartMode === 'energia' ? filterCelesc : filterCasan;
+
+      const consumo = listToUse.reduce((acc, l) => acc + Number(l.consumo || 0), 0);
+      const valor_total = listToUse.reduce((acc, l) => acc + Number(l.valor_total || 0), 0);
+      const valor_imposto = listToUse.reduce((acc, l) => acc + Number(l.valor_imposto || 0), 0);
+      const energia_injetada = chartMode === 'energia' ? listToUse.reduce((acc, l) => acc + Number(l.energia_injetada || 0), 0) : 0;
+      const desperdicio = 0;
 
       return {
-        key: m,
-        label: displayLabel,
-        kw: kwVal,
-        m3: m3Val,
-        kwCost: kwCost,
-        m3Cost: m3Cost
+        monthIndex: idx,
+        label: mName,
+        monthFull: `${mName} / ${selectedYear}`,
+        count: listToUse.length,
+        consumo,
+        valor_total,
+        valor_imposto,
+        energia_injetada,
+        desperdicio
       };
     });
-  };
+  }, [lancamentos, selectedYear, chartMode]);
 
-  const chartData = getHistoricalChartData();
+  const chartMaxes = React.useMemo(() => {
+    const maxConsumo = Math.max(...yearlyChartData.map(d => d.consumo), 1);
+    const maxValor = Math.max(...yearlyChartData.map(d => d.valor_total), 1);
+    const maxImposto = Math.max(...yearlyChartData.map(d => d.valor_imposto), 1);
+    const maxInjetada = Math.max(...yearlyChartData.map(d => d.energia_injetada), 1);
+    return { maxConsumo, maxValor, maxImposto, maxInjetada };
+  }, [yearlyChartData]);
 
   // --- NESTED COMPONENT FOR EXPANDABLE UNIT DETAILS ---
   function ExpandedUnitDetails({ unit }: { unit: any }) {
-    const unitItems = itens.filter(it => it.unidade_id === unit.id);
+    if (!unit || !unit.id) return null;
+    const unitItems = itens.filter(it => it && it.unidade_id === unit.id);
     
     const concessionaires = Array.from(new Set(unitItems.map(it => it.despesa_descricao || "CONCESSIONÁRIA")));
     const [activeConcessionaire, setActiveConcessionaire] = useState(concessionaires[0] || "");
@@ -769,7 +836,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
             const isSolar = activeConcessionaire.toUpperCase().includes("CELESC") || activeConcessionaire.toUpperCase().includes("FOTOVOLTAICO") || activeConcessionaire.toUpperCase().includes("ENERGIA");
             
             return (
-              <div key={it.id} className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-sm space-y-3 hover:border-slate-300 transition">
+              <div key={it?.id || it?.codigo_numero || `item-${Math.random()}`} className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-sm space-y-3 hover:border-slate-300 transition">
                 <div className="flex justify-between items-start gap-4">
                   <div>
                     <span className="text-[9px] text-slate-400 uppercase font-extrabold tracking-wider block">Código CODNUM</span>
@@ -794,7 +861,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                   <div>
                     <span className="text-[9px] text-slate-400 block">Valor Última Fatura</span>
                     <span className="font-bold text-slate-900 font-mono">
-                      {latestLanc ? `R$ ${Number(latestLanc.valor_total || 0).toFixed(2)}` : "R$ 0,00"}
+                      {latestLanc ? `R$ ${latestLanc.valor_total.toFixed(2)}` : "R$ 0,00"}
                     </span>
                   </div>
                   <div>
@@ -885,46 +952,9 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
             <button
               onClick={() => setActiveSection('auditoria')}
-              className={`px-3 py-1.5 rounded-md transition font-bold flex items-center gap-1.5 ${
-                activeSection === 'auditoria' 
-                  ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-500/20 ring-1 ring-indigo-400/50' 
-                  : 'bg-indigo-950/40 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-900/40 hover:text-white'
-              }`}
+              className={`px-3 py-1.5 rounded-md transition ${activeSection === 'auditoria' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
             >
-              <ShieldAlert className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Auditoria</span>
-            </button>
-
-            <button
-              onClick={() => setActiveSection('log')}
-              className={`px-3 py-1.5 rounded-md transition ${
-                activeSection === 'log' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              Log
-            </button>
-
-            <button
-              onClick={() => setActiveSection('configuracoes')}
-              className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
-                activeSection === 'configuracoes' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              <span>⚙️ Configurações</span>
-            </button>
-
-            <button
-              onClick={() => setActiveSection('pendencias')}
-              className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
-                activeSection === 'pendencias' ? 'bg-amber-600 text-white shadow-sm' : 'text-amber-400 hover:text-amber-300 hover:bg-amber-500/10'
-              }`}
-            >
-              <span>Pendências de Vinculação</span>
-              {lancamentos.filter(l => !l.secretaria_id && (!l.secretaria_nome || l.secretaria_nome === "NÃO LOCALIZADA" || l.secretaria_nome === "NÃO VINCULADA")).length > 0 && (
-                <span className="px-1.5 py-0.5 text-[10px] bg-amber-400 text-slate-950 font-extrabold rounded-full font-mono">
-                  {lancamentos.filter(l => !l.secretaria_id && (!l.secretaria_nome || l.secretaria_nome === "NÃO LOCALIZADA" || l.secretaria_nome === "NÃO VINCULADA")).length}
-                </span>
-              )}
+              Controle de Auditoria
             </button>
           </div>
         </div>
@@ -947,251 +977,179 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
           </div>
         )}
 
-        {/* 🎛️ Special Concessionaire / Supply Type Selector Bar */}
-        <div className="bg-[#141417] p-4 rounded-xl border border-white/10 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-md">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-indigo-500/15 text-indigo-400 rounded-xl border border-indigo-500/30 shrink-0">
-              <Filter className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h4 className="text-sm font-bold text-white">
-                  Seletor de Concessionária / Suprimento
-                </h4>
-                {concessionaireFilter !== 'ALL' && (
-                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                    Filtro Exclusivo: {concessionaireFilter}
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-gray-400">
-                Filtre os relatórios e indicadores para separar faturas de Água (CASAN - m³) ou Energia Elétrica (CELESC - kWh)
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 bg-black/60 p-1.5 rounded-xl border border-white/10 shrink-0 w-full md:w-auto">
-            <button
-              onClick={() => setConcessionaireFilter('ALL')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-2 ${
-                concessionaireFilter === 'ALL'
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'text-gray-400 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              <span>🌐 Todos os Registros</span>
-              <span className="text-[10px] bg-white/20 px-1.5 py-0.2 rounded-full font-mono">
-                {lancamentos.length}
-              </span>
-            </button>
-
-            <button
-              onClick={() => setConcessionaireFilter('CASAN')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-2 ${
-                concessionaireFilter === 'CASAN'
-                  ? 'bg-cyan-600 text-white shadow-sm'
-                  : 'text-gray-400 hover:text-cyan-300 hover:bg-cyan-500/10'
-              }`}
-            >
-              <Droplets className="w-4 h-4 text-cyan-300" />
-              <span>💧 CASAN (Água / m³)</span>
-              <span className="text-[10px] bg-cyan-900/40 text-cyan-200 border border-cyan-400/30 px-1.5 py-0.2 rounded-full font-mono">
-                {lancamentos.filter(isCasan).length}
-              </span>
-            </button>
-
-            <button
-              onClick={() => setConcessionaireFilter('CELESC')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-2 ${
-                concessionaireFilter === 'CELESC'
-                  ? 'bg-amber-600 text-white shadow-sm'
-                  : 'text-gray-400 hover:text-amber-300 hover:bg-amber-500/10'
-              }`}
-            >
-              <Lightbulb className="w-4 h-4 text-amber-300" />
-              <span>⚡ CELESC (Energia / kWh)</span>
-              <span className="text-[10px] bg-amber-900/40 text-amber-200 border border-amber-400/30 px-1.5 py-0.2 rounded-full font-mono">
-                {lancamentos.filter(isCelesc).length}
-              </span>
-            </button>
-
-            <button
-              onClick={() => setConcessionaireFilter('OUTROS')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-2 ${
-                concessionaireFilter === 'OUTROS'
-                  ? 'bg-purple-600 text-white shadow-sm'
-                  : 'text-gray-400 hover:text-purple-300 hover:bg-purple-500/10'
-              }`}
-            >
-              <FileText className="w-4 h-4 text-purple-300" />
-              <span>📑 Outros</span>
-              <span className="text-[10px] bg-purple-900/40 text-purple-200 border border-purple-400/30 px-1.5 py-0.2 rounded-full font-mono">
-                {lancamentos.filter(l => !isCasan(l) && !isCelesc(l)).length}
-              </span>
-            </button>
-          </div>
-        </div>
-
         {/* SECTION: DASHBOARD */}
         {activeSection === 'dashboard' && (
           <>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-              
-              <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between hover:shadow-md transition">
-                <div className="space-y-1">
-                  <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider block">Despesa Geral Homologada</span>
-                  <p className="text-xl font-bold text-slate-900 font-mono">
-                    R$ {totalSpend.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </p>
-                  <span className="text-[10px] text-emerald-600 font-bold flex items-center gap-0.5">
-                    <TrendingUp className="h-3.5 w-3.5" /> Sincronizado centralizado
-                  </span>
-                </div>
-                <div className="bg-indigo-50 p-3 rounded-lg text-indigo-600 shrink-0">
-                  <Receipt className="h-5.5 w-5.5" />
-                </div>
-              </div>
-
-              <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between hover:shadow-md transition">
-                <div className="space-y-1">
-                  <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider block">Consumo de Energia (CELESC)</span>
-                  <p className="text-xl font-bold text-slate-900 font-mono">
-                    {totalEnergyCons.toLocaleString("pt-BR")} <span className="text-xs text-slate-500 font-sans">kWh</span>
-                  </p>
-                  <span className="text-[10px] text-slate-400 font-semibold block">Faturamento consolidado</span>
-                </div>
-                <div className="bg-amber-50 p-3 rounded-lg text-amber-600 shrink-0">
-                  <Lightbulb className="h-5.5 w-5.5" />
-                </div>
-              </div>
-
-              <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between hover:shadow-md transition">
-                <div className="space-y-1">
-                  <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider block">Consumo de Água (CASAN)</span>
-                  <p className="text-xl font-bold text-slate-900 font-mono">
-                    {totalWaterCons.toLocaleString("pt-BR")} <span className="text-xs text-slate-500 font-sans">m³</span>
-                  </p>
-                  <span className="text-[10px] text-slate-400 font-semibold block">Volume municipal</span>
-                </div>
-                <div className="bg-blue-50 p-3 rounded-lg text-blue-600 shrink-0">
-                  <Droplets className="h-5.5 w-5.5" />
-                </div>
-              </div>
-
-              <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between hover:shadow-md transition">
-                <div className="space-y-1">
-                  <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider block">Estrutura de Vinculações</span>
-                  <p className="text-xl font-bold text-slate-900 font-mono">
-                    {secretarias.length} Secs / {unidades.length} Unids
-                  </p>
-                  <span className="text-[10px] text-indigo-600 font-semibold block">
-                    {itens.length} Contratos ativos
-                  </span>
-                </div>
-                <div className="bg-emerald-50 p-3 rounded-lg text-emerald-600 shrink-0">
-                  <Building2 className="h-5.5 w-5.5" />
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm lg:col-span-2 space-y-4">
-                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b pb-4">
-                  <div>
-                    <h4 className="font-bold text-slate-800 text-base">Consumos Históricos Consolidados</h4>
-                    <p className="text-xs text-slate-500">Acompanhamento mensal por tipo de suprimento público</p>
-                  </div>
-                  <div className="flex gap-1.5 bg-slate-100 p-1 rounded-md text-xs font-semibold">
-                    <button
-                      onClick={() => setChartMode('energia')}
-                      className={`px-3 py-1 rounded transition ${chartMode === 'energia' ? 'bg-white shadow text-slate-900' : 'text-slate-500'}`}
-                    >
-                      Energia (Celesc kWh)
-                    </button>
-                    <button
-                      onClick={() => setChartMode('agua')}
-                      className={`px-3 py-1 rounded transition ${chartMode === 'agua' ? 'bg-white shadow text-slate-900' : 'text-slate-500'}`}
-                    >
-                      Água (Casan m³)
-                    </button>
-                  </div>
-                </div>
-
-                <div className="h-64 flex flex-col justify-between">
-                  <div className="relative flex-1 flex items-end justify-between px-4 pb-4 border-b border-slate-200 h-48 pt-4">
-                    <div className="absolute left-0 right-0 top-1/4 border-t border-slate-100 border-dashed pointer-events-none"></div>
-                    <div className="absolute left-0 right-0 top-2/4 border-t border-slate-100 border-dashed pointer-events-none"></div>
-                    <div className="absolute left-0 right-0 top-3/4 border-t border-slate-100 border-dashed pointer-events-none"></div>
-
-                    {(() => {
-                      const maxValInSeries = Math.max(...chartData.map(d => chartMode === 'energia' ? d.kw : d.m3), 0);
-                      const maxVal = maxValInSeries > 0 ? maxValInSeries * 1.15 : 100;
-
-                      return chartData.map((d, i) => {
-                        const val = chartMode === 'energia' ? d.kw : d.m3;
-                        const percent = maxValInSeries > 0 ? Math.min(100, (val / maxVal) * 100) : 0;
-                        const isEnergy = chartMode === 'energia';
-
-                        return (
-                          <div key={i} className="flex flex-col items-center flex-1 group relative h-full justify-end">
-                            <div className="absolute bottom-full mb-2 bg-slate-900 text-white text-[10px] py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition duration-200 pointer-events-none shadow-lg z-20 whitespace-nowrap">
-                              <span className="font-bold">{val} {isEnergy ? 'kWh' : 'm³'}</span>
-                              <span className="block text-[8px] text-slate-400">R$ {Number((isEnergy ? d.kwCost : d.m3Cost) || 0).toFixed(2)}</span>
-                            </div>
-                            
-                            <div 
-                              style={{ height: `${percent}%` }}
-                              className={`w-10 sm:w-14 rounded-t-md transition-all duration-500 cursor-pointer ${
-                                percent === 0 ? 'bg-slate-200/50 border-t-2 border-slate-300/40 min-h-[4px]' :
-                                isEnergy 
-                                  ? 'bg-gradient-to-t from-amber-400 to-amber-300 hover:from-amber-500 hover:to-amber-400' 
-                                  : 'bg-gradient-to-t from-blue-500 to-blue-400 hover:from-blue-600 hover:to-blue-500'
-                              }`}
-                            />
-                          </div>
-                        );
-                      });
-                    })()}
-                  </div>
+            {/* Full Width Annual Chart Section */}
+            <div className="bg-[#0f0f0f] p-6 rounded-xl border border-white/10 shadow-lg space-y-5 w-full">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-white/10 pb-4">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <h4 className="font-bold text-white text-xl">Histórico</h4>
                   
-                  <div className="flex justify-between px-4 text-xs font-bold text-slate-500">
-                    {chartData.map((d, i) => (
-                      <span key={i} className="flex-1 text-center">{d.label}</span>
-                    ))}
+                  <div className="flex items-center gap-2 bg-[#141414] px-3 py-1.5 rounded-lg border border-white/10 text-xs font-semibold text-gray-300">
+                    <span className="text-gray-400 font-bold uppercase tracking-wider text-[11px]">Ano:</span>
+                    <select
+                      value={selectedYear}
+                      onChange={(e) => setSelectedYear(Number(e.target.value))}
+                      className="bg-[#0a0a0a] border border-white/20 rounded px-2.5 py-0.5 font-mono font-bold text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-xs"
+                    >
+                      {availableYears.map(yr => (
+                        <option key={yr} value={yr}>{yr}</option>
+                      ))}
+                    </select>
                   </div>
+                </div>
+
+                <div className="flex gap-1.5 bg-[#141414] p-1 rounded-lg border border-white/10 text-xs font-semibold">
+                  <button
+                    onClick={() => setChartMode('energia')}
+                    className={`px-3 py-1.5 rounded transition ${chartMode === 'energia' ? 'bg-amber-500 text-black font-bold shadow-md' : 'text-gray-400 hover:text-white'}`}
+                  >
+                    Energia (Celesc kWh)
+                  </button>
+                  <button
+                    onClick={() => setChartMode('agua')}
+                    className={`px-3 py-1.5 rounded transition ${chartMode === 'agua' ? 'bg-blue-600 text-white font-bold shadow-md' : 'text-gray-400 hover:text-white'}`}
+                  >
+                    Água (Casan m³)
+                  </button>
                 </div>
               </div>
 
-              <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
-                <div>
-                  <h4 className="font-bold text-slate-800 text-base">Atalhos e Resumos</h4>
-                  <p className="text-xs text-slate-500">Navegue pelas abas ou gerencie cadastros abaixo</p>
+              {/* Chart Legend */}
+              <div className="flex flex-wrap items-center gap-4 text-xs font-semibold text-gray-300 bg-[#141414] p-3 rounded-lg border border-white/10">
+                <div className="flex items-center gap-1.5">
+                  <span className={`w-3 h-3 rounded-sm inline-block shadow-sm ${chartMode === 'energia' ? 'bg-amber-400' : 'bg-blue-500'}`}></span>
+                  <span>Consumo ({chartMode === 'energia' ? 'kWh' : 'm³'})</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-3 h-3 rounded-sm bg-emerald-400 inline-block shadow-sm"></span>
+                  <span>Valor Total (R$)</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-3 h-3 rounded-sm bg-indigo-400 inline-block shadow-sm"></span>
+                  <span>Imposto (R$)</span>
+                </div>
+                {chartMode === 'energia' && (
+                  <>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded-sm bg-sky-400 inline-block shadow-sm"></span>
+                      <span>Energia Injetada (kWh)</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded-sm bg-rose-400 inline-block shadow-sm"></span>
+                      <span>Desperdício</span>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Chart Display Area (Annual 12 Months) */}
+              <div className="pt-2">
+                <div className="relative h-64 border-b border-white/10 pb-2 flex items-end justify-between gap-1 sm:gap-2">
+                  {/* Grid Lines */}
+                  <div className="absolute left-0 right-0 top-1/4 border-t border-white/5 border-dashed pointer-events-none"></div>
+                  <div className="absolute left-0 right-0 top-2/4 border-t border-white/5 border-dashed pointer-events-none"></div>
+                  <div className="absolute left-0 right-0 top-3/4 border-t border-white/5 border-dashed pointer-events-none"></div>
+
+                  {yearlyChartData.map((d) => {
+                    const hConsumo = d.consumo > 0 ? Math.max(6, (d.consumo / chartMaxes.maxConsumo) * 100) : 0;
+                    const hValor = d.valor_total > 0 ? Math.max(6, (d.valor_total / chartMaxes.maxValor) * 100) : 0;
+                    const hImposto = d.valor_imposto > 0 ? Math.max(6, (d.valor_imposto / chartMaxes.maxImposto) * 100) : 0;
+                    const hInjetada = d.energia_injetada > 0 ? Math.max(6, (d.energia_injetada / chartMaxes.maxInjetada) * 100) : 0;
+                    const hDesperdicio = d.desperdicio > 0 ? Math.max(6, d.desperdicio) : 0;
+
+                    const unitStr = chartMode === 'energia' ? 'kWh' : 'm³';
+
+                    return (
+                      <div key={d.monthIndex} className="flex-1 flex flex-col items-center group relative h-full justify-end px-0.5 sm:px-1">
+                        {/* Tooltip on Hover */}
+                        <div className="absolute bottom-full mb-2 bg-[#181818] border border-white/20 text-white text-[11px] p-2.5 rounded-lg opacity-0 group-hover:opacity-100 transition duration-150 pointer-events-none shadow-2xl z-30 whitespace-nowrap min-w-[160px]">
+                          <span className="font-bold text-gray-200 block border-b border-white/10 pb-1 mb-1 font-mono">
+                            {d.monthFull} ({d.count} fatura{d.count !== 1 ? 's' : ''})
+                          </span>
+                          <div className="space-y-0.5 text-[10px]">
+                            <div className="flex justify-between gap-2 text-amber-300">
+                              <span>Consumo:</span>
+                              <span className="font-bold font-mono">{d.consumo.toLocaleString('pt-BR')} {unitStr}</span>
+                            </div>
+                            <div className="flex justify-between gap-2 text-emerald-300">
+                              <span>Valor Total:</span>
+                              <span className="font-bold font-mono">R$ {d.valor_total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            </div>
+                            <div className="flex justify-between gap-2 text-indigo-300">
+                              <span>Impostos:</span>
+                              <span className="font-bold font-mono">R$ {d.valor_imposto.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            </div>
+                            {chartMode === 'energia' && (
+                              <>
+                                <div className="flex justify-between gap-2 text-sky-300">
+                                  <span>Energia Injetada:</span>
+                                  <span className="font-bold font-mono">{d.energia_injetada.toLocaleString('pt-BR')} kWh</span>
+                                </div>
+                                <div className="flex justify-between gap-2 text-rose-300">
+                                  <span>Desperdício:</span>
+                                  <span className="font-bold font-mono">{d.desperdicio} kWh</span>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Multi-Column Group */}
+                        <div className="w-full h-full flex items-end justify-center gap-0.5 sm:gap-1">
+                          {/* Consumo Bar */}
+                          <div
+                            style={{ height: `${hConsumo}%` }}
+                            className={`flex-1 rounded-t-sm transition-all duration-300 ${
+                              d.consumo > 0 
+                                ? (chartMode === 'energia' ? 'bg-amber-400 hover:bg-amber-300' : 'bg-blue-500 hover:bg-blue-400') 
+                                : 'bg-white/5'
+                            }`}
+                            title={`Consumo: ${d.consumo} ${unitStr}`}
+                          />
+                          {/* Valor Total Bar */}
+                          <div
+                            style={{ height: `${hValor}%` }}
+                            className={`flex-1 rounded-t-sm transition-all duration-300 ${d.valor_total > 0 ? 'bg-emerald-400 hover:bg-emerald-300' : 'bg-white/5'}`}
+                            title={`Valor: R$ ${d.valor_total}`}
+                          />
+                          {/* Imposto Bar */}
+                          <div
+                            style={{ height: `${hImposto}%` }}
+                            className={`flex-1 rounded-t-sm transition-all duration-300 ${d.valor_imposto > 0 ? 'bg-indigo-400 hover:bg-indigo-300' : 'bg-white/5'}`}
+                            title={`Imposto: R$ ${d.valor_imposto}`}
+                          />
+                          {/* Celesc Specific Columns */}
+                          {chartMode === 'energia' && (
+                            <>
+                              {/* Energia Injetada Bar */}
+                              <div
+                                style={{ height: `${hInjetada}%` }}
+                                className={`flex-1 rounded-t-sm transition-all duration-300 ${d.energia_injetada > 0 ? 'bg-sky-400 hover:bg-sky-300' : 'bg-white/5'}`}
+                                title={`Energia Injetada: ${d.energia_injetada} kWh`}
+                              />
+                              {/* Desperdício Bar */}
+                              <div
+                                style={{ height: `${hDesperdicio}%` }}
+                                className={`flex-1 rounded-t-sm transition-all duration-300 ${d.desperdicio > 0 ? 'bg-rose-400 hover:bg-rose-300' : 'bg-white/5'}`}
+                                title={`Desperdício: ${d.desperdicio}`}
+                              />
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
 
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <button onClick={() => setActiveSection('secretarias')} className="p-3 border rounded-xl hover:border-indigo-500 hover:bg-slate-50 transition text-slate-700 font-bold flex flex-col gap-1 items-center">
-                    <Building2 className="h-5 w-5 text-indigo-600" />
-                    <span>Secretarias</span>
-                  </button>
-                  <button onClick={() => setActiveSection('unidades')} className="p-3 border rounded-xl hover:border-indigo-500 hover:bg-slate-50 transition text-slate-700 font-bold flex flex-col gap-1 items-center">
-                    <Layers className="h-5 w-5 text-indigo-600" />
-                    <span>Unidades</span>
-                  </button>
-                  <button onClick={() => setActiveSection('despesas')} className="p-3 border rounded-xl hover:border-indigo-500 hover:bg-slate-50 transition text-slate-700 font-bold flex flex-col gap-1 items-center">
-                    <FolderCheck className="h-5 w-5 text-indigo-600" />
-                    <span>Contas</span>
-                  </button>
-                  <button onClick={() => setActiveSection('lancamentos')} className="p-3 border rounded-xl hover:border-indigo-500 hover:bg-slate-50 transition text-slate-700 font-bold flex flex-col gap-1 items-center">
-                    <Receipt className="h-5 w-5 text-indigo-600" />
-                    <span>Lançamentos</span>
-                  </button>
-                </div>
-
-                <div className="border-t pt-4">
-                  <h5 className="text-xs font-extrabold uppercase tracking-wider text-slate-400 mb-2">Monitoramento de Saneamento</h5>
-                  <div className="p-3 bg-indigo-50 text-indigo-950 rounded-xl border border-indigo-100 text-xs leading-relaxed font-medium">
-                    A equivalência funcional Desktop/Web permite que faturas importadas via central de faturas fiquem visíveis imediatamente para auditoria em ambas as plataformas.
-                  </div>
+                {/* Month Labels (12 Months) */}
+                <div className="flex justify-between pt-2 px-0.5 text-xs font-bold text-gray-400 font-mono">
+                  {yearlyChartData.map((d) => (
+                    <span key={d.monthIndex} className="flex-1 text-center text-[10px] sm:text-xs">
+                      {d.label}
+                    </span>
+                  ))}
                 </div>
               </div>
             </div>
@@ -1201,78 +1159,40 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         {/* SECTION: SECRETARIAS */}
         {activeSection === 'secretarias' && (
           <div className="space-y-6">
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
-              <h4 className="font-bold text-slate-800 text-base">
-                {editingSecId ? "✏️ Editar Secretaria" : "➕ Cadastrar Nova Secretaria Municipal"}
-              </h4>
-              <form onSubmit={handleSaveSecretaria} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end text-xs font-semibold text-slate-700">
-                <div className="space-y-1.5">
-                  <label>Código Legado (Saneamento):</label>
-                  <input
-                    type="number"
-                    value={secCodigo}
-                    onChange={(e) => setSecCodigo(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 font-semibold text-slate-800 focus:bg-white transition"
-                    placeholder="Opcional"
-                  />
-                </div>
-                <div className="space-y-1.5 md:col-span-2 flex gap-3 items-end">
-                  <div className="flex-1 space-y-1.5">
-                    <label>Nome Completo da Secretaria:</label>
-                    <input
-                      type="text"
-                      required
-                      value={secNome}
-                      onChange={(e) => setSecNome(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 font-semibold text-slate-800 uppercase focus:bg-white transition"
-                      placeholder="EX: SECRETARIA DE EDUCAÇÃO"
-                    />
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      type="submit"
-                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-5 py-2.5 rounded-lg shadow-sm hover:shadow transition"
-                    >
-                      {editingSecId ? "Salvar Alterações" : "Salvar Registro"}
-                    </button>
-                    {editingSecId && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingSecId(null);
-                          setSecNome("");
-                          setSecCodigo("");
-                        }}
-                        className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-4 py-2.5 rounded-lg transition"
-                      >
-                        Cancelar
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </form>
+            <div className="bg-white dark:bg-[#121212] p-5 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <h4 className="font-bold text-slate-800 dark:text-white text-base flex items-center gap-2">
+                  <Building2 className="h-5 w-5 text-indigo-500" />
+                  Secretarias Cadastradas
+                </h4>
+                <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
+                  Gerencie a estrutura administrativa municipal e códigos legados
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleOpenCreateSecretaria}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-lg shadow-sm hover:shadow flex items-center gap-2 transition active:scale-95 shrink-0"
+              >
+                <Plus className="h-4 w-4" />
+                Nova Secretaria
+              </button>
             </div>
 
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
-              <div>
-                <h4 className="font-bold text-slate-800 text-base">Secretarias Ativas</h4>
-                <p className="text-xs text-slate-500">Passe o mouse sobre uma linha para ver as opções de edição e exclusão</p>
-              </div>
-
+            <div className="bg-white dark:bg-[#0f0f0f] p-6 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm space-y-4">
               <SmartTable
                 tableId="web_secretarias"
                 data={secretarias}
                 searchPlaceholder="Filtrar por nome ou código..."
                 columns={[
-                  { key: "id", label: "ID", searchable: true },
                   { key: "codigo_legado", label: "Cód. Legado", searchable: true },
                   { key: "nome", label: "Nome da Secretaria", searchable: true },
                   { 
                     key: "ativo", 
                     label: "Status",
                     render: (item) => (
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${item.ativo ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-500"}`}>
-                        {item.ativo ? "Ativo" : "Inativo"}
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${item?.ativo ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-500"}`}>
+                        {item?.ativo ? "Ativo" : "Inativo"}
                       </span>
                     )
                   },
@@ -1282,15 +1202,15 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     render: (item) => (
                       <div className="flex items-center gap-1.5">
                         <button
-                          onClick={() => handleEditSecretaria(item)}
-                          className="p-1.5 hover:bg-indigo-50 text-indigo-600 rounded-lg transition"
+                          onClick={() => item && handleEditSecretaria(item)}
+                          className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
                           title="Editar cadastro"
                         >
                           <Edit2 className="h-3.5 w-3.5" />
                         </button>
                         <button
-                          onClick={() => handleDeleteSecretaria(item.id)}
-                          className="p-1.5 hover:bg-rose-50 text-rose-600 rounded-lg transition"
+                          onClick={() => item?.id && handleDeleteSecretaria(item.id)}
+                          className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-rose-50 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
                           title="Excluir secretaria"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -1307,109 +1227,115 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         {/* SECTION: UNIDADES GESTORAS */}
         {activeSection === 'unidades' && (
           <div className="space-y-6">
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
-              <h4 className="font-bold text-slate-800 text-base">
-                {editingUniId ? "✏️ Editar Unidade Gestora" : "➕ Cadastrar Nova Unidade Gestora"}
-              </h4>
-              <form onSubmit={handleSaveUnidade} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end text-xs font-semibold text-slate-700">
-                <div className="space-y-1.5">
-                  <label>Unidade Consumidora / Matrícula:</label>
-                  <input
-                    type="number"
-                    value={uniCodigo}
-                    onChange={(e) => setUniCodigo(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 font-semibold focus:bg-white transition"
-                    placeholder="Ex: 102030"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label>Secretaria Vinculada:</label>
-                  <select
-                    required
-                    value={uniSecretariaId}
-                    onChange={(e) => setUniSecretariaId(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 font-semibold text-slate-800 focus:bg-white transition"
-                  >
-                    <option value="">Selecione...</option>
-                    {secretarias.map(s => (
-                      <option key={s.id} value={s.id}>{s.nome}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <label>Nome do Prédio / Imóvel:</label>
-                  <input
-                    type="text"
-                    required
-                    value={uniNome}
-                    onChange={(e) => setUniNome(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 font-semibold uppercase focus:bg-white transition"
-                    placeholder="Ex: POSTO DE SAÚDE CENTRO"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label>Endereço Físico Completo:</label>
-                  <input
-                    type="text"
-                    value={uniEndereco}
-                    onChange={(e) => setUniEndereco(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 font-semibold uppercase focus:bg-white transition"
-                    placeholder="Rua, Número, Bairro"
-                  />
-                </div>
-                <div className="md:col-span-4 flex justify-end gap-2 border-t pt-3.5">
-                  <button
-                    type="submit"
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-6 py-2.5 rounded-lg shadow hover:shadow-md transition"
-                  >
-                    {editingUniId ? "Salvar Alterações" : "Salvar Unidade"}
-                  </button>
-                  {editingUniId && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingUniId(null);
-                        setUniNome("");
-                        setUniSecretariaId("");
-                        setUniEndereco("");
-                        setUniCodigo("");
-                      }}
-                      className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-4 py-2.5 rounded-lg transition"
-                    >
-                      Cancelar
-                    </button>
-                  )}
-                </div>
-              </form>
+            <div className="bg-white dark:bg-[#121212] p-5 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <h4 className="font-bold text-slate-800 dark:text-white text-base flex items-center gap-2">
+                  <Building2 className="h-5 w-5 text-indigo-500" />
+                  Unidades Gestoras Cadastradas
+                </h4>
+                <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
+                  Clique em qualquer linha para abrir a expansão hierárquica e gerenciar as abas de faturamento
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleOpenCreateUnidade}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-lg shadow-sm hover:shadow flex items-center gap-2 transition active:scale-95 shrink-0"
+              >
+                <Plus className="h-4 w-4" />
+                Nova Unidade Gestora
+              </button>
             </div>
 
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
-              <div>
-                <h4 className="font-bold text-slate-800 text-base">Unidades Gestoras Cadastradas</h4>
-                <p className="text-xs text-slate-500">Clique em qualquer linha para abrir a expansão hierárquica e gerenciar as abas de faturamento concessionárias</p>
+            {/* Filter Bar */}
+            <div className="bg-white dark:bg-[#121212] p-4 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                <span className="text-xs font-bold text-slate-500 dark:text-gray-400 flex items-center gap-1.5 uppercase tracking-wider">
+                  <Filter className="h-3.5 w-3.5 text-indigo-500" />
+                  Filtrar Concessionária:
+                </span>
+                <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-black/40 p-1 rounded-lg border border-slate-200 dark:border-white/10 text-xs font-semibold">
+                  <button
+                    onClick={() => setUnidadesConcessionariaFilter('ambos')}
+                    className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
+                      unidadesConcessionariaFilter === 'ambos'
+                        ? "bg-emerald-600 text-white shadow-sm font-bold"
+                        : "text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white"
+                    }`}
+                  >
+                    <Layers className="h-3.5 w-3.5" />
+                    Ambos (Celesc + Casan)
+                  </button>
+                  <button
+                    onClick={() => setUnidadesConcessionariaFilter('celesc')}
+                    className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
+                      unidadesConcessionariaFilter === 'celesc'
+                        ? "bg-amber-500 text-slate-950 font-bold shadow-sm"
+                        : "text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
+                    }`}
+                  >
+                    ⚡ CELESC (Energia)
+                  </button>
+                  <button
+                    onClick={() => setUnidadesConcessionariaFilter('casan')}
+                    className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
+                      unidadesConcessionariaFilter === 'casan'
+                        ? "bg-sky-600 text-white font-bold shadow-sm"
+                        : "text-sky-600 dark:text-sky-400 hover:bg-sky-500/10"
+                    }`}
+                  >
+                    💧 CASAN (Água)
+                  </button>
+                </div>
               </div>
+            </div>
 
+            <div className="bg-white dark:bg-[#0f0f0f] p-6 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm space-y-4">
               <SmartTable
                 tableId="web_unidades"
-                data={unidades}
+                data={filteredUnidades}
                 searchPlaceholder="Pesquisar por UC, matrícula, nome ou secretaria..."
-                onRowClick={(item) => setExpandedUnitId(expandedUnitId === item.id ? null : item.id)}
-                isRowExpanded={(item) => expandedUnitId === item.id}
-                expandedRowRender={(item) => <ExpandedUnitDetails unit={item} />}
+                onRowClick={(item) => item?.id && setExpandedUnitId(expandedUnitId === item.id ? null : item.id)}
+                isRowExpanded={(item) => Boolean(item?.id && expandedUnitId === item.id)}
+                expandedRowRender={(item) => item ? <ExpandedUnitDetails unit={item} /> : null}
                 columns={[
-                  { key: "id", label: "ID", searchable: true },
                   { 
                     key: "codigo_legado", 
                     label: "Unidade Consumidora / UC", 
                     searchable: true,
-                    render: (item) => <span className="font-bold text-slate-900 font-mono">{item.codigo_legado || "None"}</span>
+                    render: (item) => <span className="font-bold text-slate-900 dark:text-white font-mono">{item?.codigo_legado || "None"}</span>
+                  },
+                  {
+                    key: "concessionaria",
+                    label: "Concessionária",
+                    searchable: true,
+                    render: (item) => {
+                      if (!item) return null;
+                      if (item.concessionaria) {
+                        return renderConcessionariaBadge(item.concessionaria);
+                      }
+                      const unitItens = itens.filter(i => String(i.unidade_id) === String(item.id));
+                      if (unitItens.length > 0) {
+                        const despesasDescs: string[] = Array.from(new Set<string>(unitItens.map(i => (i.despesa_descricao || '') as string).filter(Boolean)));
+                        if (despesasDescs.length > 0) {
+                          return (
+                            <div className="flex flex-wrap gap-1">
+                              {despesasDescs.map((desc: string, idx: number) => (
+                                <React.Fragment key={idx}>{renderConcessionariaBadge(desc)}</React.Fragment>
+                              ))}
+                            </div>
+                          );
+                        }
+                      }
+                      return renderConcessionariaBadge(item.concessionaria);
+                    }
                   },
                   { key: "secretaria_nome", label: "Secretaria de Vinculação", searchable: true },
                   { 
                     key: "nome", 
                     label: "Nome do Imóvel / Prédio", 
                     searchable: true,
-                    render: (item) => <span className="font-bold text-slate-800">{item.nome}</span>
+                    render: (item) => <span className="font-bold text-slate-800 dark:text-gray-200">{item?.nome}</span>
                   },
                   { key: "endereco", label: "Endereço", searchable: true },
                   {
@@ -1418,14 +1344,16 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     render: (item) => (
                       <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                         <button
-                          onClick={() => handleEditUnidade(item)}
-                          className="p-1.5 hover:bg-indigo-50 text-indigo-600 rounded-lg transition"
+                          onClick={() => item && handleEditUnidade(item)}
+                          className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
+                          title="Editar unidade"
                         >
                           <Edit2 className="h-3.5 w-3.5" />
                         </button>
                         <button
-                          onClick={() => handleDeleteUnidade(item.id)}
-                          className="p-1.5 hover:bg-rose-50 text-rose-600 rounded-lg transition"
+                          onClick={() => item?.id && handleDeleteUnidade(item.id)}
+                          className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-rose-50 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
+                          title="Excluir unidade"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
@@ -1441,77 +1369,57 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         {/* SECTION: TIPOS DE CONTA / DESPESAS */}
         {activeSection === 'despesas' && (
           <div className="space-y-6">
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
-              <h4 className="font-bold text-slate-800 text-base">
-                {editingDesId ? "✏️ Editar Tipo de Conta" : "➕ Cadastrar Tipo de Despesa / Concessionária"}
-              </h4>
-              <form onSubmit={handleSaveDespesa} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end text-xs font-semibold text-slate-700">
-                <div className="space-y-1.5">
-                  <label>Código do Tipo (Legado):</label>
-                  <input
-                    type="number"
-                    value={desCodigo}
-                    onChange={(e) => setDesCodigo(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 font-semibold focus:bg-white transition"
-                    placeholder="Ex: 501"
-                  />
-                </div>
-                <div className="space-y-1.5 md:col-span-2 flex gap-3 items-end">
-                  <div className="flex-1 space-y-1.5">
-                    <label>Descrição do Fornecimento / Concessionária:</label>
-                    <input
-                      type="text"
-                      required
-                      value={desDescricao}
-                      onChange={(e) => setDesDescricao(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 font-semibold uppercase focus:bg-white transition"
-                      placeholder="Ex: ENERGIA ELÉTRICA - CELESC"
-                    />
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      type="submit"
-                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-5 py-2.5 rounded-lg shadow transition"
-                    >
-                      {editingDesId ? "Salvar" : "Salvar Registro"}
-                    </button>
-                    {editingDesId && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingDesId(null);
-                          setDesDescricao("");
-                          setDesCodigo("");
-                        }}
-                        className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-4 py-2.5 rounded-lg transition"
-                      >
-                        Cancelar
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </form>
+            <div className="bg-white dark:bg-[#121212] p-5 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <h4 className="font-bold text-slate-800 dark:text-white text-base flex items-center gap-2">
+                  <Receipt className="h-5 w-5 text-indigo-500" />
+                  Tipos de Conta Cadastrados
+                </h4>
+                <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
+                  Gerencie as concessionárias e modalidades de serviços contratados
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleOpenCreateDespesa}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-lg shadow-sm hover:shadow flex items-center gap-2 transition active:scale-95 shrink-0"
+              >
+                <Plus className="h-4 w-4" />
+                Novo Tipo de Conta
+              </button>
             </div>
 
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
-              <h4 className="font-bold text-slate-800 text-base">Tipos de Conta Cadastrados</h4>
+            <div className="bg-white dark:bg-[#0f0f0f] p-6 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm space-y-4">
               <SmartTable
                 tableId="web_despesas"
                 data={despesas}
                 searchPlaceholder="Buscar por concessionária..."
                 columns={[
-                  { key: "id", label: "ID", searchable: true },
                   { key: "codigo_legado", label: "Cód. Legado", searchable: true },
+                  { 
+                    key: "concessionaria", 
+                    label: "Concessionária", 
+                    searchable: true,
+                    render: (item) => renderConcessionariaBadge(item?.descricao)
+                  },
                   { key: "descricao", label: "Descrição", searchable: true },
                   {
                     key: "acoes",
                     label: "Ações",
                     render: (item) => (
                       <div className="flex items-center gap-1.5">
-                        <button onClick={() => handleEditDespesa(item)} className="p-1.5 hover:bg-indigo-50 text-indigo-600 rounded-lg transition">
+                        <button
+                          onClick={() => item && handleEditDespesa(item)}
+                          className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
+                          title="Editar despesa"
+                        >
                           <Edit2 className="h-3.5 w-3.5" />
                         </button>
-                        <button onClick={() => handleDeleteDespesa(item.id)} className="p-1.5 hover:bg-rose-50 text-rose-600 rounded-lg transition">
+                        <button
+                          onClick={() => item?.id && handleDeleteDespesa(item.id)}
+                          className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-rose-50 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
+                          title="Excluir despesa"
+                        >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </div>
@@ -1526,121 +1434,373 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         {/* SECTION: CONTRATOS CODNUM */}
         {activeSection === 'itens' && (
           <div className="space-y-6">
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
-              <h4 className="font-bold text-slate-800 text-base">
-                {editingItemId ? "✏️ Editar Contrato CODNUM" : "➕ Cadastrar Medidor / Contrato (CODNUM)"}
-              </h4>
-              <form onSubmit={handleSaveItem} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end text-xs font-semibold text-slate-700">
-                <div className="space-y-1.5">
-                  <label>Identificador Geral CODNUM:</label>
-                  <input
-                    type="text"
-                    required
-                    value={itemCodigoNumero}
-                    onChange={(e) => setItemCodigoNumero(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 uppercase font-mono focus:bg-white transition"
-                    placeholder="Ex: CELESC-PREF-001"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label>Tipo de Conta (Despesa):</label>
-                  <select
-                    required
-                    value={itemDespesaId}
-                    onChange={(e) => setItemDespesaId(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:bg-white transition"
-                  >
-                    <option value="">Selecione...</option>
-                    {despesas.map(d => (
-                      <option key={d.id} value={d.id}>{d.descricao}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <label>Unidade Gestora Vinculada:</label>
-                  <select
-                    required
-                    value={itemUnidadeId}
-                    onChange={(e) => setItemUnidadeId(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:bg-white transition"
-                  >
-                    <option value="">Selecione...</option>
-                    {unidades.map(u => (
-                      <option key={u.id} value={u.id}>{u.nome}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <label>Linha de Suporte (opcional):</label>
-                  <input
-                    type="text"
-                    value={itemTipoFone}
-                    onChange={(e) => setItemTipoFone(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 uppercase focus:bg-white transition"
-                    placeholder="Ex: LINK INTERNET"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label>Número do Medidor / UC Físico:</label>
-                  <input
-                    type="text"
-                    value={itemMedidor}
-                    onChange={(e) => setItemMedidor(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 font-mono focus:bg-white transition"
-                    placeholder="Ex: Medidor Celesc 12345"
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <button type="submit" className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-2.5 rounded-lg shadow transition">
-                    {editingItemId ? "Salvar" : "Salvar Contrato"}
-                  </button>
-                  {editingItemId && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingItemId(null);
-                        setItemCodigoNumero("");
-                        setItemTipoFone("");
-                        setItemMedidor("");
-                      }}
-                      className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-4 py-2.5 rounded-lg transition"
-                    >
-                      Cancelar
-                    </button>
-                  )}
-                </div>
-              </form>
+            <div className="bg-white dark:bg-[#121212] p-5 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <h4 className="font-bold text-slate-800 dark:text-white text-base flex items-center gap-2">
+                  <Lightbulb className="h-5 w-5 text-indigo-500" />
+                  Identificadores CODNUM Cadastrados
+                </h4>
+                <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
+                  Gerencie os medidores e contratos vinculados às concessionárias e unidades
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleOpenCreateItem}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-lg shadow-sm hover:shadow flex items-center gap-2 transition active:scale-95 shrink-0"
+              >
+                <Plus className="h-4 w-4" />
+                Novo Contrato CODNUM
+              </button>
             </div>
 
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
-              <h4 className="font-bold text-slate-800 text-base">Identificadores CODNUM Cadastrados</h4>
-              <SmartTable
-                tableId="web_itens"
-                data={itens}
-                searchPlaceholder="Pesquisar por CODNUM, medidor, unidade..."
-                columns={[
-                  { key: "id", label: "ID", searchable: true },
-                  { key: "codigo_numero", label: "CODNUM", searchable: true },
-                  { key: "despesa_descricao", label: "Tipo de Conta", searchable: true },
-                  { key: "unidade_nome", label: "Unidade", searchable: true },
-                  { key: "medidor", label: "Medidor (MEDITM)", searchable: true },
-                  {
-                    key: "acoes",
-                    label: "Ações",
-                    render: (item) => (
-                      <div className="flex items-center gap-1.5">
-                        <button onClick={() => handleEditItem(item)} className="p-1.5 hover:bg-indigo-50 text-indigo-600 rounded-lg transition">
-                          <Edit2 className="h-3.5 w-3.5" />
-                        </button>
-                        <button onClick={() => handleDeleteItem(item.id)} className="p-1.5 hover:bg-rose-50 text-rose-600 rounded-lg transition">
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    )
-                  }
-                ]}
-              />
+            {/* Filter Bar & View Mode Switcher */}
+            <div className="bg-white dark:bg-[#121212] p-4 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                <span className="text-xs font-bold text-slate-500 dark:text-gray-400 flex items-center gap-1.5 uppercase tracking-wider">
+                  <Filter className="h-3.5 w-3.5 text-indigo-500" />
+                  Filtrar Concessionária:
+                </span>
+                <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-black/40 p-1 rounded-lg border border-slate-200 dark:border-white/10 text-xs font-semibold">
+                  <button
+                    onClick={() => setItemConcessionariaFilter('ambos')}
+                    className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
+                      itemConcessionariaFilter === 'ambos'
+                        ? "bg-emerald-600 text-white shadow-sm font-bold"
+                        : "text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white"
+                    }`}
+                  >
+                    <Layers className="h-3.5 w-3.5" />
+                    Ambos (Celesc + Casan)
+                  </button>
+                  <button
+                    onClick={() => setItemConcessionariaFilter('celesc')}
+                    className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
+                      itemConcessionariaFilter === 'celesc'
+                        ? "bg-amber-500 text-slate-950 font-bold shadow-sm"
+                        : "text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
+                    }`}
+                  >
+                    ⚡ CELESC (Energia)
+                  </button>
+                  <button
+                    onClick={() => setItemConcessionariaFilter('casan')}
+                    className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
+                      itemConcessionariaFilter === 'casan'
+                        ? "bg-sky-600 text-white font-bold shadow-sm"
+                        : "text-sky-600 dark:text-sky-400 hover:bg-sky-500/10"
+                    }`}
+                  >
+                    💧 CASAN (Água)
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1 bg-slate-100 dark:bg-black/40 p-1 rounded-lg border border-slate-200 dark:border-white/10 text-xs font-semibold shrink-0">
+                <button
+                  onClick={() => setItemViewMode('tabela')}
+                  className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
+                    itemViewMode === 'tabela'
+                      ? "bg-indigo-600 text-white shadow-sm font-bold"
+                      : "text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white"
+                  }`}
+                >
+                  <Table className="h-3.5 w-3.5" />
+                  Visão em Tabela
+                </button>
+                <button
+                  onClick={() => setItemViewMode('arvore')}
+                  className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
+                    itemViewMode === 'arvore'
+                      ? "bg-indigo-600 text-white shadow-sm font-bold"
+                      : "text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white"
+                  }`}
+                >
+                  <FolderTree className="h-3.5 w-3.5" />
+                  Árvore por Concessionária
+                </button>
+              </div>
             </div>
+
+            {/* View Mode Content */}
+            {itemViewMode === 'arvore' ? (
+              <div className="space-y-6">
+                {/* CELESC Tree Card */}
+                {(itemConcessionariaFilter === 'ambos' || itemConcessionariaFilter === 'celesc') && (
+                  <div className="bg-white dark:bg-[#0f0f0f] rounded-xl border border-amber-500/30 overflow-hidden shadow-sm">
+                    <div className="bg-amber-500/10 p-4 border-b border-amber-500/20 flex justify-between items-center">
+                      <div className="flex items-center gap-2 font-bold text-amber-700 dark:text-amber-400 text-sm">
+                        <span>⚡ CELESC — ENERGIA ELÉTRICA</span>
+                        <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500/20 border border-amber-500/30">
+                          {celescItens.length} contrato(s)
+                        </span>
+                      </div>
+                    </div>
+                    <div className="p-4">
+                      {celescItens.length === 0 ? (
+                        <p className="text-xs text-slate-500 dark:text-gray-400 italic p-2">Nenhum contrato da Celesc cadastrado.</p>
+                      ) : (
+                        <SmartTable
+                          tableId="web_itens_celesc"
+                          data={celescItens}
+                          searchPlaceholder="Pesquisar contratos Celesc..."
+                          columns={[
+                            { 
+                              key: "concessionaria", 
+                              label: "Concessionária", 
+                              searchable: true,
+                              render: (item) => renderConcessionariaBadge(item?.despesa_descricao)
+                            },
+                            { 
+                              key: "codigo_numero", 
+                              label: "CODNUM", 
+                              searchable: true,
+                              render: (item) => <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                            },
+                            { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
+                            { 
+                              key: "medidor", 
+                              label: "Medidor (MEDITM)", 
+                              searchable: true,
+                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{item?.medidor || "N/A"}</span>
+                            },
+                            { 
+                              key: "tipo_fone", 
+                              label: "Linha / Suporte", 
+                              searchable: true,
+                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-medium">{item?.tipo_fone || "N/A"}</span>
+                            },
+                            {
+                              key: "acoes",
+                              label: "Ações",
+                              render: (item) => (
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    onClick={() => item && handleEditItem(item)}
+                                    className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
+                                    title="Editar contrato CODNUM"
+                                  >
+                                    <Edit2 className="h-3.5 w-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => item?.id && handleDeleteItem(item.id)}
+                                    className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-rose-50 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
+                                    title="Excluir contrato CODNUM"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              )
+                            }
+                          ]}
+                        />
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* CASAN Tree Card */}
+                {(itemConcessionariaFilter === 'ambos' || itemConcessionariaFilter === 'casan') && (
+                  <div className="bg-white dark:bg-[#0f0f0f] rounded-xl border border-sky-500/30 overflow-hidden shadow-sm">
+                    <div className="bg-sky-500/10 p-4 border-b border-sky-500/20 flex justify-between items-center">
+                      <div className="flex items-center gap-2 font-bold text-sky-700 dark:text-sky-400 text-sm">
+                        <span>💧 CASAN — ÁGUA E SANEAMENTO</span>
+                        <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-sky-500/20 border border-sky-500/30">
+                          {casanItens.length} contrato(s)
+                        </span>
+                      </div>
+                    </div>
+                    <div className="p-4">
+                      {casanItens.length === 0 ? (
+                        <p className="text-xs text-slate-500 dark:text-gray-400 italic p-2">Nenhum contrato da Casan cadastrado.</p>
+                      ) : (
+                        <SmartTable
+                          tableId="web_itens_casan"
+                          data={casanItens}
+                          searchPlaceholder="Pesquisar contratos Casan..."
+                          columns={[
+                            { 
+                              key: "concessionaria", 
+                              label: "Concessionária", 
+                              searchable: true,
+                              render: (item) => renderConcessionariaBadge(item?.despesa_descricao)
+                            },
+                            { 
+                              key: "codigo_numero", 
+                              label: "CODNUM", 
+                              searchable: true,
+                              render: (item) => <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                            },
+                            { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
+                            { 
+                              key: "medidor", 
+                              label: "Medidor (MEDITM)", 
+                              searchable: true,
+                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{item?.medidor || "N/A"}</span>
+                            },
+                            { 
+                              key: "tipo_fone", 
+                              label: "Linha / Suporte", 
+                              searchable: true,
+                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-medium">{item?.tipo_fone || "N/A"}</span>
+                            },
+                            {
+                              key: "acoes",
+                              label: "Ações",
+                              render: (item) => (
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    onClick={() => item && handleEditItem(item)}
+                                    className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
+                                    title="Editar contrato CODNUM"
+                                  >
+                                    <Edit2 className="h-3.5 w-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => item?.id && handleDeleteItem(item.id)}
+                                    className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-rose-50 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
+                                    title="Excluir contrato CODNUM"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              )
+                            }
+                          ]}
+                        />
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* OUTROS Group (if any) */}
+                {itemConcessionariaFilter === 'ambos' && outrosItens.length > 0 && (
+                  <div className="bg-white dark:bg-[#0f0f0f] rounded-xl border border-slate-200 dark:border-white/10 overflow-hidden shadow-sm">
+                    <div className="bg-slate-100 dark:bg-white/5 p-4 border-b border-slate-200 dark:border-white/10 flex justify-between items-center">
+                      <div className="flex items-center gap-2 font-bold text-slate-700 dark:text-gray-300 text-sm">
+                        <span>📦 OUTRAS CONCESSIONÁRIAS</span>
+                        <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-slate-200 dark:bg-white/10">
+                          {outrosItens.length} contrato(s)
+                        </span>
+                      </div>
+                    </div>
+                    <div className="p-4">
+                      <SmartTable
+                        tableId="web_itens_outros"
+                        data={outrosItens}
+                        searchPlaceholder="Pesquisar outros contratos..."
+                        columns={[
+                          { 
+                            key: "concessionaria", 
+                            label: "Concessionária", 
+                            searchable: true,
+                            render: (item) => renderConcessionariaBadge(item?.despesa_descricao)
+                          },
+                          { 
+                            key: "codigo_numero", 
+                            label: "CODNUM", 
+                            searchable: true,
+                            render: (item) => <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                          },
+                          { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
+                          { 
+                            key: "medidor", 
+                            label: "Medidor (MEDITM)", 
+                            searchable: true,
+                            render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{item?.medidor || "N/A"}</span>
+                          },
+                          { 
+                            key: "tipo_fone", 
+                            label: "Linha / Suporte", 
+                            searchable: true,
+                            render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-medium">{item?.tipo_fone || "N/A"}</span>
+                          },
+                          {
+                            key: "acoes",
+                            label: "Ações",
+                            render: (item) => (
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  onClick={() => item && handleEditItem(item)}
+                                  className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
+                                  title="Editar contrato CODNUM"
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => item?.id && handleDeleteItem(item.id)}
+                                  className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-rose-50 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
+                                  title="Excluir contrato CODNUM"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            )
+                          }
+                        ]}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="bg-white dark:bg-[#0f0f0f] p-6 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm space-y-4">
+                <SmartTable
+                  tableId="web_itens"
+                  data={filteredItens}
+                  searchPlaceholder="Pesquisar por CODNUM, medidor, unidade..."
+                  columns={[
+                    { 
+                      key: "concessionaria", 
+                      label: "Concessionária", 
+                      searchable: true,
+                      render: (item) => renderConcessionariaBadge(item?.despesa_descricao)
+                    },
+                    { 
+                      key: "codigo_numero", 
+                      label: "CODNUM", 
+                      searchable: true,
+                      render: (item) => <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                    },
+                    { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
+                    { 
+                      key: "medidor", 
+                      label: "Medidor (MEDITM)", 
+                      searchable: true,
+                      render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{item?.medidor || "N/A"}</span>
+                    },
+                    { 
+                      key: "tipo_fone", 
+                      label: "Linha / Suporte", 
+                      searchable: true,
+                      render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-medium">{item?.tipo_fone || "N/A"}</span>
+                    },
+                    {
+                      key: "acoes",
+                      label: "Ações",
+                      render: (item) => (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => item && handleEditItem(item)}
+                            className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
+                            title="Editar contrato CODNUM"
+                          >
+                            <Edit2 className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={() => item?.id && handleDeleteItem(item.id)}
+                            className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-rose-50 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
+                            title="Excluir contrato CODNUM"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      )
+                    }
+                  ]}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -1690,7 +1850,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               <div className="space-y-6">
                 <div className="bg-[#0f0f0f] border border-white/10 p-6 rounded-xl shadow-sm space-y-4">
                   <h4 className="font-bold text-white text-base">
-                    ➕ Novo Lançamento de Fatura Mensal Manual
+                    {editingLancId ? "✏️ Editar Lançamento Administrativo" : "➕ Novo Lançamento de Fatura Mensal Manual"}
                   </h4>
                   <form onSubmit={handleSaveLancamento} className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end text-xs font-semibold text-gray-300">
                     <div className="space-y-1.5">
@@ -1702,8 +1862,8 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                         className="w-full bg-[#141414] border border-white/10 rounded-lg px-3 py-2 text-white focus:bg-black transition"
                       >
                         <option value="">Selecione...</option>
-                        {itens.map(it => (
-                          <option key={it.id} value={it.id}>{it.codigo_numero} ({it.unidade_nome})</option>
+                        {itens.filter(Boolean).map((it, idx) => (
+                          <option key={it.id || `item-${idx}`} value={it.id}>{it.codigo_numero} ({it.unidade_nome})</option>
                         ))}
                       </select>
                     </div>
@@ -1753,79 +1913,85 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     </div>
                     <div className="md:col-span-5 flex justify-end gap-2 border-t border-white/10 pt-3.5">
                       <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-6 py-2.5 rounded-lg shadow transition">
-                        Registrar Lançamento
+                        {editingLancId ? "Salvar" : "Registrar Lançamento"}
                       </button>
+                      {editingLancId && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingLancId(null);
+                            setLancConsumo("");
+                            setLancTotal("");
+                            setLancImposto("");
+                          }}
+                          className="bg-white/5 hover:bg-white/10 text-gray-300 font-bold px-4 py-2.5 rounded-lg transition"
+                        >
+                          Cancelar
+                        </button>
+                      )}
                     </div>
                   </form>
                 </div>
 
-                <div className="bg-[#0f0f0f] border border-white/10 p-6 rounded-xl shadow-sm space-y-5">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/10 pb-4">
+                <div className="space-y-4">
+                  <div className="bg-[#0f0f0f] border border-white/10 p-4 rounded-xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div>
-                      <h4 className="font-bold text-white text-base flex items-center gap-2">
-                        <Layers className="h-5 w-5 text-indigo-400" />
-                        Árvore de Lançamentos Agrupados por Mês
-                      </h4>
+                      <h4 className="font-bold text-white text-base">Registros de Despesas e Faturas Homologadas</h4>
                       <p className="text-xs text-gray-400">
-                        Registros organizados em blocos mensais para facilitar a busca, conferência e auditoria de faturas
+                        {faturasViewMode === 'tree' 
+                          ? 'Visualizando em estrutura de árvore agrupada por Mês/Ano e Concessionária (Celesc/Casan)' 
+                          : 'Visualizando em lista plana estilo tabela'}
                       </p>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="relative">
-                        <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                        <input
-                          type="text"
-                          placeholder="Buscar CODNUM, Unidade, ID..."
-                          value={lancSearchTerm}
-                          onChange={(e) => setLancSearchTerm(e.target.value)}
-                          className="bg-[#141414] border border-white/10 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 w-56 sm:w-64 transition"
-                        />
-                      </div>
-
-                      <div className="bg-[#141414] border border-white/10 rounded-xl p-1 flex items-center text-xs font-bold">
-                        <button
-                          onClick={() => setLancViewMode("blocks")}
-                          className={`px-3 py-1 rounded-lg transition ${
-                            lancViewMode === "blocks"
-                              ? "bg-indigo-600 text-white shadow-sm"
-                              : "text-gray-400 hover:text-white"
-                          }`}
-                        >
-                          📁 Blocos por Mês
-                        </button>
-                        <button
-                          onClick={() => setLancViewMode("table")}
-                          className={`px-3 py-1 rounded-lg transition ${
-                            lancViewMode === "table"
-                              ? "bg-indigo-600 text-white shadow-sm"
-                              : "text-gray-400 hover:text-white"
-                          }`}
-                        >
-                          📋 Lista Geral
-                        </button>
-                      </div>
+                    <div className="flex items-center gap-1.5 bg-[#161616] p-1 rounded-lg border border-white/10 text-xs font-semibold">
+                      <button
+                        type="button"
+                        onClick={() => setFaturasViewMode('tree')}
+                        className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
+                          faturasViewMode === 'tree'
+                            ? 'bg-indigo-600 text-white font-bold shadow'
+                            : 'text-gray-400 hover:text-white hover:bg-white/5'
+                        }`}
+                      >
+                        <Layers className="h-3.5 w-3.5 text-indigo-300" />
+                        🌳 Árvore por Mês/Ano
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFaturasViewMode('table')}
+                        className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
+                          faturasViewMode === 'table'
+                            ? 'bg-indigo-600 text-white font-bold shadow'
+                            : 'text-gray-400 hover:text-white hover:bg-white/5'
+                        }`}
+                      >
+                        <ClipboardList className="h-3.5 w-3.5" />
+                        📋 Tabela Simples
+                      </button>
                     </div>
                   </div>
 
-                  {lancViewMode === "table" ? (
-                    <div className="text-gray-300">
+                  {faturasViewMode === 'tree' ? (
+                    <FaturasTreeView 
+                      lancamentos={lancamentos} 
+                      onEdit={handleEditLancamento}
+                      onDelete={handleDeleteLancamento}
+                      onDeleteMonth={handleDeleteMonth}
+                    />
+                  ) : (
+                    <div className="bg-[#0f0f0f] border border-white/10 p-6 rounded-xl shadow-sm space-y-4 text-gray-300">
                       <SmartTable
                         tableId="web_lancamentos"
-                        data={lancamentos.filter(l => {
-                          if (concessionaireFilter === 'CASAN') return isCasan(l);
-                          if (concessionaireFilter === 'CELESC') return isCelesc(l);
-                          if (concessionaireFilter === 'OUTROS') return !isCasan(l) && !isCelesc(l);
-                          return true;
-                        })}
+                        data={lancamentos}
                         searchPlaceholder="Filtrar por CODNUM, Unidade..."
                         columns={[
-                          { key: "id", label: "ID", searchable: true },
                           { 
                             key: "mes_ano", 
                             label: "Comp. / Ref", 
                             searchable: true,
                             render: (item) => {
+                              if (!item || !item.mes_ano) return null;
                               const dateObj = new Date(item.mes_ano);
                               return <span className="font-mono font-bold">{`${String(dateObj.getMonth() + 1).padStart(2, '0')}/${dateObj.getFullYear()}`}</span>;
                             }
@@ -1837,23 +2003,31 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                             key: "valor_total", 
                             label: "Valor Total", 
                             searchable: true,
-                            render: (item) => <span className="font-bold text-indigo-400 font-mono">R$ {Number(item.valor_total || 0).toFixed(2)}</span>
+                            render: (item) => <span className="font-bold text-indigo-400 font-mono">R$ {(item?.valor_total || 0).toFixed(2)}</span>
                           },
                           { 
                             key: "valor_imposto", 
                             label: "Impostos", 
                             searchable: true,
-                            render: (item) => <span className="text-gray-450 font-mono">R$ {Number(item.valor_imposto || 0).toFixed(2)}</span>
+                            render: (item) => <span className="text-gray-450 font-mono">R$ {(item?.valor_imposto || 0).toFixed(2)}</span>
                           },
                           {
                             key: "acoes",
                             label: "Ações",
                             render: (item) => (
-                              <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                                <button onClick={(e) => { e.stopPropagation(); handleEditLancamento(item); }} className="p-1.5 hover:bg-indigo-900/30 text-indigo-400 rounded-lg transition" title="Editar lançamento">
+                              <div className="flex items-center gap-1.5 opacity-90 hover:opacity-100 transition-opacity">
+                                <button 
+                                  onClick={() => item && handleEditLancamento(item)} 
+                                  className="p-1.5 hover:bg-indigo-900/30 text-indigo-400 rounded-lg transition"
+                                  title="Editar Lançamento"
+                                >
                                   <Edit2 className="h-3.5 w-3.5" />
                                 </button>
-                                <button onClick={(e) => { e.stopPropagation(); handleDeleteLancamento(item.id); }} className="p-1.5 hover:bg-rose-900/30 text-rose-400 rounded-lg transition" title="Excluir lançamento">
+                                <button 
+                                  onClick={() => (item?.id || item?.doc_id) && handleDeleteLancamento(String(item.id || item.doc_id))} 
+                                  className="p-1.5 hover:bg-rose-900/30 text-rose-400 hover:text-rose-300 rounded-lg transition"
+                                  title="Excluir Lançamento"
+                                >
                                   <Trash2 className="h-3.5 w-3.5" />
                                 </button>
                               </div>
@@ -1862,281 +2036,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                         ]}
                       />
                     </div>
-                  ) : (() => {
-                    // Filter items
-                    const filtered = lancamentos.filter(l => {
-                      if (concessionaireFilter === 'CASAN' && !isCasan(l)) return false;
-                      if (concessionaireFilter === 'CELESC' && !isCelesc(l)) return false;
-                      if (concessionaireFilter === 'OUTROS' && (isCasan(l) || isCelesc(l))) return false;
-
-                      if (!lancSearchTerm) return true;
-                      const term = lancSearchTerm.toLowerCase();
-                      const idStr = String(l.id || "").toLowerCase();
-                      const codNum = String(l.codigo_numero || "").toLowerCase();
-                      const unidade = String(l.unidade_nome || "").toLowerCase();
-                      const ref = String(l.mes_ano || "").toLowerCase();
-                      return idStr.includes(term) || codNum.includes(term) || unidade.includes(term) || ref.includes(term);
-                    });
-
-                    // Group by YYYY-MM
-                    const groups: Record<string, any[]> = {};
-                    filtered.forEach(l => {
-                      let key = "sem_data";
-                      if (l.mes_ano && l.mes_ano.length >= 7) {
-                        key = l.mes_ano.substring(0, 7);
-                      }
-                      if (!groups[key]) groups[key] = [];
-                      groups[key].push(l);
-                    });
-
-                    const sortedKeys = Object.keys(groups).sort((a, b) => {
-                      if (a === "sem_data") return 1;
-                      if (b === "sem_data") return -1;
-                      return b.localeCompare(a);
-                    });
-
-                    if (sortedKeys.length === 0) {
-                      return (
-                        <div className="text-center py-12 bg-[#121214] rounded-xl border border-white/5 space-y-3">
-                          <Folder className="h-10 w-10 text-gray-600 mx-auto" />
-                          <p className="text-sm font-medium text-gray-400">Nenhum lançamento encontrado para a busca especificada.</p>
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <div className="space-y-4">
-                        <div className="flex items-center justify-between text-xs text-gray-400 px-1">
-                          <span>Exibindo <strong>{sortedKeys.length}</strong> {sortedKeys.length === 1 ? 'bloco mensal' : 'blocos mensais'} ({filtered.length} lançamentos no total)</span>
-                          <div className="flex gap-2 font-semibold">
-                            <button
-                              onClick={() => expandAllMonths(sortedKeys)}
-                              className="hover:text-indigo-400 transition"
-                            >
-                              Expandir Todos
-                            </button>
-                            <span>•</span>
-                            <button
-                              onClick={() => collapseAllMonths(sortedKeys)}
-                              className="hover:text-indigo-400 transition"
-                            >
-                              Recolher Todos
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="space-y-3">
-                          {sortedKeys.map(mKey => {
-                            const items = groups[mKey];
-                            const isCollapsed = collapsedMonths[mKey] === true;
-                            const totalValor = items.reduce((acc, it) => acc + (Number(it.valor_total) || 0), 0);
-                            const totalConsumo = items.reduce((acc, it) => acc + (Number(it.consumo) || 0), 0);
-
-                            // Categorize items inside the month
-                            const celescItems = items.filter(isCelesc);
-                            const casanItems = items.filter(isCasan);
-                            const outrosItems = items.filter(it => !isCelesc(it) && !isCasan(it));
-
-                            const categories = [
-                              {
-                                id: 'celesc',
-                                name: 'CELESC — Energia Elétrica',
-                                items: celescItems,
-                                unit: 'kWh',
-                                badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
-                                headerBg: 'bg-[#1a1712] border-amber-500/20 hover:bg-[#241f17]',
-                                iconContainer: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-                                textColor: 'text-amber-400',
-                                Icon: Lightbulb
-                              },
-                              {
-                                id: 'casan',
-                                name: 'CASAN — Água e Esgoto',
-                                items: casanItems,
-                                unit: 'm³',
-                                badgeColor: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30',
-                                headerBg: 'bg-[#111a20] border-cyan-500/20 hover:bg-[#16222b]',
-                                iconContainer: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
-                                textColor: 'text-cyan-400',
-                                Icon: Droplets
-                              },
-                              {
-                                id: 'outros',
-                                name: 'Outros Tipos de Fatura',
-                                items: outrosItems,
-                                unit: 'unid.',
-                                badgeColor: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30',
-                                headerBg: 'bg-[#14141f] border-indigo-500/20 hover:bg-[#1b1b2a]',
-                                iconContainer: 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30',
-                                textColor: 'text-indigo-400',
-                                Icon: FileText
-                              }
-                            ];
-
-                            return (
-                              <div key={mKey} className="bg-[#141414] border border-white/10 rounded-xl overflow-hidden shadow-sm transition">
-                                <div
-                                  onClick={() => toggleMonthCollapse(mKey)}
-                                  className="w-full flex items-center justify-between p-4 bg-[#18181b] hover:bg-[#202024] cursor-pointer transition select-none"
-                                >
-                                  <div className="flex items-center gap-3">
-                                    <div className={`p-2 rounded-lg border transition ${isCollapsed ? 'bg-indigo-950/40 border-indigo-800/40 text-indigo-400' : 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-600/30'}`}>
-                                      {isCollapsed ? <Folder className="h-5 w-5" /> : <FolderOpen className="h-5 w-5" />}
-                                    </div>
-                                    <div>
-                                      <div className="flex items-center gap-2">
-                                        <span className="font-bold text-white text-sm">
-                                          {formatMonthTitle(mKey)}
-                                        </span>
-                                      </div>
-                                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                                        <span className="bg-indigo-500/20 text-indigo-300 text-[11px] font-mono font-bold px-2 py-0.5 rounded-full border border-indigo-500/30">
-                                          {items.length} {items.length === 1 ? 'lançamento' : 'lançamentos'}
-                                        </span>
-                                        {celescItems.length > 0 && (
-                                          <span className="bg-amber-500/20 text-amber-300 text-[11px] font-mono font-bold px-2 py-0.5 rounded-full border border-amber-500/30 flex items-center gap-1">
-                                            ⚡ CELESC: {celescItems.length}
-                                          </span>
-                                        )}
-                                        {casanItems.length > 0 && (
-                                          <span className="bg-cyan-500/20 text-cyan-300 text-[11px] font-mono font-bold px-2 py-0.5 rounded-full border border-cyan-500/30 flex items-center gap-1">
-                                            💧 CASAN: {casanItems.length}
-                                          </span>
-                                        )}
-                                        {outrosItems.length > 0 && (
-                                          <span className="bg-indigo-500/20 text-indigo-300 text-[11px] font-mono font-bold px-2 py-0.5 rounded-full border border-indigo-500/30 flex items-center gap-1">
-                                            📑 Outros: {outrosItems.length}
-                                          </span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  <div className="flex items-center gap-3">
-                                    <div className="hidden md:flex items-center gap-2 text-xs">
-                                      <div className="bg-black/50 px-3 py-1 rounded-lg border border-white/5">
-                                        <span className="text-gray-400">Consumo Total: </span>
-                                        <span className="font-bold text-white font-mono">{totalConsumo.toLocaleString('pt-BR')}</span>
-                                      </div>
-                                      <div className="bg-black/50 px-3 py-1 rounded-lg border border-white/5">
-                                        <span className="text-gray-400">Total Faturado: </span>
-                                        <span className="font-bold text-indigo-400 font-mono">R$ {totalValor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                                      </div>
-                                    </div>
-                                    <div className="text-gray-400 hover:text-white p-1">
-                                      {isCollapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
-                                    </div>
-                                  </div>
-                                </div>
-
-                                {!isCollapsed && (
-                                  <div className="p-4 border-t border-white/10 bg-[#0c0c0e] space-y-4">
-                                    {categories.filter(c => c.items.length > 0).map(cat => {
-                                      const catKey = `${mKey}_${cat.id}`;
-                                      const isCatCollapsed = collapsedCategories[catKey] === true;
-                                      const catTotalValor = cat.items.reduce((acc, it) => acc + (Number(it.valor_total) || 0), 0);
-                                      const catTotalConsumo = cat.items.reduce((acc, it) => acc + (Number(it.consumo) || 0), 0);
-                                      const CatIcon = cat.Icon;
-
-                                      return (
-                                        <div key={cat.id} className="border border-white/10 rounded-lg overflow-hidden bg-[#111114]">
-                                          {/* Category Sub-Header */}
-                                          <div
-                                            onClick={() => toggleCategoryCollapse(catKey)}
-                                            className={`w-full flex items-center justify-between p-3 border-b border-white/10 ${cat.headerBg} cursor-pointer transition select-none`}
-                                          >
-                                            <div className="flex items-center gap-2.5">
-                                              <div className={`p-1.5 rounded-md border ${cat.iconContainer}`}>
-                                                <CatIcon className="h-4 w-4" />
-                                              </div>
-                                              <div>
-                                                <div className="flex items-center gap-2">
-                                                  <span className="font-bold text-white text-xs sm:text-sm">
-                                                    {cat.name}
-                                                  </span>
-                                                  <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${cat.badgeColor}`}>
-                                                    {cat.items.length} {cat.items.length === 1 ? 'fatura' : 'faturas'}
-                                                  </span>
-                                                </div>
-                                              </div>
-                                            </div>
-
-                                            <div className="flex items-center gap-3">
-                                              <div className="hidden sm:flex items-center gap-2 text-[11px]">
-                                                <span className="text-gray-400">Consumo: <strong className="text-white font-mono">{catTotalConsumo.toLocaleString('pt-BR')} {cat.unit}</strong></span>
-                                                <span className="text-gray-500">•</span>
-                                                <span className="text-gray-400">Total: <strong className={`${cat.textColor} font-mono`}>R$ {catTotalValor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>
-                                              </div>
-                                              <div className="text-gray-400 hover:text-white p-1">
-                                                {isCatCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                                              </div>
-                                            </div>
-                                          </div>
-
-                                          {/* Category Table */}
-                                          {!isCatCollapsed && (
-                                            <div className="overflow-x-auto p-2 bg-[#09090b]">
-                                              <table className="w-full text-left text-xs text-gray-300 border-collapse">
-                                                <thead>
-                                                  <tr className="border-b border-white/10 text-gray-400 font-semibold uppercase tracking-wider text-[10px] bg-black/40">
-                                                    <th className="py-2 px-3">ID</th>
-                                                    <th className="py-2 px-3">Comp. / Ref</th>
-                                                    <th className="py-2 px-3">CODNUM</th>
-                                                    <th className="py-2 px-3">Unidade Gestora</th>
-                                                    <th className="py-2 px-3 text-right">Consumo ({cat.unit})</th>
-                                                    <th className="py-2 px-3 text-right">Valor Total</th>
-                                                    <th className="py-2 px-3 text-right">Impostos</th>
-                                                    <th className="py-2 px-3 text-center">Ações</th>
-                                                  </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-white/5">
-                                                  {cat.items.map(item => (
-                                                    <tr key={item.id} className="hover:bg-white/5 transition">
-                                                      <td className="py-2 px-3 font-mono text-gray-400">#{item.id}</td>
-                                                      <td className="py-2 px-3 font-mono font-bold text-white">
-                                                        {item.mes_ano ? formatShortRef(item.mes_ano) : '-'}
-                                                      </td>
-                                                      <td className="py-2 px-3 font-mono text-indigo-300 font-semibold">{item.codigo_numero}</td>
-                                                      <td className="py-2 px-3 font-medium text-gray-200">{item.unidade_nome || 'NÃO IDENTIFICADA'}</td>
-                                                      <td className="py-2 px-3 text-right font-mono text-gray-300">{Number(item.consumo || 0).toLocaleString('pt-BR')}</td>
-                                                      <td className={`py-2 px-3 text-right font-mono font-bold ${cat.textColor}`}>R$ {Number(item.valor_total || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                                      <td className="py-2 px-3 text-right font-mono text-gray-400">R$ {Number(item.valor_imposto || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                                      <td className="py-2 px-3 text-center">
-                                                        <div className="flex items-center justify-center gap-1.5">
-                                                          <button
-                                                            onClick={() => handleEditLancamento(item)}
-                                                            className="p-1.5 hover:bg-indigo-900/40 text-indigo-400 rounded-lg transition"
-                                                            title="Editar lançamento completo"
-                                                          >
-                                                            <Edit2 className="h-3.5 w-3.5" />
-                                                          </button>
-                                                          <button
-                                                            onClick={() => handleDeleteLancamento(item.id)}
-                                                            className="p-1.5 hover:bg-rose-900/40 text-rose-400 rounded-lg transition"
-                                                            title="Excluir lançamento"
-                                                          >
-                                                            <Trash2 className="h-3.5 w-3.5" />
-                                                          </button>
-                                                        </div>
-                                                      </td>
-                                                    </tr>
-                                                  ))}
-                                                </tbody>
-                                              </table>
-                                            </div>
-                                          )}
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })()}
+                  )}
                 </div>
               </div>
             )}
@@ -2144,25 +2044,13 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         )}
 
 
-        {/* SECTION: AUDITORIA DE FATURAS E INTELIGÊNCIA */}
+        {/* SECTION: CONTROLE DE AUDITORIA */}
         {activeSection === 'auditoria' && (
-          <AuditoriaDashboard 
-            lancamentos={lancamentos} 
-            secretarias={secretarias} 
-            unidades={unidades}
-            despesas={despesas}
-            itens={itens}
-            externalConcessionaireFilter={concessionaireFilter}
-          />
-        )}
-
-        {/* SECTION: LOGS DO SISTEMA (HISTÓRICO DE AUDITORIA) */}
-        {activeSection === 'log' && (
           <div className="space-y-6">
-            <div className="bg-[#121212] p-6 rounded-xl border border-white/10 shadow-sm space-y-4">
+            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
               <div>
-                <h4 className="font-bold text-white text-base">Histórico de Alterações e Rastreabilidade</h4>
-                <p className="text-xs text-gray-400">Histórico de auditoria integrado das ações administrativas executadas por usuários</p>
+                <h4 className="font-bold text-slate-800 text-base">Histórico de Alterações e Rastreabilidade</h4>
+                <p className="text-xs text-slate-500">Histórico de auditoria integrado das ações administrativas executadas por usuários</p>
               </div>
 
               <SmartTable
@@ -2170,7 +2058,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                 data={auditorias}
                 searchPlaceholder="Filtrar por tabela, pk, usuário..."
                 columns={[
-                  { key: "id", label: "Log ID", searchable: true },
+                  { key: "id", label: "Log ID", isPinned: true, searchable: true },
                   { key: "tabela", label: "Tabela", searchable: true },
                   { key: "registro_pk", label: "Chave PK", searchable: true },
                   { 
@@ -2179,11 +2067,11 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     searchable: true,
                     render: (item) => (
                       <span className={`px-2 py-0.5 rounded font-mono font-bold text-[10px] ${
-                        item.acao === 'INSERT' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' :
-                        item.acao === 'UPDATE' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' :
-                        'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                        item?.acao === 'INSERT' ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' :
+                        item?.acao === 'UPDATE' ? 'bg-blue-100 text-blue-800 border border-blue-200' :
+                        'bg-rose-100 text-rose-800 border border-rose-200'
                       }`}>
-                        {item.acao}
+                        {item?.acao || ""}
                       </span>
                     )
                   },
@@ -2192,7 +2080,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     key: "criado_em", 
                     label: "Data e Hora", 
                     searchable: true,
-                    render: (item) => <span className="font-mono text-gray-400">{new Date(item.criado_em).toLocaleString("pt-BR")}</span>
+                    render: (item) => <span className="font-mono text-slate-500">{item?.criado_em ? new Date(item.criado_em).toLocaleString("pt-BR") : ""}</span>
                   }
                 ]}
               />
@@ -2200,502 +2088,324 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
           </div>
         )}
 
-        {/* SECTION: PENDÊNCIAS DE VINCULAÇÃO DE SECRETARIA */}
-        {activeSection === 'pendencias' && (() => {
-          const unlinkedLancamentos = lancamentos.filter(l => !l.secretaria_id && (!l.secretaria_nome || l.secretaria_nome === "NÃO LOCALIZADA" || l.secretaria_nome === "NÃO VINCULADA"));
-          return (
-            <div className="space-y-6">
-              <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <h4 className="font-bold text-slate-800 text-base flex items-center gap-2">
-                      <span>⚠️ Central de Pendências de Vinculação de Secretaria</span>
-                      <span className="px-2.5 py-0.5 rounded-full text-xs bg-amber-100 text-amber-800 font-mono font-bold">
-                        {unlinkedLancamentos.length} pendências
-                      </span>
-                    </h4>
-                    <p className="text-xs text-slate-500">
-                      Listagem de todos os lançamentos de faturas importadas que não foram vinculados automaticamente a nenhuma Secretaria Municipal.
-                    </p>
-                  </div>
-                </div>
-
-                {unlinkedLancamentos.length === 0 ? (
-                  <div className="p-8 text-center bg-emerald-50/50 rounded-xl border border-emerald-200 space-y-2">
-                    <CheckCircle2 className="h-10 w-10 text-emerald-500 mx-auto" />
-                    <h5 className="font-bold text-slate-800 text-sm">Nenhuma pendência de vinculação!</h5>
-                    <p className="text-xs text-slate-500">
-                      Todas as faturas e lançamentos cadastrados estão devidamente associados a suas respectivas Secretarias Municipais.
-                    </p>
-                  </div>
-                ) : (
-                  <SmartTable
-                    tableId="web_pendencias"
-                    data={unlinkedLancamentos}
-                    searchPlaceholder="Filtrar por CODNUM, Unidade Gestora, Competência..."
-                    columns={[
-                      { key: "id", label: "Lançamento ID" },
-                      { 
-                        key: "codigo_numero", 
-                        label: "CODNUM", 
-                        searchable: true,
-                        render: (item) => <span className="font-mono font-bold text-indigo-700">{item.codigo_numero}</span>
-                      },
-                      { 
-                        key: "unidade_nome", 
-                        label: "Unidade Gestora", 
-                        searchable: true,
-                        render: (item) => <span className="text-slate-700 font-semibold">{item.unidade_nome || "NÃO VINCULADA"}</span>
-                      },
-                      { 
-                        key: "consumo", 
-                        label: "Consumo", 
-                        render: (item) => <span className="font-mono text-slate-800">{item.consumo}</span>
-                      },
-                      { 
-                        key: "valor_total", 
-                        label: "Valor Total", 
-                        render: (item) => <span className="font-mono font-bold text-emerald-700">R$ {(item.valor_total || 0).toFixed(2)}</span>
-                      },
-                      { 
-                        key: "mes_ano", 
-                        label: "Competência", 
-                        searchable: true,
-                        render: (item) => <span className="font-mono text-slate-600">{item.mes_ano}</span>
-                      },
-                      {
-                        key: "acoes",
-                        label: "Vincular Secretaria",
-                        render: (item) => {
-                          const currentSel = pendingSelSec[item.id] || "";
-                          const isSub = submittingPending === item.id;
-                          return (
-                            <div className="flex items-center gap-2">
-                              <select
-                                value={currentSel}
-                                onChange={(e) => setPendingSelSec(prev => ({ ...prev, [item.id]: e.target.value }))}
-                                className="bg-slate-50 border border-slate-300 text-xs rounded-lg px-2.5 py-1.5 font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                              >
-                                <option value="">Selecione a Secretaria...</option>
-                                {secretarias.map(sec => (
-                                  <option key={sec.id} value={sec.id}>
-                                    {sec.nome}
-                                  </option>
-                                ))}
-                              </select>
-                              <button
-                                disabled={!currentSel || isSub}
-                                onClick={async () => {
-                                  setSubmittingPending(item.id);
-                                  try {
-                                    const res = await fetch(`/api/lancamentos/${item.id}/vincular_secretaria`, {
-                                      method: "POST",
-                                      headers: { "Content-Type": "application/json" },
-                                      body: JSON.stringify({ secretaria_id: currentSel })
-                                    });
-                                    if (res.ok) {
-                                      setGlobalSuccess(`Lançamento (CODNUM: ${item.codigo_numero}) vinculado à Secretaria com sucesso!`);
-                                      loadAllData();
-                                      notifyChange();
-                                    } else {
-                                      const err = await res.json();
-                                      setGlobalError(err.error || "Erro ao vincular secretaria.");
-                                    }
-                                  } catch (err: any) {
-                                    setGlobalError("Erro de comunicação com o servidor.");
-                                  } finally {
-                                    setSubmittingPending(null);
-                                  }
-                                }}
-                                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-lg disabled:opacity-50 transition shadow-sm flex items-center gap-1"
-                              >
-                                {isSub ? "Vinculando..." : "🔗 Vincular"}
-                              </button>
-                            </div>
-                          );
-                        }
-                      }
-                    ]}
-                  />
-                )}
+        {/* CUSTOM DELETE CONFIRMATION MODAL */}
+        {deleteModal?.isOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+            <div className="bg-[#18181b] border border-white/10 text-white rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center gap-3 text-rose-400 font-bold text-lg">
+                <ShieldAlert className="h-6 w-6 shrink-0" />
+                <h3>{deleteModal.title}</h3>
               </div>
-            </div>
-          );
-        })()}
-
-        {/* SECTION: CONFIGURAÇÕES E MANUTENÇÃO */}
-        {activeSection === 'configuracoes' && (
-          <div className="space-y-6">
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
-              <div>
-                <h4 className="font-bold text-slate-800 text-base flex items-center gap-2">
-                  <span>⚙️ Painel de Configurações e Manutenção do Sistema</span>
-                </h4>
-                <p className="text-xs text-slate-500 mt-1">
-                  Painel administrativo de parâmetros do banco de dados, auditoria de operações e ferramentas de teste.
-                </p>
-              </div>
-
-              {resetResultMsg && (
-                <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-800 text-xs font-semibold flex items-center gap-2 animate-in fade-in">
-                  <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0" />
-                  <span>{resetResultMsg}</span>
-                </div>
-              )}
-
-              {/* TODO: REMOVER ESTE BOTÃO ANTES DE IR PARA USO REAL DEFINITIVO */}
-              <div className="p-5 bg-rose-50 border border-rose-200 rounded-xl space-y-3">
-                <div className="flex items-center gap-2 text-rose-800 font-bold text-sm">
-                  <AlertCircle className="h-5 w-5 text-rose-600" />
-                  <span>Ferramenta de Manutenção para Testes — Zerar Banco de Dados</span>
-                </div>
-                <p className="text-xs text-slate-600 leading-relaxed">
-                  Esta operação apaga todos os registros de Secretarias, Unidades, Tipos de Conta, Contratos CODNUM, Lançamentos, Pessoas, Contatos e Documentos. O histórico de auditoria do próprio reset será preservado com o snapshot de quantidade de linhas de cada tabela antes da limpeza.
-                </p>
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setResetConfirmInput("");
-                      setShowResetModal(true);
-                    }}
-                    className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-lg transition shadow-md flex items-center gap-2"
-                  >
-                    <span>🗑️ ZERAR BANCO DE DADOS (APENAS TESTES)</span>
-                  </button>
-                </div>
+              <p className="text-sm text-gray-300 leading-relaxed">
+                {deleteModal.description}
+              </p>
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-white/10">
+                <button
+                  type="button"
+                  onClick={() => setDeleteModal(null)}
+                  className="px-4 py-2 rounded-xl border border-white/10 text-gray-300 hover:bg-white/5 transition text-sm font-medium"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const action = deleteModal.onConfirm;
+                    setDeleteModal(null);
+                    action();
+                  }}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold transition text-sm shadow-lg shadow-rose-900/30"
+                >
+                  Excluir Definitivamente
+                </button>
               </div>
             </div>
           </div>
         )}
 
-      </div>
-
-      {/* TODO: REMOVER ESTE BOTÃO ANTES DE IR PARA USO REAL DEFINITIVO */}
-      {/* MODAL: Zerar Banco de Dados */}
-      {showResetModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[80] flex items-center justify-center p-4">
-          <div className="bg-[#121212] border border-rose-500/30 rounded-xl p-6 max-w-lg w-full space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
-            <div className="flex justify-between items-center border-b border-white/10 pb-3">
-              <h5 className="font-bold text-sm text-rose-400 uppercase tracking-wide flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 text-rose-500" />
-                <span>ATENÇÃO: Zerar Banco de Dados</span>
-              </h5>
-              <button
-                onClick={() => setShowResetModal(false)}
-                className="text-gray-400 hover:text-white font-bold text-sm"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-lg text-xs text-rose-300 space-y-2">
-              <p className="font-semibold">
-                Você está prestes a LIMPAR TOTALMENTE os dados cadastrais e faturas do sistema!
-              </p>
-              <p className="text-[11px] text-gray-300 leading-relaxed">
-                • Secretarias, Unidades Gestoras, Contratos, Faturas e Documentos serão apagados.<br />
-                • A estrutura do banco de dados e o log de auditoria do reset serão mantidos.<br />
-                • Esta ação é irreversível.
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-xs text-gray-300 font-semibold block">
-                Para confirmar, digite exatamente a frase <strong className="text-rose-400 font-mono select-all">CONFIRMAR RESET TOTAL</strong>:
-              </label>
-              <input
-                type="text"
-                value={resetConfirmInput}
-                onChange={(e) => setResetConfirmInput(e.target.value)}
-                placeholder="CONFIRMAR RESET TOTAL"
-                className="w-full bg-[#1a1a1a] border border-white/20 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-rose-500 font-bold tracking-wider"
-                autoFocus
-              />
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2 border-t border-white/10">
-              <button
-                type="button"
-                onClick={() => setShowResetModal(false)}
-                className="px-4 py-2 rounded-lg text-xs font-semibold bg-gray-800 hover:bg-gray-700 text-gray-300"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={resetConfirmInput !== "CONFIRMAR RESET TOTAL" || isResetting}
-                onClick={async () => {
-                  setIsResetting(true);
-                  try {
-                    const res = await fetch("/api/admin/reset_database", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json", "x-user": "admin" }
-                    });
-                    const data = await res.json();
-                    if (res.ok && data.success) {
-                      setResetResultMsg(data.message);
-                      setShowResetModal(false);
-                      loadAllData();
-                      notifyChange();
-                    } else {
-                      setGlobalError(data.error || "Erro ao zerar banco de dados.");
-                    }
-                  } catch (err) {
-                    setGlobalError("Erro de comunicação ao zerar banco de dados.");
-                  } finally {
-                    setIsResetting(false);
-                  }
-                }}
-                className="px-5 py-2 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white disabled:opacity-40 disabled:cursor-not-allowed transition shadow-lg shadow-rose-600/30 flex items-center gap-2"
-              >
-                {isResetting ? "Zerando Banco..." : "Confirmar e Zerar Banco"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Lançamento Modal */}
-      {editLancModal && editLancModal.isOpen && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-[#121214] border border-white/10 rounded-2xl max-w-3xl w-full p-6 space-y-6 shadow-2xl my-8 animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between border-b border-white/10 pb-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-indigo-600/20 text-indigo-400 rounded-xl border border-indigo-500/20">
-                  <Edit2 className="h-6 w-6" />
+        {/* Overlay Modal for Secretarias, Unidades, Despesas, Itens Editing/Creation */}
+        {formModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 overflow-y-auto">
+            <div className="bg-[#18181b] border border-white/10 text-white rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-150 my-8">
+              <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                <div className="flex items-center gap-2.5 font-bold text-lg text-white">
+                  {formModal === 'secretaria' && <Building2 className="h-5 w-5 text-indigo-400" />}
+                  {formModal === 'unidade' && <Building2 className="h-5 w-5 text-indigo-400" />}
+                  {formModal === 'despesa' && <Receipt className="h-5 w-5 text-indigo-400" />}
+                  {formModal === 'item' && <Lightbulb className="h-5 w-5 text-indigo-400" />}
+                  <h3>
+                    {formModal === 'secretaria' && (editingSecId ? "Editar Secretaria" : "Nova Secretaria Municipal")}
+                    {formModal === 'unidade' && (editingUniId ? "Editar Unidade Gestora" : "Nova Unidade Gestora")}
+                    {formModal === 'despesa' && (editingDesId ? "Editar Tipo de Conta" : "Novo Tipo de Conta / Concessionária")}
+                    {formModal === 'item' && (editingItemId ? "Editar Contrato CODNUM" : "Novo Contrato / Medidor (CODNUM)")}
+                  </h3>
                 </div>
-                <div>
-                  <h3 className="font-bold text-white text-lg">Editar Lançamento Completo</h3>
-                  <p className="text-xs text-gray-400">ID Registrado: #{editLancModal.lancamento?.id}</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setEditLancModal(null)}
-                className="text-gray-400 hover:text-white p-2 rounded-lg hover:bg-white/5 transition"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveEditLancamentoModal} className="space-y-6">
-              {/* Bloco 1: Identificação e Referência */}
-              <div className="space-y-3">
-                <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">1. Contrato e Vínculo Organizacional</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-gray-300">Contrato CODNUM Associado:</label>
-                    <select
-                      required
-                      value={editLancModal.item_despesa_id}
-                      onChange={(e) => setEditLancModal({ ...editLancModal, item_despesa_id: e.target.value })}
-                      className="w-full bg-[#18181b] border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 transition"
-                    >
-                      <option value="">Selecione o CODNUM...</option>
-                      {itens.map(it => (
-                        <option key={it.id} value={it.id}>
-                          {it.codigo_numero} — {it.unidade_nome || 'Sem Unidade'}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-gray-300">Secretaria Gestora de Vínculo:</label>
-                    <select
-                      value={editLancModal.secretaria_id}
-                      onChange={(e) => setEditLancModal({ ...editLancModal, secretaria_id: e.target.value })}
-                      className="w-full bg-[#18181b] border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 transition"
-                    >
-                      <option value="">Automático pelo Contrato (Manter padrão)</option>
-                      {secretarias.map(s => (
-                        <option key={s.id} value={s.id}>{s.nome}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* Bloco 2: Datas e Competência */}
-              <div className="space-y-3">
-                <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">2. Datas e Mês de Referência</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-gray-300">Mês de Referência / Competência:</label>
-                    <input
-                      type="date"
-                      required
-                      value={editLancModal.mes_ano}
-                      onChange={(e) => setEditLancModal({ ...editLancModal, mes_ano: e.target.value })}
-                      className="w-full bg-[#18181b] border border-white/10 rounded-xl px-3.5 py-2.5 font-mono text-xs text-white focus:outline-none focus:border-indigo-500 transition"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-gray-300">Data do Lançamento / Vencimento:</label>
-                    <input
-                      type="date"
-                      value={editLancModal.data_lancamento}
-                      onChange={(e) => setEditLancModal({ ...editLancModal, data_lancamento: e.target.value })}
-                      className="w-full bg-[#18181b] border border-white/10 rounded-xl px-3.5 py-2.5 font-mono text-xs text-white focus:outline-none focus:border-indigo-500 transition"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Bloco 3: Consumos e Valores do Faturamento */}
-              <div className="space-y-3">
-                <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">3. Valorações e Consumo Faturado</h4>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-gray-300">Consumo Registrado (kWh / m³):</label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={editLancModal.consumo}
-                      onChange={(e) => setEditLancModal({ ...editLancModal, consumo: e.target.value })}
-                      className="w-full bg-[#18181b] border border-white/10 rounded-xl px-3.5 py-2.5 font-mono text-xs text-white focus:outline-none focus:border-indigo-500 transition"
-                      placeholder="0"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-gray-300">Valor Total Faturado (R$):</label>
-                    <input
-                      type="number"
-                      step="any"
-                      required
-                      value={editLancModal.valor_total}
-                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_total: e.target.value })}
-                      className="w-full bg-[#18181b] border border-indigo-500/50 text-indigo-400 font-bold rounded-xl px-3.5 py-2.5 font-mono text-xs focus:outline-none focus:border-indigo-400 transition"
-                      placeholder="0.00"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-gray-300">Valor dos Impostos (R$):</label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={editLancModal.valor_imposto}
-                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_imposto: e.target.value })}
-                      className="w-full bg-[#18181b] border border-white/10 rounded-xl px-3.5 py-2.5 font-mono text-xs text-white focus:outline-none focus:border-indigo-500 transition"
-                      placeholder="0.00"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Bloco 4: Desmembramento e Complementos */}
-              <div className="space-y-3 bg-[#18181b]/50 border border-white/5 p-4 rounded-xl">
-                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">4. Desmembramento de Serviços Complementares (Opcional)</h4>
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
-                  <div className="space-y-1">
-                    <label className="text-gray-400 text-[11px]">Celular (R$)</label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={editLancModal.valor_celular}
-                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_celular: e.target.value })}
-                      className="w-full bg-[#121214] border border-white/10 rounded-lg px-2.5 py-1.5 font-mono text-white text-xs"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-gray-400 text-[11px]">Internet (R$)</label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={editLancModal.valor_internet}
-                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_internet: e.target.value })}
-                      className="w-full bg-[#121214] border border-white/10 rounded-lg px-2.5 py-1.5 font-mono text-white text-xs"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-gray-400 text-[11px]">Diversos (R$)</label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={editLancModal.valor_diversos}
-                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_diversos: e.target.value })}
-                      className="w-full bg-[#121214] border border-white/10 rounded-lg px-2.5 py-1.5 font-mono text-white text-xs"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-gray-400 text-[11px]">Linha Priv. (R$)</label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={editLancModal.valor_linha_privada}
-                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_linha_privada: e.target.value })}
-                      className="w-full bg-[#121214] border border-white/10 rounded-lg px-2.5 py-1.5 font-mono text-white text-xs"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-gray-400 text-[11px]">Créditos (R$)</label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={editLancModal.valor_credito}
-                      onChange={(e) => setEditLancModal({ ...editLancModal, valor_credito: e.target.value })}
-                      className="w-full bg-[#121214] border border-white/10 rounded-lg px-2.5 py-1.5 font-mono text-white text-xs"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Botoes Acoes */}
-              <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
                 <button
                   type="button"
-                  onClick={() => setEditLancModal(null)}
-                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-white/5 hover:bg-white/10 text-gray-300 transition"
+                  onClick={() => setFormModal(null)}
+                  className="p-1.5 text-gray-400 hover:text-white hover:bg-white/10 rounded-lg transition"
                 >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="px-6 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition shadow-lg shadow-indigo-600/30"
-                >
-                  Salvar Lançamento
+                  <X className="h-5 w-5" />
                 </button>
               </div>
-            </form>
-          </div>
-        </div>
-      )}
 
-      {/* Delete Confirmation Modal */}
-      {deleteModal && deleteModal.isOpen && (
-        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#121214] border border-white/10 rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center gap-3 text-rose-400">
-              <div className="p-2.5 bg-rose-500/10 rounded-xl border border-rose-500/20">
-                <Trash2 className="h-6 w-6" />
-              </div>
-              <h3 className="font-bold text-white text-lg">{deleteModal.title}</h3>
-            </div>
-            <p className="text-gray-300 text-sm leading-relaxed">
-              {deleteModal.description}
-            </p>
-            <div className="flex justify-end gap-3 pt-2">
-              <button
-                onClick={() => setDeleteModal(null)}
-                className="px-4 py-2 rounded-lg text-xs font-bold bg-white/5 hover:bg-white/10 text-gray-300 transition"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={executeDelete}
-                className="px-5 py-2 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white transition shadow-lg shadow-rose-600/30 flex items-center gap-2"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                Confirmar Exclusão
-              </button>
+              {/* FORM: SECRETARIA */}
+              {formModal === 'secretaria' && (
+                <form onSubmit={handleSaveSecretaria} className="space-y-4 text-xs font-semibold">
+                  <div className="space-y-1.5">
+                    <label className="text-gray-300">Nome Completo da Secretaria:</label>
+                    <input
+                      type="text"
+                      required
+                      value={secNome}
+                      onChange={(e) => setSecNome(e.target.value)}
+                      className="w-full bg-white/5 border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 uppercase transition"
+                      placeholder="EX: SECRETARIA DE EDUCAÇÃO"
+                      autoFocus
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-gray-300">Código Legado / Saneamento (opcional):</label>
+                    <input
+                      type="number"
+                      value={secCodigo}
+                      onChange={(e) => setSecCodigo(e.target.value)}
+                      className="w-full bg-white/5 border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 transition"
+                      placeholder="Ex: 101"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-3 pt-3 border-t border-white/10">
+                    <button
+                      type="button"
+                      onClick={() => setFormModal(null)}
+                      className="px-4 py-2.5 rounded-xl border border-white/10 text-gray-300 hover:bg-white/5 transition text-sm font-medium"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition text-sm shadow-lg shadow-indigo-900/30"
+                    >
+                      {editingSecId ? "Salvar Alterações" : "Cadastrar Secretaria"}
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* FORM: UNIDADE GESTORA */}
+              {formModal === 'unidade' && (
+                <form onSubmit={handleSaveUnidade} className="space-y-4 text-xs font-semibold">
+                  <div className="space-y-1.5">
+                    <label className="text-gray-300">Secretaria Vinculada:</label>
+                    <select
+                      required
+                      value={uniSecretariaId}
+                      onChange={(e) => setUniSecretariaId(e.target.value)}
+                      className="w-full bg-[#27272a] border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 transition"
+                    >
+                      <option value="">Selecione a secretaria...</option>
+                      {secretarias.filter(Boolean).map((s, idx) => (
+                        <option key={s.id || `sec-${idx}`} value={s.id}>{s.nome}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-gray-300">Nome do Prédio / Imóvel:</label>
+                    <input
+                      type="text"
+                      required
+                      value={uniNome}
+                      onChange={(e) => setUniNome(e.target.value)}
+                      className="w-full bg-white/5 border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 uppercase transition"
+                      placeholder="EX: POSTO DE SAÚDE CENTRO"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-gray-300">Unidade Consumidora / UC:</label>
+                      <input
+                        type="number"
+                        value={uniCodigo}
+                        onChange={(e) => setUniCodigo(e.target.value)}
+                        className="w-full bg-white/5 border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 transition font-mono"
+                        placeholder="Ex: 102030"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-gray-300">Endereço Físico:</label>
+                      <input
+                        type="text"
+                        value={uniEndereco}
+                        onChange={(e) => setUniEndereco(e.target.value)}
+                        className="w-full bg-white/5 border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 uppercase transition"
+                        placeholder="Rua, Número, Bairro"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-3 pt-3 border-t border-white/10">
+                    <button
+                      type="button"
+                      onClick={() => setFormModal(null)}
+                      className="px-4 py-2.5 rounded-xl border border-white/10 text-gray-300 hover:bg-white/5 transition text-sm font-medium"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition text-sm shadow-lg shadow-indigo-900/30"
+                    >
+                      {editingUniId ? "Salvar Alterações" : "Cadastrar Unidade"}
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* FORM: TIPO DE DESPESA */}
+              {formModal === 'despesa' && (
+                <form onSubmit={handleSaveDespesa} className="space-y-4 text-xs font-semibold">
+                  <div className="space-y-1.5">
+                    <label className="text-gray-300">Descrição da Concessionária / Modalidade:</label>
+                    <input
+                      type="text"
+                      required
+                      value={desDescricao}
+                      onChange={(e) => setDesDescricao(e.target.value)}
+                      className="w-full bg-white/5 border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 uppercase transition"
+                      placeholder="EX: ENERGIA ELÉTRICA - CELESC"
+                      autoFocus
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-gray-300">Código Legado (opcional):</label>
+                    <input
+                      type="number"
+                      value={desCodigo}
+                      onChange={(e) => setDesCodigo(e.target.value)}
+                      className="w-full bg-white/5 border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 transition font-mono"
+                      placeholder="Ex: 501"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-3 pt-3 border-t border-white/10">
+                    <button
+                      type="button"
+                      onClick={() => setFormModal(null)}
+                      className="px-4 py-2.5 rounded-xl border border-white/10 text-gray-300 hover:bg-white/5 transition text-sm font-medium"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition text-sm shadow-lg shadow-indigo-900/30"
+                    >
+                      {editingDesId ? "Salvar Alterações" : "Cadastrar Tipo de Conta"}
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* FORM: ITEM / CONTRATO CODNUM */}
+              {formModal === 'item' && (
+                <form onSubmit={handleSaveItem} className="space-y-4 text-xs font-semibold">
+                  <div className="space-y-1.5">
+                    <label className="text-gray-300">Identificador CODNUM:</label>
+                    <input
+                      type="text"
+                      required
+                      value={itemCodigoNumero}
+                      onChange={(e) => setItemCodigoNumero(e.target.value)}
+                      className="w-full bg-white/5 border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 uppercase font-mono transition"
+                      placeholder="Ex: CELESC-PREF-001"
+                      autoFocus
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-gray-300">Tipo de Conta (Despesa):</label>
+                      <select
+                        required
+                        value={itemDespesaId}
+                        onChange={(e) => setItemDespesaId(e.target.value)}
+                        className="w-full bg-[#27272a] border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 transition"
+                      >
+                        <option value="">Selecione...</option>
+                        {despesas.filter(Boolean).map((d, idx) => (
+                          <option key={d.id || `desp-${idx}`} value={d.id}>{d.descricao}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-gray-300">Unidade Gestora Vinculada:</label>
+                      <select
+                        required
+                        value={itemUnidadeId}
+                        onChange={(e) => setItemUnidadeId(e.target.value)}
+                        className="w-full bg-[#27272a] border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 transition"
+                      >
+                        <option value="">Selecione...</option>
+                        {unidades.filter(Boolean).map((u, idx) => (
+                          <option key={u.id || `uni-${idx}`} value={u.id}>{u.nome}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-gray-300">Medidor / UC Físico (MEDITM):</label>
+                      <input
+                        type="text"
+                        value={itemMedidor}
+                        onChange={(e) => setItemMedidor(e.target.value)}
+                        className="w-full bg-white/5 border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 transition font-mono"
+                        placeholder="Ex: Medidor Celesc 12345"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-gray-300">Linha de Suporte (opcional):</label>
+                      <input
+                        type="text"
+                        value={itemTipoFone}
+                        onChange={(e) => setItemTipoFone(e.target.value)}
+                        className="w-full bg-white/5 border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 uppercase transition"
+                        placeholder="Ex: LINK INTERNET"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-3 pt-3 border-t border-white/10">
+                    <button
+                      type="button"
+                      onClick={() => setFormModal(null)}
+                      className="px-4 py-2.5 rounded-xl border border-white/10 text-gray-300 hover:bg-white/5 transition text-sm font-medium"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition text-sm shadow-lg shadow-indigo-900/30"
+                    >
+                      {editingItemId ? "Salvar Alterações" : "Cadastrar Contrato"}
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
           </div>
-        </div>
-      )}
+        )}
 
+        {/* Overlay Modal for Full Invoice Editing */}
+        <EditFaturaModal
+          isOpen={!!modalEditItem}
+          item={modalEditItem}
+          itens={itens}
+          unidades={unidades}
+          onClose={() => setModalEditItem(null)}
+          onSaveSuccess={() => {
+            showSuccess("Fatura / Lançamento atualizado com sucesso!");
+            notifyChange();
+            loadAllData();
+          }}
+        />
+
+      </div>
     </div>
   );
 }

@@ -1,126 +1,45 @@
-# Relatório de Diagnóstico de Erros, Soluções e Aprendizados do Projeto (SISPU)
-
-Este documento centraliza o histórico completo, consolidação sem duplicidades e documentação técnica de todos os erros identificados no projeto **SISPU (Sistema de Gestão de Serviços Públicos)**, abordando suas causas raízes, soluções aplicadas e aprendizados arquiteturais.
+# Project Issues & Technical Incident Reports (project.md)
 
 ---
 
-## 📋 Sumário de Erros Consolidados
+## Item Documentado: Incidente de Perda de Dados em Memória e Sobrescrita de Banco (Neon PostgreSQL)
 
-| ID Erro | Origem / Componente | Classificação do Erro | Status | Solução Aplicada |
-|---|---|---|---|---|
-| **ERR-01** | `server.ts` (Gemini API) | HTTP 429 - Quota / Rate Limit Exceeded | **Resolvido** | Enfileiramento em lotes (`CONCURRENCY = 3`), retardo inteligente (`setTimeout`) e rotação de modelos. |
-| **ERR-02** | `server.ts` / SDK Gemini | HTTP 404 - Deprecated Model Name | **Resolvido** | Atualização dos nomes dos modelos na lista de candidatos e ignoramento automático de modelos descontinuados. |
-| **ERR-03** | `server.ts` (Gemini API) | HTTP 503 - Service Unavailable / High Demand | **Resolvido** | Exponential backoff, retentativa automática e transição suave para parser heurístico local. |
-| **ERR-04** | `documentParser.ts` / `DocumentManager.tsx` | Divergência e Perda de Páginas em PDFs Volumosos (ex: 109 pág -> 94 pág) | **Resolvido** | Sistema de Jobs assíncronos (`/api/pdf-jobs`) com rastreamento individual de status por página e re-tentativa seletiva. |
-| **ERR-05** | `server.ts` / `sispu_db.json` | Concorrência de Escrita no Banco de Dados JSON | **Resolvido** | Repositório com escrita atômica e inclusão da tabela de auditoria e captura centralizada de erros (`logs_erros`). |
+### 1. Perda do Lote de Lançamentos em Rascunho (Sessão / Atualização / Standby)
 
----
+#### **Sintoma / Descrição do Problema**
+Ao realizar a extração e conferência manual de faturas via lote de documentos, todos os lançamentos digitados ou extraídos eram mantidos exclusivamente no estado interno volátil do React (`useState`). Quando o operador atualizava a página (`F5`), alternava entre as abas e visões do sistema (ex: saindo do Portal para o Painel Administrativo ou Relatórios), ou a tela entrava em inatividade/bloqueio temporário, os componentes do React desmontavam. Toda a digitação não salva era perdida, exigindo que o usuário re-importasse e re-digitasse o lote completo do zero.
 
-## 🔍 Detalhamento dos Erros, Soluções e Aprendizados
+#### **Causa Raiz Técnica**
+Ausência de sincronização intermediária contínua do estado do lote em uma camada de armazenamento cliente-side persistente ou rascunho de servidor (`draft endpoint`). Como o estado do lote em edição existia apenas na memória Heap da aplicação SPA (`DocumentManager.tsx` e `WebPortal.tsx`), qualquer descarte de ciclo de vida do componente zerava a variável de memória.
 
-### 1. ERR-01: Excesso de Cota e Limite de Taxa da API de IA (HTTP 429 - Quota Exceeded)
+#### **Correção Técnica Aplicada**
+- **Persistência Reativa de Rascunho:** Adicionou-se persistência contínua do lote via `localStorage` (chave `sispu_lote_rascunho`) utilizando hooks de efeito reativo (`useEffect`) que escutam alterações na estrutura do lote em edição.
+- **Restauração Automática:** Ao recarregar a aplicação ou navegar entre as abas do sistema, a inicialização do módulo verifica a existência do rascunho salvo e o restaura no estado do React.
+- **Purga Controlada:** O rascunho mantido em disco local é purgado estritamente após a confirmação com sucesso da rota `/api/lancamentos` (gravação efetiva no banco) ou quando o operador clica no botão explícito "Descartar Lote".
 
-- **Descrição do Log de Erro**:
-  ```json
-  {
-    "error": {
-      "code": 429,
-      "message": "You exceeded your current quota, please check your plan and billing details... Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20",
-      "status": "RESOURCE_EXHAUSTED"
-    }
-  }
-  ```
-- **Causa Raiz**:
-  O envio simultâneo de requisições de extração de texto em PDFs com múltiplas páginas estourava o limite de requisições por minuto (RPM) da cota gratuita do modelo Gemini (`gemini-3.6-flash`).
-- **Solução Aplicada**:
-  1. **Controle de Concorrência**: Limitação de processamento em blocos pequenos (`CONCURRENCY = 3`).
-  2. **Pacing / Delays Ativos**: Introdução de pausa de retardo de 800ms a 1500ms entre as iterações dos lotes e retentativas em caso de status 429.
-  3. **Fallback Automático de Modelos**: Tentativa sequencial em múltiplos candidatos (`gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-1.5-flash`).
-  4. **Parser Heurístico Local**: Como última camada de segurança para garantir que o usuário receba a extração de dados mesmo sob indisponibilidade total da API externa.
-- **Aprendizado**:
-  Chamadas para APIs de Inteligência Artificial em processamento em lote (*batch processing*) nunca devem ser disparadas concorrentemente de forma ilimitada (`Promise.all` em um array gigante). É fundamental ter pacing, limitação de concorrência e estratégias de fallback resilientes.
+#### **Limitações Conhecidas**
+- **Escopo por Navegador/Dispositivo:** A persistência em rascunho local fica atrelada ao navegador e dispositivo em que o lote foi iniciado. Se o operador trocar de computador antes de clicar em "Salvar Lançamentos", o rascunho não estará visível na segunda máquina.
 
 ---
 
-### 2. ERR-02: Modelo Obsoleto ou Não Encontrado (HTTP 404 - Not Found)
+### 2. Perda de Tabelas do Banco de Dados Neon (Condição de Corrida no Boot do Servidor)
 
-- **Descrição do Log de Erro**:
-  ```json
-  {
-    "error": {
-      "code": 404,
-      "message": "This model models/gemini-2.5-flash is no longer available to new users. Please update your code to use a newer model for the latest features and improvements.",
-      "status": "NOT_FOUND"
-    }
-  }
-  ```
-- **Causa Raiz**:
-  Utilização de identificadores de modelos específicos ou legados na lista de fallback que foram descontinuados pela plataforma de IA.
-- **Solução Aplicada**:
-  1. Atualização e padronização da lista de candidatos de IA no backend (`server.ts`) para os alias mais recentes e ativos.
-  2. Tratamento do erro 404 no bloco `catch` para avançar imediatamente para o próximo modelo ativo sem logar como falha fatal do sistema.
-- **Aprendizado**:
-  Modelos de IA possuem ciclo de vida e descontinuações frequentes. As aplicações devem utilizar apelidos estáveis ou tratar degradação e rotação de modelos dinamicamente.
+#### **Sintoma / Descrição do Problema**
+Ao reiniciar ou realizar o boot da aplicação Node/Express conectada ao banco de dados PostgreSQL/Neon (`DATABASE_URL`), as tabelas da base remota eram zeradas ou sobrescritas por um conjunto inicial de dados vazios ou de exemplo.
 
----
+#### **Causa Raiz Técnica**
+Condição de corrida (`Race Condition`) na inicialização do servidor `server.ts` e na rotina de sincronização bidirecional do banco de dados:
+1. No carregamento síncrono do módulo `server.ts`, a função `loadDB()` inicializava a variável em memória `db` lendo um arquivo local ou gerando `initialDBState`.
+2. Em seguida, a função de gravação `saveDB()` era disparada para persistir o estado inicial no disco e invocava de forma assíncrona e não bloqueante a função `saveAllStateToPostgres(initialDBState)`.
+3. Simultaneamente, o servidor Express iniciava o `app.listen()` antes de aguardar o término da promessa de `loadStateFromPostgres()`.
+4. Com isso, requisições HTTP recebidas do cliente ou a própria chamada `saveAllStateToPostgres` disparada precocemente realizavam operações de `INSERT ... ON CONFLICT DO UPDATE` ou truncamento de dados com o estado inicial da memória (vazio/zerado), sobrescrevendo o banco relacional Neon antes que o download dos dados reais do Postgres fosse concluído.
 
-### 3. ERR-03: Indisponibilidade Temporária do Serviço por Alta Demanda (HTTP 503 - Service Unavailable)
+#### **Correção Técnica Aplicada**
+- **Orquestração Sequencial do Boot:** O ponto de entrada da aplicação (`startServer`) foi refatorado para que a abertura de porta HTTP (`app.listen`) seja bloqueada até que a promessa `initDatabasePersistence()` conclua sequencialmente:
+  1. `initPostgresSchema()` (criação/verificação de tabelas no PostgreSQL).
+  2. `loadStateFromPostgres()` (leitura do estado real mantido no banco em nuvem).
+  3. Atualização da variável global `db` com o estado autêntico vindo do PostgreSQL antes de aceitar qualquer requisição de leitura ou gravação.
+- **Flag de Trava de Sincronização:** Implementaram-se travas de inicialização e tratamento de exceções para impedir que chamadas assíncronas de gravação executem `saveAllStateToPostgres` sobre o banco de dados remoto antes da restauração completa dos dados em memória.
 
-- **Descrição do Log de Erro**:
-  ```json
-  {
-    "error": {
-      "code": 503,
-      "message": "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.",
-      "status": "UNAVAILABLE"
-    }
-  }
-  ```
-- **Causa Raiz**:
-  Picos momentâneos de carga nos servidores da infraestrutura de IA.
-- **Solução Aplicada**:
-  1. Algoritmo de retry com aguardo configurado no backend.
-  2. Transição transparente para extração heurística por Expressões Regulares (Regex/OCR local) para não interromper a produtividade do usuário na interface.
-- **Aprendizado**:
-  Erros 503 são transitórios. A aplicação não deve falhar nem travar a UI; ela deve fallbackear graciosamente para mecanismos locais determinísticos e notificar o sistema de auditoria.
-
----
-
-### 4. ERR-04: Divergência de Leitura em Lotes Volumosos de PDFs (Ex: 109 Páginas Enviadas vs. 94 Processadas)
-
-- **Descrição do Erro**:
-  Incompletude na extração e perda de páginas quando múltiplos PDFs volumosos eram submetidos em um único lote síncrono HTTP.
-- **Causa Raiz**:
-  Requisições HTTP síncronas para leitura de PDFs com dezenas/centenas de páginas estouravam limites de tempo de resposta (*time-out*) ou estouro de memória do worker de PDF. As páginas que falhavam eram descartadas sem registrar o motivo do erro.
-- **Solução Aplicada**:
-  1. **Arquitetura de Jobs de Fundo**: Implementação do endpoint `/api/pdf-jobs` que gerencia o processamento assíncrono.
-  2. **Estatísticas por Página (`pageStats`)**: Cada página individual possui estado rastreado (`pending`, `success`, `error`).
-  3. **Relatório de Diagnóstico de Processamento**: Exibição detalhada na interface de quantas páginas foram lidas, quais falharam e possibilidade de re-processar especificamente as páginas com falha.
-- **Aprendizado**:
-  Leitura e parser de documentos volumosos exige arquitetura orientada a **Jobs de Segundo Plano** com persisted state e feedback granular por página para o usuário, ao invés de requisições HTTP do tipo "tudo ou nada".
-
----
-
-### 5. ERR-05: Concorrência e Gravação no Banco de Dados JSON (`sispu_db.json`)
-
-- **Descrição do Erro**:
-  Possibilidade de corrupção ou sobrescrita de dados ao realizar múltiplas operações simultâneas de edição, homologação de documentos e auditoria.
-- **Causa Raiz**:
-  Escrita em arquivo de banco JSON local sem bloqueio atômico de arquivo ou isolamento de concorrência no servidor Express.
-- **Solução Aplicada**:
-  1. Centralização de todas as operações de banco em Repositórios virtuais no Express (`server.ts`).
-  2. Implementação de escrita atômica no arquivo `sispu_db.json`.
-  3. Tabela dedicada `logs_erros` para rastreabilidade de todas as inconsistências ocorridas durante a execução do sistema.
-- **Aprendizado**:
-  Manter uma tabela de logs estruturada no próprio banco de dados possibilita identificar problemas de forma preventiva e diagnosticar falhas sem depender unicamente do console do servidor.
-
----
-
-## 📌 Recomendações e Boas Práticas para a Aplicação
-
-1. **Monitoramento de Cotas**:
-   - Acompanhar a cota no console do Google AI Studio para ajustar os intervalos entre requisições conforme o volume de documentos exigido pelo órgão/secretaria.
-2. **Homologação Gradual de Documentos**:
-   - Manter o pipeline de 8 etapas ativo (**Seleção -> Identificação -> Parser -> Normalização -> Validação -> Conferência -> Homologação -> Persistência -> Auditoria**), pois ele garante que qualquer divergência numérica ou de valor seja corrigida antes da gravação final no banco de dados.
-3. **Auditoria de Erros Ativa**:
-   - A tabela `logs_erros` no sistema continuará registrando eventuais exceções com timestamp, origem e arquivo, permitindo auditorias contínuas do sistema.
+#### **Limitações Conhecidas**
+- **Latência Inicial de Cold Start:** Durante o primeiro boot do contêiner (tempo de handshake TLS com o servidor PostgreSQL/Neon, cerca de 1 a 3 segundos), as requisições HTTP do cliente podem experimentar uma pequena retenção até a conclusão da sincronização do estado inicial.

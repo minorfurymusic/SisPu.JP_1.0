@@ -1,10 +1,14 @@
 import React, { useState, useEffect } from "react";
 import WebPortal from "./components/WebPortal";
-import { Database, CheckCircle2, AlertCircle, X, RefreshCw, GitBranch, ShieldCheck, Terminal } from "lucide-react";
+import { Database, CheckCircle2, AlertCircle, Key, X, RefreshCw, Server, GitBranch, Upload, ShieldCheck, Terminal } from "lucide-react";
 
 export default function App() {
   const [refreshCounter, setRefreshCounter] = useState(0);
   const [dbStatus, setDbStatus] = useState<{ connected: boolean; message?: string; db_url_masked?: string }>({ connected: false });
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [inputUrl, setInputUrl] = useState("postgresql://neondb_owner:SUA_SENHA@ep-gentle-tooth-ac4kw850.sa-east-1.aws.neon.tech/neondb?sslmode=require");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   // GitHub Modal state
   const [isGitModalOpen, setIsGitModalOpen] = useState(false);
@@ -34,6 +38,37 @@ export default function App() {
 
   const handleDataChanged = () => {
     setRefreshCounter(prev => prev + 1);
+  };
+
+  const handleSaveConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setFeedback(null);
+
+    try {
+      const res = await fetch('/api/db-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ database_url: inputUrl })
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setFeedback({ type: 'success', message: data.message });
+        await checkDbStatus();
+        handleDataChanged();
+        setTimeout(() => {
+          setIsModalOpen(false);
+          setFeedback(null);
+        }, 1500);
+      } else {
+        setFeedback({ type: 'error', message: data.error || "Erro ao conectar ao PostgreSQL." });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || "Erro de rede ao salvar configuração." });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleGitPush = async (e: React.FormEvent) => {
@@ -78,13 +113,13 @@ export default function App() {
       
       {/* 🚀 Header Navbar */}
       <header className="bg-[#0f0f0f] border-b border-white/10 py-3.5 px-6 sticky top-0 z-50 shadow-md">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
-          <div className="flex items-center gap-3">
+        <div className="max-w-7xl mx-auto flex items-center justify-center">
+          <div className="flex items-center justify-center text-center gap-3">
             <div className="h-9 w-9 rounded-lg bg-blue-600 flex items-center justify-center font-bold font-mono text-white text-lg shadow-sm shadow-blue-500/20">
               SP
             </div>
-            <div>
-              <h1 className="text-sm font-extrabold tracking-tight text-white uppercase flex items-center gap-1.5">
+            <div className="text-center">
+              <h1 className="text-sm font-extrabold tracking-tight text-white uppercase flex items-center justify-center gap-1.5">
                 SISPU.JP <span className="text-blue-500 text-xs">2.0</span> — Gestão de Despesas
               </h1>
               <p className="text-[10px] text-gray-500 uppercase tracking-widest font-semibold font-mono">
@@ -92,32 +127,88 @@ export default function App() {
               </p>
             </div>
           </div>
-
-          <div className="flex items-center gap-3">
-            {/* Database Connection Badge — informational only. Reconfiguring DATABASE_URL is an
-                infra operation, not something to expose as a clickable control in the running
-                app (anyone with the URL could point production at a different database). */}
-            <div
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-mono font-medium border ${
-                dbStatus.connected
-                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
-                  : "bg-amber-500/10 text-amber-400 border-amber-500/30"
-              }`}
-              title="Configuração de banco: use as variáveis de ambiente do serviço, não a interface."
-            >
-              <Database className="w-3.5 h-3.5" />
-              <span>
-                {dbStatus.connected ? "PostgreSQL Neon: Conectado" : "PostgreSQL: Não conectado"}
-              </span>
-              {dbStatus.connected ? (
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-              ) : (
-                <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
-              )}
-            </div>
-          </div>
         </div>
       </header>
+
+      {/* Modal de Configuração do Banco de Dados Neon */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#121212] border border-white/10 rounded-xl max-w-lg w-full p-6 shadow-2xl animate-in zoom-in-95 duration-150">
+            <div className="flex justify-between items-center pb-4 border-b border-white/10 mb-4">
+              <div className="flex items-center gap-2">
+                <Server className="w-5 h-5 text-blue-400" />
+                <h2 className="text-sm font-bold text-white uppercase tracking-wider">
+                  Configuração de Banco PostgreSQL (Neon)
+                </h2>
+              </div>
+              <button
+                onClick={() => setIsModalOpen(false)}
+                className="text-gray-400 hover:text-white p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-400 mb-4 leading-relaxed">
+              Insira a Connection String completa fornecida pelo seu projeto no <strong>Neon DB</strong> para que todas as alterações do SISPU sejam persistidas permanentemente.
+            </p>
+
+            <form onSubmit={handleSaveConfig} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-300 uppercase mb-1.5">
+                  DATABASE_URL (Connection String)
+                </label>
+                <textarea
+                  rows={3}
+                  value={inputUrl}
+                  onChange={(e) => setInputUrl(e.target.value)}
+                  placeholder="postgresql://neondb_owner:SUA_SENHA@ep-gentle-tooth-ac4kw850.sa-east-1.aws.neon.tech/neondb?sslmode=require"
+                  className="w-full bg-[#080808] border border-white/15 rounded-lg p-3 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 resize-none"
+                  required
+                />
+                <span className="text-[11px] text-gray-500 block mt-1">
+                  Certifique-se de substituir <code className="text-amber-400">SENHA</code> pela sua senha real do Neon.
+                </span>
+              </div>
+
+              {feedback && (
+                <div
+                  className={`p-3 rounded-lg text-xs flex items-start gap-2 ${
+                    feedback.type === 'success'
+                      ? "bg-emerald-500/10 border border-emerald-500/30 text-emerald-300"
+                      : "bg-red-500/10 border border-red-500/30 text-red-300"
+                  }`}
+                >
+                  {feedback.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                  )}
+                  <span>{feedback.message}</span>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="px-4 py-2 rounded-lg text-xs font-medium text-gray-400 hover:bg-white/5 border border-transparent"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="flex items-center gap-2 px-5 py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition shadow-md shadow-blue-500/20 disabled:opacity-50"
+                >
+                  {isSubmitting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                  {isSubmitting ? "Conectando..." : "Testar e Conectar Banco"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Modal de Sincronização GitHub (Git Push via GIT_ASKPASS / GITHUB_TOKEN) */}
       {isGitModalOpen && (

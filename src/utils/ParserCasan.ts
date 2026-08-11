@@ -125,6 +125,33 @@ export class ParserCasan {
       endereco = cleanedAddr;
     }
 
+    if (!endereco && codigo_numero) {
+      const textLines = text.split(/\r?\n/);
+      const codLineIdx = textLines.findIndex(l => l.includes(codigo_numero));
+      if (codLineIdx !== -1) {
+        const codLine = textLines[codLineIdx];
+        if (!unidade_nome) {
+          const uMatch = codLine.match(/\b\d{3}\.\s*\d{3}\.\s*\d{3}\.\s*\d{4}\.\s*\d{2}\s+(.+?)\s+\d{3}\s+\d+/i);
+          if (uMatch) {
+            unidade_nome = uMatch[1].trim();
+          }
+        }
+        if (codLineIdx + 1 < textLines.length) {
+          const nextLine = textLines[codLineIdx + 1].trim();
+          if (
+            nextLine &&
+            nextLine.length > 3 &&
+            nextLine.length < 120 &&
+            !/^(MATRÍCULA|MATRICULA|SISTEMA|COMPANHIA|CONTAS|RELATÓRIO|PÁGINA|LOCALIZAÇÃO|USUÁRIO|GRUPO|REFERÊNCIA)\b/i.test(nextLine) &&
+            !/^\d{5,8}-\d/.test(nextLine) &&
+            !/^\d+$/.test(nextLine)
+          ) {
+            endereco = nextLine;
+          }
+        }
+      }
+    }
+
     // Município
     const munMatch = ucBlock.match(/(?:MUNICIPIO|MUNICÍPIO)\s*:\s*([A-Z\sªº.-]{3,40})/i);
     if (munMatch) {

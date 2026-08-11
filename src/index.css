@@ -153,6 +153,10 @@
     border-color: rgba(255, 255, 255, 0.1) !important;
   }
 
+  th.sticky, .sticky {
+    background-color: #0a0a0a !important;
+  }
+
   tbody tr {
     background-color: #0f0f0f !important;
   }
@@ -168,6 +172,14 @@
   tbody td {
     color: #d1d5db !important;
     border-color: rgba(255, 255, 255, 0.1) !important;
+  }
+
+  tbody td.sticky {
+    background-color: #0f0f0f !important;
+  }
+
+  tbody tr:hover td.sticky {
+    background-color: #1a1a1a !important;
   }
 
   /* Highlight text and values inside tables */

@@ -1,12 +1,13 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import { 
-  FileText, Upload, CheckCircle2, AlertTriangle, Play, Save, 
+  FileText, Upload, CheckCircle2, AlertTriangle, Play, Save, Download,
   History, Check, RefreshCw, FileCode, Landmark, Eye, EyeOff,
   ZoomIn, ZoomOut, RotateCw, RotateCcw, ChevronLeft, ChevronRight,
   Maximize2, Trash2, Edit2, Columns, Settings, Sliders, Info, FileImage, Clipboard,
-  Search, Plus, Copy, AlertCircle, CheckCircle, Calendar, Filter, Sparkles, Zap, Droplets, Phone, Globe
+  Search, Plus, Copy, AlertCircle, CheckCircle, Calendar, Zap, Building2, X
 } from "lucide-react";
-import { DocumentoProcessado, DocumentLayoutType, CadastroMestreUC, Secretaria } from "../types";
+import UnidadeSelectorModal from "./UnidadeSelectorModal";
+import { DocumentoProcessado, DocumentLayoutType, CadastroMestreUC } from "../types";
 import { 
   identifyDocumentType, 
   splitReportIntoFaturas, 
@@ -55,6 +56,7 @@ export function computeConsumoKWh(itens: any[], isCelesc: boolean = true): numbe
   return genericCons.reduce((sum, it) => sum + Number(it.quantidade || 0), 0);
 }
 
+export const DEFAULT_MASTER_UCS: CadastroMestreUC[] = [];
 
 // High-fidelity templates of invoices for realistic and robust mock-up processing
 const MOCK_SAMPLES = {
@@ -331,7 +333,6 @@ interface DocumentManagerProps {
 
 export default function DocumentManager({ onDocumentProcessed, currentUser = "admin", initialMode = "PDF" }: DocumentManagerProps) {
   const [activeImportMode, setActiveImportMode] = useState<"PDF" | "IMAGE" | "REPORT" | "MANUAL" | "CADASTRO">(initialMode as any);
-  const [selectedUtilityFilter, setSelectedUtilityFilter] = useState<"AUTO" | "CELESC" | "CASAN" | "TELEFONIA" | "INTERNET">("AUTO");
   const [dragActive, setDragActive] = useState(false);
   const [customText, setCustomText] = useState("");
   const [fileName, setFileName] = useState("");
@@ -340,75 +341,67 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   // Pipeline-queue states for asynchronously processing multi-document/large reports
   const [processingQueue, setProcessingQueue] = useState<boolean>(false);
   const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0, phase: "" });
+  const [sessionDocs, setSessionDocs] = useState<DocumentoProcessado[]>([]);
 
-  // sessionDocs holds every lançamento parsed for the current batch, up until "Salvar
-  // Lançamentos" persists it to the backend. It used to live only in memory: refreshing the
-  // page, switching to another tab in WebPortal (which unmounts this component), or the OS
-  // locking the screen while the tab was idle all discarded the queue with no way back. It's
-  // now mirrored to localStorage on every change and restored on mount, so the draft survives
-  // reloads/remounts and is only cleared once it's actually saved (see the effect below).
-  const SESSION_DOCS_STORAGE_KEY = "sispu_session_docs_draft";
-  const [sessionDocs, setSessionDocs] = useState<DocumentoProcessado[]>(() => {
-    try {
-      const saved = localStorage.getItem(SESSION_DOCS_STORAGE_KEY);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  // State for linking Unidade Gestora directly on report table
+  const [allUnidades, setAllUnidades] = useState<any[]>([]);
+  const [selectedDocForUnidade, setSelectedDocForUnidade] = useState<DocumentoProcessado | null>(null);
 
   useEffect(() => {
-    try {
-      if (sessionDocs.length > 0) {
-        localStorage.setItem(SESSION_DOCS_STORAGE_KEY, JSON.stringify(sessionDocs));
-      } else {
-        localStorage.removeItem(SESSION_DOCS_STORAGE_KEY);
-      }
-    } catch (err) {
-      console.error("Não foi possível salvar o rascunho do lote localmente:", err);
-    }
-  }, [sessionDocs]);
-
-  // One-time notice when a draft is recovered after a reload/remount, so the user knows it
-  // wasn't lost and can review before clicking "Salvar Lançamentos".
-  useEffect(() => {
-    if (sessionDocs.length > 0) {
-      setMessage({
-        type: 'warning',
-        text: `Rascunho recuperado: ${sessionDocs.length} lançamento(s) que ainda não tinham sido salvos foram restaurados. Revise e clique em "Salvar Lançamentos" para persistir.`
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    fetch("/api/unidades")
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) setAllUnidades(data);
+      })
+      .catch(() => {});
   }, []);
 
-  // Resumo do lote em conferência: totais por concessionária, para o usuário bater com a fatura
-  // consolidada antes de clicar em "Salvar Lançamentos" (o lote ainda não foi persistido).
-  const batchTotals = useMemo(() => {
-    const valid = sessionDocs.filter(d => d.status !== 'IGNORADA');
-    const sum = (list: DocumentoProcessado[], key: 'valor_total' | 'consumo' | 'energia_injetada') =>
-      list.reduce((acc, d) => acc + Number((d.dados_extraidos as any)?.[key] || 0), 0);
+  const getContaEndereco = (conta: any) => {
+    if (conta.logradouro && conta.logradouro !== "N/A") return conta.logradouro;
+    if (conta.endereco && conta.endereco !== "N/A") return conta.endereco;
+    if (conta.localizacao && !/^[\d\s.-]+$/.test(conta.localizacao) && conta.localizacao !== "N/A") return conta.localizacao;
+    
+    const mat = conta.matricula || conta.codigo_numero;
+    if (mat && Array.isArray(allUnidades)) {
+      const cleanMat = String(mat).replace(/\D/g, "");
+      if (cleanMat) {
+        const match = allUnidades.find((u: any) => {
+          const uCod = String(u.codnum || u.uc || u.codigo_legado || u.id || "").replace(/\D/g, "");
+          return uCod && uCod === cleanMat;
+        });
+        if (match && match.endereco && match.endereco !== "N/A") return match.endereco;
+      }
+    }
+    return "N/A";
+  };
 
-    const celesc = valid.filter(d => d.layout?.startsWith('CELESC'));
-    const casan = valid.filter(d => d.layout?.startsWith('CASAN'));
+  // Calculated Batch Metrics for Painel de Importação and Grade de Conferência
+  const batchMetrics = React.useMemo(() => {
+    const activeDocs = sessionDocs.filter(d => d && d.status !== 'IGNORADA' && !(d.dados_extraidos as any)?.isAusente);
+    
+    const totalValue = activeDocs.reduce((acc, doc) => acc + Number(doc.dados_extraidos?.valor_total || 0), 0);
+    const totalCount = activeDocs.length;
+    const totalConsumption = activeDocs.reduce((acc, doc) => acc + Number(doc.dados_extraidos?.consumo || 0), 0);
+    
+    const isCelesc = activeDocs.some(doc => doc.layout?.includes("CELESC")) || sessionDocs.some(doc => doc.layout?.includes("CELESC"));
+    const isCasan = activeDocs.some(doc => doc.layout?.includes("CASAN")) || sessionDocs.some(doc => doc.layout?.includes("CASAN"));
+    
+    const totalInjected = activeDocs.reduce((acc, doc) => {
+      const inj = doc.dados_extraidos?.energia_injetada ?? computeEnergiaInjetada(doc.dados_extraidos?.itens_fatura || []);
+      return acc + Number(inj || 0);
+    }, 0);
+
+    const unit = isCelesc ? "kWh" : isCasan ? "m³" : "kWh";
 
     return {
-      total: valid.length,
-      celesc: celesc.length > 0 ? {
-        unidades: celesc.length,
-        valorTotal: sum(celesc, 'valor_total'),
-        consumo: sum(celesc, 'consumo'),
-        energiaInjetada: sum(celesc, 'energia_injetada'),
-      } : null,
-      casan: casan.length > 0 ? {
-        unidades: casan.length,
-        valorTotal: sum(casan, 'valor_total'),
-        consumo: sum(casan, 'consumo'),
-      } : null,
+      totalValue,
+      totalCount,
+      totalConsumption,
+      totalInjected,
+      isCelesc,
+      unit
     };
   }, [sessionDocs]);
-
-  const fmtMoeda = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  const fmtNum = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
 
   // Batch Competência state & Manual entry form states requested by user
   const [batchCompetencia, setBatchCompetencia] = useState<string>("06/2026");
@@ -465,6 +458,69 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     });
   };
 
+  const exportBatchToCSV = () => {
+    if (!sessionDocs || sessionDocs.length === 0) {
+      setMessage({ type: 'warning', text: "Nenhum documento no lote para exportar." });
+      return;
+    }
+
+    const concessionaria = batchMetrics.isCelesc ? "CELESC" : batchMetrics.isCasan ? "CASAN" : "CONCESSIONÁRIA";
+    
+    // Cabeçalho do CSV com metadados do lote (Concessionária e Mês de Competência)
+    let csvContent = `RELATÓRIO DE IMPORTAÇÃO DE LOTE\n`;
+    csvContent += `Concessionária;${concessionaria}\n`;
+    csvContent += `Mês Competência;${batchCompetencia}\n`;
+    csvContent += `Data de Exportação;${new Date().toLocaleDateString('pt-BR')}\n\n`;
+
+    // Cabeçalho das Colunas
+    if (batchMetrics.isCelesc) {
+      csvContent += `Contrato CODNUM;Valor Total (R$);Consumo (kWh);Energia Injetada (kWh);Status\n`;
+    } else {
+      csvContent += `Contrato CODNUM;Valor Total (R$);Consumo (${batchMetrics.unit});Status\n`;
+    }
+
+    // Linhas dos Lançamentos
+    sessionDocs.forEach(doc => {
+      if (!doc) return;
+      const isAusente = (doc.dados_extraidos as any)?.isAusente;
+      const codnum = `"${doc.dados_extraidos?.codigo_numero || ""}"`;
+      const valor = isAusente ? "0,00" : (Number(doc.dados_extraidos?.valor_total || 0)).toFixed(2).replace('.', ',');
+      const consumo = isAusente ? "0,00" : (Number(doc.dados_extraidos?.consumo || 0)).toFixed(2).replace('.', ',');
+      const status = isAusente ? "AUSENTE" : doc.status;
+
+      if (batchMetrics.isCelesc) {
+        const inj = isAusente ? 0 : (doc.dados_extraidos?.energia_injetada ?? computeEnergiaInjetada(doc.dados_extraidos?.itens_fatura || []));
+        const injFormatted = Number(inj || 0).toFixed(2).replace('.', ',');
+        csvContent += `${codnum};${valor};${consumo};${injFormatted};${status}\n`;
+      } else {
+        csvContent += `${codnum};${valor};${consumo};${status}\n`;
+      }
+    });
+
+    // Linha de Totais
+    const totalValStr = batchMetrics.totalValue.toFixed(2).replace('.', ',');
+    const totalConsStr = batchMetrics.totalConsumption.toFixed(2).replace('.', ',');
+    if (batchMetrics.isCelesc) {
+      const totalInjStr = batchMetrics.totalInjected.toFixed(2).replace('.', ',');
+      csvContent += `TOTAL;${totalValStr};${totalConsStr};${totalInjStr};${batchMetrics.totalCount} faturas\n`;
+    } else {
+      csvContent += `TOTAL;${totalValStr};${totalConsStr};${batchMetrics.totalCount} faturas\n`;
+    }
+
+    // Gerar e baixar arquivo
+    const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const cleanComp = batchCompetencia.replace(/[/\\?%*:|"<>]/g, '-');
+    const fileName = `lote_${concessionaria.toLowerCase()}_${cleanComp}.csv`;
+    link.setAttribute("href", url);
+    link.setAttribute("download", fileName);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const handleSaveManualLancamento = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualUc || !manualCompetencia || !manualValorTotal) {
@@ -501,27 +557,31 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
       if (res.ok) {
         const dbDoc = await res.json();
-        const homolRes = await fetch(`/api/documentos/${dbDoc.id}/homologar`, {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "x-user": currentUser
-          }
-        });
-
-        if (homolRes.ok) {
-          setMessage({
-            type: "success",
-            text: `Lançamento manual para UC "${manualUc}" competência ${manualCompetencia} salvo e classificado por mês com sucesso!`
+        if (dbDoc && dbDoc.id) {
+          const homolRes = await fetch(`/api/documentos/${dbDoc.id}/homologar`, {
+            method: "POST",
+            headers: { 
+              "Content-Type": "application/json",
+              "x-user": currentUser
+            }
           });
-          setManualUc("");
-          setManualConsumo("");
-          setManualValorTotal("");
-          setManualImposto("");
-          if (onDocumentProcessed) onDocumentProcessed();
+
+          if (homolRes.ok) {
+            setMessage({
+              type: "success",
+              text: `Lançamento manual para UC "${manualUc}" competência ${manualCompetencia} salvo e classificado por mês com sucesso!`
+            });
+            setManualUc("");
+            setManualConsumo("");
+            setManualValorTotal("");
+            setManualImposto("");
+            if (onDocumentProcessed) onDocumentProcessed();
+          } else {
+            const err = await homolRes.json();
+            setMessage({ type: "error", text: `Erro ao homologar lançamento: ${err.error || err.message}` });
+          }
         } else {
-          const err = await homolRes.json();
-          setMessage({ type: "error", text: `Erro ao homologar lançamento: ${err.error || err.message}` });
+          setMessage({ type: "error", text: "Erro ao salvar o documento na base de dados." });
         }
       } else {
         const err = await res.json();
@@ -534,28 +594,23 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     }
   };
 
-  // Master Registry of UCs (Etapa 1) — persistido no backend (JSON local + Postgres/Neon),
-  // igual a todo o resto do sistema. Antes vivia só no localStorage do navegador com uma lista
-  // fixa de UCs de exemplo (DEFAULT_MASTER_UCS) como fallback: qualquer exclusão só valia
-  // naquele navegador, e sem esse localStorage os exemplos fabricados reapareciam como se
-  // fossem cadastros reais.
-  const [masterUcs, setMasterUcs] = useState<CadastroMestreUC[]>([]);
-  const [loadingMasterUcs, setLoadingMasterUcs] = useState(true);
+  // Master Registry of UCs (Etapa 1)
+  const [masterUcs, setMasterUcs] = useState<CadastroMestreUC[]>(() => {
+    const saved = localStorage.getItem("sispu_cadastro_mestre_ucs");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        // ignore
+      }
+    }
+    return DEFAULT_MASTER_UCS;
+  });
 
-  const loadMasterUcs = () => {
-    setLoadingMasterUcs(true);
-    fetch("/api/cadastro-mestre-ucs")
-      .then(r => r.json())
-      .then(data => {
-        if (Array.isArray(data)) setMasterUcs(data);
-      })
-      .catch(err => console.error("Erro ao carregar Cadastro Mestre de UCs:", err))
-      .finally(() => setLoadingMasterUcs(false));
+  const saveMasterUcs = (newUcs: CadastroMestreUC[]) => {
+    setMasterUcs(newUcs);
+    localStorage.setItem("sispu_cadastro_mestre_ucs", JSON.stringify(newUcs));
   };
-
-  useEffect(() => {
-    loadMasterUcs();
-  }, []);
 
   // State to hold comparison data (Etapa 3)
   const [lastComparison, setLastComparison] = useState<{
@@ -576,12 +631,10 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     invalidas: number;
   } | null>(null);
 
-  // Form states for creating/editing a Master UC (Etapa 1). editingUcId === null means the
-  // form (when open) is for a new UC; otherwise it's editing that existing UC's id.
+  // Form states for creating or editing a Master UC (Etapa 1)
   const [showAddUcForm, setShowAddUcForm] = useState(false);
   const [editingUcId, setEditingUcId] = useState<string | null>(null);
-  const [savingUc, setSavingUc] = useState(false);
-  const blankUcForm = {
+  const [newUcData, setNewUcData] = useState({
     uc: "",
     codnum: "",
     concessionaria: "CELESC" as 'CELESC' | 'CASAN',
@@ -591,97 +644,109 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     classe: "Público / Governamental",
     grupo_tarifario: "B3",
     situacao: "Ativa" as 'Ativa' | 'Inativa'
-  };
-  const [newUcData, setNewUcData] = useState(blankUcForm);
+  });
   const [ucSearchQuery, setUcSearchQuery] = useState("");
 
   const handleStartEditUc = (item: CadastroMestreUC) => {
+    if (!item || !item.id) return;
     setEditingUcId(item.id);
     setNewUcData({
       uc: item.uc,
       codnum: item.codnum,
-      concessionaria: item.concessionaria,
-      secretaria: item.secretaria,
-      unidade_administrativa: item.unidade_administrativa,
-      endereco: item.endereco,
-      classe: item.classe,
-      grupo_tarifario: item.grupo_tarifario,
-      situacao: item.situacao
+      concessionaria: item.concessionaria || "CELESC",
+      secretaria: item.secretaria || "",
+      unidade_administrativa: item.unidade_administrativa || "",
+      endereco: item.endereco || "",
+      classe: item.classe || "Público / Governamental",
+      grupo_tarifario: item.grupo_tarifario || "B3",
+      situacao: item.situacao || "Ativa"
     });
     setShowAddUcForm(true);
   };
 
-  const handleCancelUcForm = () => {
-    setShowAddUcForm(false);
-    setEditingUcId(null);
-    setNewUcData(blankUcForm);
-  };
-
-  const handleSubmitUc = async (e: React.FormEvent) => {
+  const handleSaveUc = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUcData.uc || !newUcData.codnum) {
       alert("Por favor, preencha a UC e o CODNUM.");
       return;
     }
 
-    setSavingUc(true);
-    try {
-      const isEditing = !!editingUcId;
-      const res = await fetch(
-        isEditing ? `/api/cadastro-mestre-ucs/${editingUcId}` : "/api/cadastro-mestre-ucs",
-        {
-          method: isEditing ? "PUT" : "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(newUcData)
-        }
-      );
-      const data = await res.json();
-      if (!res.ok) {
-        alert(data.error || "Erro ao salvar a UC no Cadastro Mestre.");
+    if (editingUcId) {
+      // Edit existing UC
+      if (masterUcs.some(u => u?.uc === newUcData.uc && u?.id !== editingUcId)) {
+        alert("Já existe outra UC cadastrada com este número.");
         return;
       }
 
-      loadMasterUcs();
-      handleCancelUcForm();
-      setMessage({
-        type: 'success',
-        text: isEditing
-          ? `Unidade Consumidora ${data.uc} atualizada no cadastro permanente.`
-          : `Unidade Consumidora ${data.uc} cadastrada com sucesso no cadastro permanente.`
+      const updated = masterUcs.map(u => {
+        if (u?.id === editingUcId) {
+          return {
+            ...u,
+            ...newUcData
+          };
+        }
+        return u;
       });
-    } catch (err: any) {
-      alert(`Erro de rede ao salvar a UC: ${err.message}`);
-    } finally {
-      setSavingUc(false);
-    }
-  };
 
-  const handleToggleUcStatus = async (item: CadastroMestreUC) => {
-    try {
-      const res = await fetch(`/api/cadastro-mestre-ucs/${item.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ situacao: item.situacao === 'Ativa' ? 'Inativa' : 'Ativa' })
+      saveMasterUcs(updated);
+      setShowAddUcForm(false);
+      setEditingUcId(null);
+      setNewUcData({
+        uc: "",
+        codnum: "",
+        concessionaria: "CELESC",
+        secretaria: "",
+        unidade_administrativa: "",
+        endereco: "",
+        classe: "Público / Governamental",
+        grupo_tarifario: "B3",
+        situacao: "Ativa"
       });
-      if (res.ok) loadMasterUcs();
-    } catch (err) {
-      console.error("Erro ao alternar situação da UC:", err);
-    }
-  };
-
-  const handleDeleteUc = async (id: string, code: string) => {
-    try {
-      const res = await fetch(`/api/cadastro-mestre-ucs/${id}`, { method: "DELETE" });
-      if (res.ok) {
-        loadMasterUcs();
-        setMessage({ type: 'warning', text: `UC ${code} removida do cadastro permanente.` });
-      } else {
-        const data = await res.json();
-        alert(data.error || "Erro ao remover a UC.");
+      setMessage({ type: 'success', text: `Unidade Consumidora ${newUcData.uc} atualizada com sucesso.` });
+    } else {
+      // Create new UC
+      if (masterUcs.some(u => u.uc === newUcData.uc)) {
+        alert("Esta UC já está cadastrada no Cadastro Mestre.");
+        return;
       }
-    } catch (err: any) {
-      alert(`Erro de rede ao remover a UC: ${err.message}`);
+
+      const created: CadastroMestreUC = {
+        id: `UC-${Date.now()}`,
+        ...newUcData,
+        criado_em: new Date().toISOString()
+      };
+
+      saveMasterUcs([...masterUcs, created]);
+      setShowAddUcForm(false);
+      setNewUcData({
+        uc: "",
+        codnum: "",
+        concessionaria: "CELESC",
+        secretaria: "",
+        unidade_administrativa: "",
+        endereco: "",
+        classe: "Público / Governamental",
+        grupo_tarifario: "B3",
+        situacao: "Ativa"
+      });
+      setMessage({ type: 'success', text: `Unidade Consumidora ${created.uc} cadastrada com sucesso no cadastro permanente.` });
     }
+  };
+
+  const handleToggleUcStatus = (id: string) => {
+    const updated = masterUcs.map(u => {
+      if (u?.id === id) {
+        return { ...u, situacao: (u.situacao === 'Ativa' ? 'Inativa' : 'Ativa') as 'Ativa' | 'Inativa' };
+      }
+      return u;
+    });
+    saveMasterUcs(updated);
+  };
+
+  const handleDeleteUc = (id: string, code: string) => {
+    const filtered = masterUcs.filter(u => u?.id !== id);
+    saveMasterUcs(filtered);
+    setMessage({ type: 'warning', text: `Unidade Consumidora ${code} excluída do cadastro permanente.` });
   };
 
   const addLog = (msg: string) => {
@@ -693,21 +758,6 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'warning', text: string } | null>(null);
   const [copiedKey, setCopiedKey] = useState<boolean>(false);
-
-  // Secretarias list & linking modal states (Parte A)
-  const [secretariasList, setSecretariasList] = useState<Secretaria[]>([]);
-  const [showLinkSecModal, setShowLinkSecModal] = useState(false);
-  const [selectedSecId, setSelectedSecId] = useState("");
-  const [linkingSec, setLinkingSec] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/secretarias")
-      .then(r => r.json())
-      .then(data => {
-        if (Array.isArray(data)) setSecretariasList(data);
-      })
-      .catch(err => console.error("Error fetching secretarias in DocumentManager:", err));
-  }, []);
 
   // PDF Viewer controls state
   const [pdfZoom, setPdfZoom] = useState<number>(100);
@@ -884,115 +934,36 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
     addLog(`Iniciando pipeline de processamento multimodal Gemini...`);
 
-    const docType = identifyDocumentType(textToProcess || "", nameToProcess);
     const isCasanCentralized = (nameToProcess.toUpperCase().includes("CENTRALIZADA") || 
       textToProcess.toUpperCase().includes("COBRANÇA CENTRALIZADA") || 
-      textToProcess.toUpperCase().includes("CONTAS QUE COMPÕEM"));
+      textToProcess.toUpperCase().includes("COBRANCA CENTRALIZADA") || 
+      textToProcess.toUpperCase().includes("CONTAS QUE COMPÕEM") ||
+      textToProcess.toUpperCase().includes("CONTAS QUE COMPOEM") ||
+      textToProcess.toUpperCase().includes("SISTEMA COMERCIAL INTEGRADO") ||
+      textToProcess.toUpperCase().includes("COMPANHIA CATARINENSE"));
+
+    let docType = identifyDocumentType(textToProcess || "", nameToProcess);
+    if (isCasanCentralized) {
+      docType = "CASAN_RELATORIO";
+    }
+
     let isReport = (docType === "CELESC_RELATORIO" || docType === "CASAN_RELATORIO" || (textToProcess && textToProcess.includes("\f"))) && !isCasanCentralized;
 
     // Set layout/concessionaire state
-    let concessionaire = docType.includes("CELESC") ? "CELESC" : (docType.includes("CASAN") || isCasanCentralized) ? "CASAN" : "Desconhecida";
-    if (selectedUtilityFilter !== "AUTO") {
-      addLog(`🎯 Filtro / Tipo de Concessionária ativado pelo usuário: ${selectedUtilityFilter}. Forçando diretrizes de extração.`);
-      concessionaire = selectedUtilityFilter;
-    }
+    const concessionaire = (isCasanCentralized || docType.includes("CASAN")) ? "CASAN" : docType.includes("CELESC") ? "CELESC" : "Desconhecida";
     setConcessionaireDetected(concessionaire);
 
     addLog(`Concessionária inferida: ${concessionaire} | Tipo de arquivo: ${isCasanCentralized ? 'CASAN Cobrança Centralizada (Lote Fracionado por Página)' : isReport ? 'Relatório/Lote' : 'Fatura Individual'}`);
 
-    // --- PAGE-BY-PAGE ASYNC JOB ARCHITECTURE FOR CASAN CENTRALIZADA ---
+    // --- PAGE-BY-PAGE ARCHITECTURE FOR CASAN CENTRALIZADA ---
     if (isCasanCentralized) {
-      addLog(`[CASAN Centralizada] Executando arquitetura de extração ASSÍNCRONA VIA JOB BACKEND (Robusta & Anti-Timeout)...`);
+      addLog(`[CASAN Centralizada] Executando arquitetura de extração fracionada PÁGINA A PÁGINA...`);
       
       const textPages = convertTextToPaginas(textToProcess);
       const totalPages = Math.max(textPages.length, imagesOverride ? imagesOverride.length : 1, pagesCount || 1);
       
-      addLog(`Total de páginas preparadas para envio ao Job Runner: ${totalPages} páginas.`);
+      addLog(`Total de páginas identificadas no relatório CASAN Centralizada: ${totalPages} páginas.`);
       
-      const pagesPayload = [];
-      for (let pIdx = 0; pIdx < totalPages; pIdx++) {
-        const pNum = pIdx + 1;
-        const pText = textPages[pIdx] ? textPages[pIdx].textoLimpo : textToProcess;
-        const pImg = imagesOverride && imagesOverride[pIdx] ? imagesOverride[pIdx] : undefined;
-        pagesPayload.push({
-          pageNum: pNum,
-          texto_fatura: pText,
-          imagem_base64: pImg
-        });
-      }
-
-      try {
-        const jobStartRes = await fetch("/api/documentos/jobs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            nome_arquivo: nameToProcess,
-            layout: "CASAN_FATURA",
-            pages: pagesPayload
-          })
-        });
-
-        if (!jobStartRes.ok) {
-          throw new Error(`Falha ao criar job no servidor: HTTP ${jobStartRes.status}`);
-        }
-
-        const jobData = await jobStartRes.json();
-        const jobId = jobData.jobId;
-        addLog(`Job de extração ${jobId} iniciado no servidor. Acompanhando progresso via Polling...`);
-
-        let isJobComplete = false;
-        let finalDocs: DocumentoProcessado[] = [];
-
-        while (!isJobComplete) {
-          await new Promise(res => setTimeout(res, 1500));
-
-          const pollRes = await fetch(`/api/documentos/jobs/${jobId}`);
-          if (!pollRes.ok) {
-            addLog(`⚠️ Erro temporário ao consultar job ${jobId}. Tentando novamente...`);
-            continue;
-          }
-
-          const statusData = await pollRes.json();
-
-          if (statusData.status === 'COMPLETED') {
-            isJobComplete = true;
-            finalDocs = statusData.createdDocs || [];
-            
-            addLog(`=======================================================`);
-            addLog(`📊 DEMONSTRATIVO DE EXTRAÇÃO ASSÍNCRONA VIA JOB (${jobId}):`);
-            if (Array.isArray(statusData.pageStats)) {
-              statusData.pageStats.forEach((st: any) => {
-                addLog(`   • Página ${st.page}: ${st.count} contas extraídas ${st.truncated ? "⚠️ (JSON Reparado)" : "✅"}`);
-              });
-            }
-            addLog(`🎯 TOTAL SOMADO DAS ${totalPages} PÁGINAS: ${finalDocs.length} CONTAS.`);
-            addLog(`=======================================================`);
-
-            setSessionDocs(finalDocs);
-            setQueueProgress({ current: totalPages, total: totalPages, phase: "Concluído!" });
-            setMessage({
-              type: 'success',
-              text: `Extração assíncrona concluída com sucesso: ${finalDocs.length} contas extraídas em ${totalPages} páginas.`
-            });
-            setProcessingQueue(false);
-            return;
-
-          } else if (statusData.status === 'FAILED') {
-            throw new Error(statusData.error || "Job de extração falhou no backend.");
-          } else {
-            setQueueProgress({
-              current: statusData.processedPages || 0,
-              total: totalPages,
-              phase: statusData.progressMessage || `Processando página ${statusData.processedPages} de ${totalPages}...`
-            });
-            addLog(`🔄 [Progresso do Job]: ${statusData.progressMessage} (${statusData.extractedContasCount || 0} contas extraídas)`);
-          }
-        }
-      } catch (jobErr: any) {
-        addLog(`❌ Job Assíncrono reportou exceção (${jobErr.message}). Iniciando contingência síncrona...`);
-      }
-
-      // --- SINC-FALLBACK IF JOB ENDPOINT UNREACHABLE ---
       const createdDocs: DocumentoProcessado[] = [];
       const pageStats: { page: number; count: number; truncated: boolean }[] = [];
       
@@ -1001,8 +972,10 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
         setQueueProgress({
           current: pageNum,
           total: totalPages,
-          phase: `[Contingência] Página ${pageNum} de ${totalPages}...`
+          phase: `Enviando Página ${pageNum} de ${totalPages} para a API do Gemini...`
         });
+        
+        addLog(`➡️ [Página ${pageNum}/${totalPages}] Disparando chamada individual ao Gemini...`);
         
         const pageText = textPages[pIdx] ? textPages[pIdx].textoLimpo : textToProcess;
         const pageImage = imagesOverride && imagesOverride[pIdx] ? [imagesOverride[pIdx]] : undefined;
@@ -1024,6 +997,12 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
           }
           
           const parsed = await apiRes.json();
+          
+          // Check for non-silent truncation / repair alert
+          if (parsed.json_reparado_truncado || parsed.alerta_truncamento) {
+            addLog(`🚨 [ALERTA GRAVE PÁGINA ${pageNum}]: A resposta da IA excedeu o limite de tokens e precisou ser REPARADA por heurística! Registros do final da Página ${pageNum} podem ter sido omitidos. Notifique o operador!`);
+          }
+          
           let pageContas: any[] = [];
           if (parsed.tipo_relatorio === "CASAN_CENTRALIZADA" && Array.isArray(parsed.contas)) {
             pageContas = parsed.contas;
@@ -1042,11 +1021,19 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
           }
           
           const isTrunc = !!(parsed.json_reparado_truncado || parsed.alerta_truncamento);
-          pageStats.push({ page: pageNum, count: pageContas.length, truncated: isTrunc });
+          pageStats.push({
+            page: pageNum,
+            count: pageContas.length,
+            truncated: isTrunc
+          });
+          
+          addLog(`✅ [Página ${pageNum}/${totalPages}]: ${pageContas.length} conta(s) extraída(s) individualmente.${isTrunc ? " ⚠️ (Aviso: JSON desta página foi reparado)" : ""}`);
           
           pageContas.forEach((conta: any, cIdx: number) => {
             const logsVal: string[] = [];
-            if (isTrunc) logsVal.push("⚠️ ALERTA DE IMPORTAÇÃO: Resposta do Gemini foi reparada.");
+            if (isTrunc) {
+              logsVal.push("⚠️ ALERTA DE IMPORTAÇÃO: Resposta do Gemini para esta página sofreu truncamento de tokens e foi reparada. Dados do final da página podem estar omissos.");
+            }
             
             createdDocs.push({
               id: `DOC-CASAN-CENTRAL-P${pageNum}-${Date.now()}-${cIdx + 1}`,
@@ -1067,8 +1054,8 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                 valor_credito: conta.valor_bonus || 0,
                 codigo_numero: conta.matricula || "DESCONHECIDO",
                 medidor: "N/A",
-                unidade_nome: conta.usuario || conta.localizacao || "N/A",
-                endereco: conta.localizacao || "N/A",
+                unidade_nome: conta.usuario || (conta.localizacao && !/^\d{3}\./.test(conta.localizacao) ? conta.localizacao : "N/A"),
+                endereco: getContaEndereco(conta),
                 leitura_anterior: conta.leitura_anterior || 0,
                 leitura_atual: conta.leitura_atual || 0,
                 itens_fatura: []
@@ -1085,18 +1072,28 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
               score: 100
             });
           });
+          
         } catch (errPage: any) {
-          addLog(`❌ [Contingência Página ${pageNum}] Erro: ${errPage.message}`);
+          addLog(`❌ [Página ${pageNum}/${totalPages}] Erro na extração: ${errPage.message}`);
           pageStats.push({ page: pageNum, count: 0, truncated: false });
         }
       }
       
       const totalExtracted = createdDocs.length;
+      
+      addLog(`=======================================================`);
+      addLog(`📊 DEMONSTRATIVO DE EXTRAÇÃO FRACIONADA PÁGINA A PÁGINA:`);
+      pageStats.forEach(st => {
+        addLog(`   • Página ${st.page}: ${st.count} contas extraídas ${st.truncated ? "⚠️ (JSON Reparado)" : "✅"}`);
+      });
+      addLog(`🎯 TOTAL SOMADO DAS ${totalPages} PÁGINAS: ${totalExtracted} CONTAS.`);
+      addLog(`=======================================================`);
+      
       setSessionDocs(createdDocs);
       setQueueProgress({ current: totalPages, total: totalPages, phase: "Concluído!" });
       setMessage({
         type: 'success',
-        text: `Extração de contingência concluída: ${totalExtracted} contas extraídas em ${totalPages} páginas.`
+        text: `Extração PÁGINA A PÁGINA concluída com sucesso: ${totalExtracted} contas extraídas em ${totalPages} páginas.`
       });
       setProcessingQueue(false);
       return;
@@ -1155,8 +1152,8 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                   valor_credito: conta.valor_bonus || 0,
                   codigo_numero: conta.matricula || "DESCONHECIDO",
                   medidor: "N/A",
-                  unidade_nome: conta.usuario || conta.localizacao || "N/A",
-                  endereco: conta.localizacao || "N/A",
+                  unidade_nome: conta.usuario || (conta.localizacao && !/^\d{3}\./.test(conta.localizacao) ? conta.localizacao : "N/A"),
+                  endereco: getContaEndereco(conta),
                   leitura_anterior: conta.leitura_anterior || 0,
                   leitura_atual: conta.leitura_atual || 0,
                   itens_fatura: []
@@ -1316,8 +1313,8 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                 valor_credito: conta.valor_bonus || 0,
                 codigo_numero: conta.matricula || "DESCONHECIDO",
                 medidor: "N/A",
-                unidade_nome: conta.usuario || conta.localizacao || "N/A",
-                endereco: conta.localizacao || "N/A",
+                unidade_nome: conta.usuario || (conta.localizacao && !/^\d{3}\./.test(conta.localizacao) ? conta.localizacao : "N/A"),
+                endereco: getContaEndereco(conta),
                 leitura_anterior: conta.leitura_anterior || 0,
                 leitura_atual: conta.leitura_atual || 0,
                 itens_fatura: []
@@ -1667,12 +1664,14 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     const isNumber = ['quantidade', 'valor_unitario', 'valor', 'icms', 'pis', 'irpj_pct', 'irpj_val', 'pis_ret', 'cofins_ret', 'csll_ret', 'cofins'].includes(field);
     const updatedVal = isNumber ? (val === '' ? 0 : parseFloat(val)) : val;
 
-    const updatedItens = currentItens.map(it => {
-      if (it.id === itemId) {
+    const updatedItens = currentItens.map((it, idx) => {
+      if (!it) return it;
+      const currentId = it.id || `item-${idx}`;
+      if (currentId === itemId || it.id === itemId) {
         const updated = { ...it, [field]: updatedVal };
         if (field === 'quantidade' || field === 'valor_unitario') {
-          const qty = parseFloat(field === 'quantidade' ? val : it.quantidade) || 0;
-          const unit = parseFloat(field === 'valor_unitario' ? val : it.valor_unitario) || 0;
+          const qty = parseFloat(field === 'quantidade' ? val : (it.quantidade ?? 0)) || 0;
+          const unit = parseFloat(field === 'valor_unitario' ? val : (it.valor_unitario ?? 0)) || 0;
           updated.valor = parseFloat((qty * unit).toFixed(2));
         }
         return updated;
@@ -1707,46 +1706,32 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   const handleDeleteItem = (itemId: string) => {
     if (!activeDoc) return;
     const currentItens = activeDoc.dados_extraidos.itens_fatura || [];
-    const updatedItens = currentItens.filter(it => it.id !== itemId);
+    const updatedItens = currentItens.filter((it, idx) => {
+      if (!it) return false;
+      const currentId = it.id || `item-${idx}`;
+      return currentId !== itemId && it.id !== itemId;
+    });
     recalculateDocTotals(updatedItens);
   };
 
   // Save specific doc edits back to session array
   const saveActiveDocEdits = () => {
-    if (!activeDoc) return;
-    setSessionDocs(prev => prev.map(d => d.id === activeDoc.id ? activeDoc : d));
+    if (!activeDoc || !activeDoc.id) return;
+    setSessionDocs(prev => prev.map(d => (d?.id === activeDoc.id ? activeDoc : d)));
     setIsModalOpen(false);
     setMessage({ type: 'success', text: `Alterações salvas na conferência para o documento "${activeDoc.nome_arquivo}".` });
   };
 
-  // Delete document from local session batch list and database
-  const handleDeleteDoc = async (id: string, name: string) => {
-    try {
-      const res = await fetch(`/api/documentos/${id}`, {
-        method: "DELETE",
-        headers: { "x-user": currentUser || "admin" }
-      });
-      if (res.ok) {
-        setSessionDocs(prev => prev.filter(d => String(d.id) !== String(id)));
-        setMessage({ type: 'success', text: `Documento "${name || id}" excluído com sucesso!` });
-        if (onDocumentProcessed) onDocumentProcessed();
-      } else {
-        const err = await res.json().catch(() => ({}));
-        setMessage({ type: 'error', text: err.error || "Erro ao excluir documento do servidor." });
-        setSessionDocs(prev => prev.filter(d => String(d.id) !== String(id)));
-        if (onDocumentProcessed) onDocumentProcessed();
-      }
-    } catch (e: any) {
-      setSessionDocs(prev => prev.filter(d => String(d.id) !== String(id)));
-      setMessage({ type: 'warning', text: `Lançamento "${name || id}" removido.` });
-      if (onDocumentProcessed) onDocumentProcessed();
-    }
+  // Delete document from local session batch list
+  const handleDeleteDoc = (id: string, name: string) => {
+    setSessionDocs(prev => prev.filter(d => d?.id !== id));
+    setMessage({ type: 'warning', text: `Lançamento "${name}" removido do lote de conferência.` });
   };
 
   // Toggle Ignored status
   const handleToggleIgnoreDoc = (id: string) => {
     setSessionDocs(prev => prev.map(d => {
-      if (d.id === id) {
+      if (d && d.id === id) {
         const newStatus = d.status === 'IGNORADA' ? 'VALIDADO' : 'IGNORADA';
         return { ...d, status: newStatus };
       }
@@ -1757,7 +1742,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   // Approve / Toggle document validation status manually
   const handleApproveDoc = (id: string) => {
     setSessionDocs(prev => prev.map(d => {
-      if (d.id === id) {
+      if (d && d.id === id) {
         const nextStatus = d.status === 'VALIDADO' ? 'NORMALIZADO' : 'VALIDADO';
         return { ...d, status: nextStatus };
       }
@@ -1767,7 +1752,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
   // Final Persist to standard DB with logs_validacao, triggers, dashboard sync
   const handleFinalSave = async () => {
-    const docsToSave = sessionDocs.filter(d => d.status !== 'IGNORADA');
+    const docsToSave = sessionDocs.filter(d => d && d.status !== 'IGNORADA');
     if (docsToSave.length === 0) {
       setMessage({ type: 'error', text: "Nenhum lançamento válido (não ignorado) na fila para salvar." });
       return;
@@ -1775,10 +1760,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
     setLoading(true);
     let successCount = 0;
-    // Docs that fail to save/homologar go back into the queue instead of being silently
-    // discarded — a duplicate-competência rejection (or any transient error) shouldn't cost
-    // the user re-typing or re-importing what they already reviewed.
-    const failedDocs: DocumentoProcessado[] = [];
+    let failedCount = 0;
 
     try {
       for (const doc of docsToSave) {
@@ -1797,42 +1779,43 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
         if (res.ok) {
           const dbDoc = await res.json();
-          // Homologar imediatamente para lançar na tabela central de lançamentos e gerar auditoria
-          const homolRes = await fetch(`/api/documentos/${dbDoc.id}/homologar`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-user": currentUser
+          if (dbDoc && dbDoc.id) {
+            // Homologar imediatamente para lançar na tabela central de lançamentos e gerar auditoria
+            const homolRes = await fetch(`/api/documentos/${dbDoc.id}/homologar`, {
+              method: "POST",
+              headers: { 
+                "Content-Type": "application/json",
+                "x-user": currentUser
+              }
+            });
+            if (homolRes.ok) {
+              successCount++;
+            } else {
+              failedCount++;
             }
-          });
-          if (homolRes.ok) {
-            successCount++;
           } else {
-            failedDocs.push(doc);
+            failedCount++;
           }
         } else {
-          failedDocs.push(doc);
+          failedCount++;
         }
       }
 
-      // Mantém na fila os que falharam e os que o usuário já tinha marcado como IGNORADA
-      // (esses nunca foram enviados); só remove os que realmente foram homologados.
-      const ignoradas = sessionDocs.filter(d => d.status === 'IGNORADA');
-      setSessionDocs([...failedDocs, ...ignoradas]);
+      setSessionDocs([]);
       setCustomText("");
       setFileName("");
-
+      
       if (onDocumentProcessed) onDocumentProcessed();
 
-      if (failedDocs.length === 0) {
-        setMessage({
-          type: 'success',
-          text: `Sucesso! Todos os ${successCount} lançamentos do lote foram homologados na tabela central com auditoria e atualizados no painel geral.`
+      if (failedCount === 0) {
+        setMessage({ 
+          type: 'success', 
+          text: `Sucesso! Todos os ${successCount} lançamentos do lote foram homologados na tabela central com auditoria e atualizados no painel geral.` 
         });
       } else {
-        setMessage({
-          type: 'warning',
-          text: `Lançamentos processados: ${successCount} com sucesso. ${failedDocs.length} permanecem na fila (falha ao salvar, ex: duplicidade de competência) — revise e tente salvar novamente.`
+        setMessage({ 
+          type: 'warning', 
+          text: `Lançamentos processados: ${successCount} com sucesso. ${failedCount} falhas devido a duplicidades de competência.` 
         });
       }
 
@@ -1878,44 +1861,15 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
       <div className="p-5 space-y-5">
         
-        {/* Status Message + Resumo do Lote em Conferência */}
-        {(message || sessionDocs.length > 0) && (
-          <div className="flex flex-col lg:flex-row gap-3 items-stretch">
-            {message && (
-              <div className={`flex-1 p-4 rounded-lg flex items-start gap-3 border text-xs leading-relaxed ${
-                message.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' :
-                message.type === 'warning' ? 'bg-amber-500/10 border-amber-500/20 text-amber-300' :
-                'bg-rose-500/10 border-rose-500/20 text-rose-300'
-              }`}>
-                {message.type === 'success' ? <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" /> : <AlertTriangle className="h-5 w-5 shrink-0 text-amber-400" />}
-                <span>{message.text}</span>
-              </div>
-            )}
-
-            {sessionDocs.length > 0 && (
-              <div className="lg:w-[420px] shrink-0 bg-[#121212] border border-white/10 rounded-lg p-3 text-[11px] font-mono">
-                <div className="text-gray-400 uppercase tracking-wider font-bold text-[10px] mb-2">
-                  Resumo do Lote em Conferência ({batchTotals.total} conta{batchTotals.total !== 1 ? 's' : ''})
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {batchTotals.celesc && (
-                    <div className="bg-amber-500/5 border border-amber-500/20 rounded p-2 space-y-1 col-span-2 sm:col-span-1">
-                      <div className="text-amber-400 font-bold text-[10px]">⚡ CELESC — {batchTotals.celesc.unidades} unidade{batchTotals.celesc.unidades !== 1 ? 's' : ''}</div>
-                      <div className="text-gray-300">Valor total: <span className="text-white font-bold">{fmtMoeda(batchTotals.celesc.valorTotal)}</span></div>
-                      <div className="text-gray-300">Consumo: <span className="text-white font-bold">{fmtNum(batchTotals.celesc.consumo)} kWh</span></div>
-                      <div className="text-gray-300">Energia injetada: <span className="text-white font-bold">{fmtNum(batchTotals.celesc.energiaInjetada)} kWh</span></div>
-                    </div>
-                  )}
-                  {batchTotals.casan && (
-                    <div className="bg-blue-500/5 border border-blue-500/20 rounded p-2 space-y-1 col-span-2 sm:col-span-1">
-                      <div className="text-blue-400 font-bold text-[10px]">💧 CASAN — {batchTotals.casan.unidades} unidade{batchTotals.casan.unidades !== 1 ? 's' : ''}</div>
-                      <div className="text-gray-300">Valor total: <span className="text-white font-bold">{fmtMoeda(batchTotals.casan.valorTotal)}</span></div>
-                      <div className="text-gray-300">Consumo: <span className="text-white font-bold">{fmtNum(batchTotals.casan.consumo)} m³</span></div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+        {/* Status Message */}
+        {message && (
+          <div className={`p-4 rounded-lg flex items-start gap-3 border text-xs leading-relaxed ${
+            message.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' :
+            message.type === 'warning' ? 'bg-amber-500/10 border-amber-500/20 text-amber-300' :
+            'bg-rose-500/10 border-rose-500/20 text-rose-300'
+          }`}>
+            {message.type === 'success' ? <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" /> : <AlertTriangle className="h-5 w-5 shrink-0 text-amber-400" />}
+            <span>{message.text}</span>
           </div>
         )}
 
@@ -1932,18 +1886,48 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                 </p>
               </div>
               <button
-                onClick={() => (showAddUcForm ? handleCancelUcForm() : setShowAddUcForm(true))}
+                onClick={() => {
+                  if (showAddUcForm) {
+                    setShowAddUcForm(false);
+                    setEditingUcId(null);
+                    setNewUcData({
+                      uc: "",
+                      codnum: "",
+                      concessionaria: "CELESC",
+                      secretaria: "",
+                      unidade_administrativa: "",
+                      endereco: "",
+                      classe: "Público / Governamental",
+                      grupo_tarifario: "B3",
+                      situacao: "Ativa"
+                    });
+                  } else {
+                    setEditingUcId(null);
+                    setNewUcData({
+                      uc: "",
+                      codnum: "",
+                      concessionaria: "CELESC",
+                      secretaria: "",
+                      unidade_administrativa: "",
+                      endereco: "",
+                      classe: "Público / Governamental",
+                      grupo_tarifario: "B3",
+                      situacao: "Ativa"
+                    });
+                    setShowAddUcForm(true);
+                  }
+                }}
                 className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs px-3 py-1.5 rounded flex items-center gap-1.5 transition"
               >
                 {showAddUcForm ? "Fechar" : <><Plus className="h-3.5 w-3.5" /> Adicionar UC</>}
               </button>
             </div>
 
-            {/* Add/Edit Form */}
+            {/* Add / Edit Form */}
             {showAddUcForm && (
-              <form onSubmit={handleSubmitUc} className="bg-black/30 border border-white/10 rounded-xl p-5 space-y-4">
+              <form onSubmit={handleSaveUc} className="bg-black/30 border border-white/10 rounded-xl p-5 space-y-4">
                 <h5 className="text-xs font-bold text-indigo-400 uppercase tracking-wide font-mono">
-                  {editingUcId ? `Editar Unidade Consumidora — ${newUcData.uc}` : "Nova Unidade Consumidora"}
+                  {editingUcId ? "Editar Unidade Consumidora" : "Nova Unidade Consumidora"}
                 </h5>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
                   <div>
@@ -2044,17 +2028,30 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                 <div className="flex justify-end gap-2 text-xs pt-2">
                   <button
                     type="button"
-                    onClick={handleCancelUcForm}
+                    onClick={() => {
+                      setShowAddUcForm(false);
+                      setEditingUcId(null);
+                      setNewUcData({
+                        uc: "",
+                        codnum: "",
+                        concessionaria: "CELESC",
+                        secretaria: "",
+                        unidade_administrativa: "",
+                        endereco: "",
+                        classe: "Público / Governamental",
+                        grupo_tarifario: "B3",
+                        situacao: "Ativa"
+                      });
+                    }}
                     className="bg-white/5 hover:bg-white/10 text-gray-300 px-3 py-1.5 rounded transition font-semibold"
                   >
                     Cancelar
                   </button>
                   <button
                     type="submit"
-                    disabled={savingUc}
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded transition font-semibold disabled:opacity-50"
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded transition font-semibold"
                   >
-                    {savingUc ? "Salvando..." : editingUcId ? "Salvar Alterações" : "Salvar UC no Cadastro Mestre"}
+                    {editingUcId ? "Atualizar UC no Cadastro Mestre" : "Salvar UC no Cadastro Mestre"}
                   </button>
                 </div>
               </form>
@@ -2088,22 +2085,20 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5 font-mono">
-                  {loadingMasterUcs && (
-                    <tr>
-                      <td colSpan={8} className="px-4 py-8 text-center text-gray-500">Carregando cadastro...</td>
-                    </tr>
-                  )}
-                  {!loadingMasterUcs && masterUcs
+                  {masterUcs
                     .filter(u => {
+                      if (!u) return false;
                       const query = ucSearchQuery.toLowerCase();
-                      return u.uc.toLowerCase().includes(query) ||
-                             u.codnum.toLowerCase().includes(query) ||
-                             u.secretaria.toLowerCase().includes(query) ||
-                             u.unidade_administrativa.toLowerCase().includes(query) ||
-                             u.endereco.toLowerCase().includes(query);
+                      return (u.uc || "").toLowerCase().includes(query) ||
+                             (u.codnum || "").toLowerCase().includes(query) ||
+                             (u.secretaria || "").toLowerCase().includes(query) ||
+                             (u.unidade_administrativa || "").toLowerCase().includes(query) ||
+                             (u.endereco || "").toLowerCase().includes(query);
                     })
-                    .map((item) => (
-                      <tr key={item.id} className="hover:bg-white/5 transition">
+                    .map((item) => {
+                      if (!item) return null;
+                      return (
+                        <tr key={item?.id || item?.uc} className="hover:bg-white/5 transition">
                         <td className="px-4 py-3 font-bold text-gray-100">{item.uc}</td>
                         <td className="px-4 py-3 text-indigo-400 font-semibold">{item.codnum}</td>
                         <td className="px-4 py-3">
@@ -2124,27 +2119,27 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                         </td>
                         <td className="px-4 py-3 text-center">
                           <button
-                            onClick={() => handleToggleUcStatus(item)}
+                            onClick={() => item?.id && handleToggleUcStatus(item.id)}
                             className={`px-2 py-0.5 rounded-full font-bold text-[9px] transition ${
-                              item.situacao === "Ativa"
-                                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/10 hover:bg-emerald-500/25"
+                              item?.situacao === "Ativa" 
+                                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/10 hover:bg-emerald-500/25" 
                                 : "bg-rose-500/10 text-rose-400 border border-rose-500/10 hover:bg-rose-500/25"
                             }`}
                           >
-                            {item.situacao}
+                            {item?.situacao}
                           </button>
                         </td>
                         <td className="px-4 py-3 text-center">
                           <div className="flex items-center justify-center gap-1.5">
                             <button
-                              onClick={() => handleStartEditUc(item)}
-                              className="bg-white/5 hover:bg-indigo-600/20 hover:text-indigo-400 text-gray-400 p-1.5 rounded border border-white/5 transition"
+                              onClick={() => item && handleStartEditUc(item)}
+                              className="bg-white/5 hover:bg-blue-600/20 hover:text-blue-400 text-gray-400 p-1.5 rounded border border-white/5 transition"
                               title="Editar UC do Cadastro"
                             >
                               <Edit2 className="h-3.5 w-3.5" />
                             </button>
                             <button
-                              onClick={() => handleDeleteUc(item.id, item.uc)}
+                              onClick={() => item?.id && handleDeleteUc(item.id, item.uc)}
                               className="bg-white/5 hover:bg-rose-600/20 hover:text-rose-400 text-gray-400 p-1.5 rounded border border-white/5 transition"
                               title="Excluir UC do Cadastro"
                             >
@@ -2153,8 +2148,9 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                           </div>
                         </td>
                       </tr>
-                    ))}
-                  {!loadingMasterUcs && masterUcs.filter(u => {
+                    );
+                  })}
+                  {masterUcs.filter(u => {
                     const query = ucSearchQuery.toLowerCase();
                     return u.uc.toLowerCase().includes(query) ||
                            u.codnum.toLowerCase().includes(query) ||
@@ -2210,99 +2206,57 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
               </div>
             </div>
 
-            {/* Filtro / Tipo de Concessionária panel */}
+            {/* Quick Testing templates panel */}
             <div className="bg-[#1c1c1c] p-4 rounded-xl border border-white/10 space-y-3.5 flex flex-col justify-between">
               <div className="space-y-1.5">
                 <h4 className="text-xs font-bold text-gray-200 uppercase tracking-wider flex items-center gap-1.5">
-                  <Filter className="h-4 w-4 text-indigo-400" />
-                  Filtro / Tipo de Concessionária
+                  <Info className="h-4 w-4 text-indigo-400" />
+                  Gabaritos de Simulação Oficial
                 </h4>
-                <p className="text-[10px] text-gray-400 leading-relaxed">
-                  Selecione o tipo para direcionar a leitura ou deixe em <span className="text-indigo-300 font-semibold">Automático</span> para detecção por IA:
-                </p>
+                <p className="text-[10px] text-gray-400">Clique para carregar faturas teste com fidelidade fiscal do SisPu.JP:</p>
               </div>
 
-              {/* Utility Type Selector */}
-              <div className="flex flex-col gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setSelectedUtilityFilter("AUTO")}
-                  className={`w-full text-left p-2 rounded-lg border text-[11px] font-semibold transition flex items-center justify-between ${
-                    selectedUtilityFilter === "AUTO"
-                      ? "bg-indigo-600/20 border-indigo-500/50 text-indigo-200 shadow-sm shadow-indigo-500/20"
-                      : "bg-black/30 border-white/5 text-gray-400 hover:bg-black/50 hover:text-gray-200"
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
-                    <span>Automático (Identificação por IA)</span>
-                  </div>
-                  {selectedUtilityFilter === "AUTO" && <span className="text-[9px] font-mono bg-indigo-500/30 text-indigo-300 px-1.5 py-0.5 rounded font-bold">ATIVO</span>}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSelectedUtilityFilter("CELESC")}
-                  className={`w-full text-left p-2 rounded-lg border text-[11px] font-semibold transition flex items-center justify-between ${
-                    selectedUtilityFilter === "CELESC"
-                      ? "bg-amber-500/20 border-amber-500/50 text-amber-200 shadow-sm shadow-amber-500/20"
-                      : "bg-black/30 border-white/5 text-gray-400 hover:bg-black/50 hover:text-gray-200"
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Zap className="h-3.5 w-3.5 text-amber-400" />
-                    <span>CELESC (Energia Elétrica)</span>
-                  </div>
-                  {selectedUtilityFilter === "CELESC" && <span className="text-[9px] font-mono bg-amber-500/30 text-amber-300 px-1.5 py-0.5 rounded font-bold">SELECIONADO</span>}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSelectedUtilityFilter("CASAN")}
-                  className={`w-full text-left p-2 rounded-lg border text-[11px] font-semibold transition flex items-center justify-between ${
-                    selectedUtilityFilter === "CASAN"
-                      ? "bg-blue-500/20 border-blue-500/50 text-blue-200 shadow-sm shadow-blue-500/20"
-                      : "bg-black/30 border-white/5 text-gray-400 hover:bg-black/50 hover:text-gray-200"
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Droplets className="h-3.5 w-3.5 text-blue-400" />
-                    <span>CASAN (Água e Saneamento)</span>
-                  </div>
-                  {selectedUtilityFilter === "CASAN" && <span className="text-[9px] font-mono bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-bold">SELECIONADO</span>}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSelectedUtilityFilter("TELEFONIA")}
-                  className={`w-full text-left p-2 rounded-lg border text-[11px] font-semibold transition flex items-center justify-between ${
-                    selectedUtilityFilter === "TELEFONIA"
-                      ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-200 shadow-sm shadow-emerald-500/20"
-                      : "bg-black/30 border-white/5 text-gray-400 hover:bg-black/50 hover:text-gray-200"
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Phone className="h-3.5 w-3.5 text-emerald-400" />
-                    <span>Telefonia (Fixa / Móvel)</span>
-                  </div>
-                  {selectedUtilityFilter === "TELEFONIA" && <span className="text-[9px] font-mono bg-emerald-500/30 text-emerald-300 px-1.5 py-0.5 rounded font-bold">SELECIONADO</span>}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSelectedUtilityFilter("INTERNET")}
-                  className={`w-full text-left p-2 rounded-lg border text-[11px] font-semibold transition flex items-center justify-between ${
-                    selectedUtilityFilter === "INTERNET"
-                      ? "bg-purple-500/20 border-purple-500/50 text-purple-200 shadow-sm shadow-purple-500/20"
-                      : "bg-black/30 border-white/5 text-gray-400 hover:bg-black/50 hover:text-gray-200"
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Globe className="h-3.5 w-3.5 text-purple-400" />
-                    <span>Internet / Link de Dados</span>
-                  </div>
-                  {selectedUtilityFilter === "INTERNET" && <span className="text-[9px] font-mono bg-purple-500/30 text-purple-300 px-1.5 py-0.5 rounded font-bold">SELECIONADO</span>}
-                </button>
+              <div className="flex flex-col gap-2">
+                {activeImportMode === "PDF" && (
+                  <>
+                    <button onClick={() => loadSample("CELESC_FATURA")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-white/5 hover:border-white/20 transition flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-gray-300">Fatura Individual CELESC</span>
+                      <span className="text-[9px] font-mono bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-bold">PDF</span>
+                    </button>
+                    <button onClick={() => loadSample("CASAN_FATURA")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-white/5 hover:border-white/20 transition flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-gray-300">Fatura Individual CASAN</span>
+                      <span className="text-[9px] font-mono bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-bold">PDF</span>
+                    </button>
+                  </>
+                )}
+                {activeImportMode === "IMAGE" && (
+                  <>
+                    <button onClick={() => loadSample("CELESC_FATURA")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-white/5 hover:border-white/20 transition flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-gray-300">Escaneado CELESC (OCR)</span>
+                      <span className="text-[9px] font-mono bg-indigo-500/10 text-indigo-400 px-1.5 py-0.5 rounded font-bold">PNG</span>
+                    </button>
+                    <button onClick={() => loadSample("CASAN_FATURA")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-white/5 hover:border-white/20 transition flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-gray-300">Escaneado CASAN (OCR)</span>
+                      <span className="text-[9px] font-mono bg-indigo-500/10 text-indigo-400 px-1.5 py-0.5 rounded font-bold">JPG</span>
+                    </button>
+                  </>
+                )}
+                {activeImportMode === "REPORT" && (
+                  <>
+                    <button onClick={() => loadSample("CELESC_RELATORIO")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-white/5 hover:border-white/20 transition flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-gray-300">Lote Faturamento Coletivo CELESC</span>
+                      <span className="text-[9px] font-mono bg-amber-500/10 text-amber-400 px-1.5 py-0.5 rounded font-bold">LOTE (5x)</span>
+                    </button>
+                    <button onClick={() => loadSample("CASAN_RELATORIO")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-white/5 hover:border-white/20 transition flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-gray-300">Compilado Coletivo CASAN</span>
+                      <span className="text-[9px] font-mono bg-amber-500/10 text-amber-400 px-1.5 py-0.5 rounded font-bold">LOTE (3x)</span>
+                    </button>
+                    <button onClick={() => loadSample("CASAN_CENTRALIZADA")} className="w-full text-left bg-black/40 hover:bg-black/60 p-2.5 rounded border border-emerald-500/20 hover:border-emerald-500/40 transition flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-emerald-300">CASAN Cobrança Centralizada</span>
+                      <span className="text-[9px] font-mono bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded font-bold">8 PÁG (120 Contas)</span>
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
@@ -2383,11 +2337,61 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                   Descartar Lote
                 </button>
                 <button
+                  onClick={exportBatchToCSV}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-md shadow-lg flex items-center gap-1.5 transition border border-emerald-400/30"
+                  title="Exportar dados do lote para planilha CSV"
+                >
+                  <Download className="h-4 w-4" /> Exportar CSV
+                </button>
+                <button
                   onClick={() => setShowSummaryScreen(false)}
                   className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-6 py-2 rounded-md shadow-lg flex items-center gap-1.5 transition"
                 >
                   <Eye className="h-4 w-4" /> Abrir Grade de Conferência ({loteSummary.totalFaturas})
                 </button>
+              </div>
+            </div>
+
+            {/* Consolidated Batch Info Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 bg-black/40 border border-white/10 rounded-xl p-3 shadow-inner">
+              <div className="bg-[#181818] border border-emerald-500/20 rounded-lg p-3 flex flex-col justify-between">
+                <span className="text-[10px] uppercase font-mono font-bold text-emerald-400/90 tracking-wider flex items-center gap-1.5">
+                  <Landmark className="h-3.5 w-3.5 text-emerald-400 shrink-0" /> Valor Total
+                </span>
+                <span className="text-lg sm:text-xl font-bold font-mono text-emerald-400 mt-1.5">
+                  R$ {batchMetrics.totalValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
+
+              <div className="bg-[#181818] border border-indigo-500/20 rounded-lg p-3 flex flex-col justify-between">
+                <span className="text-[10px] uppercase font-mono font-bold text-indigo-400/90 tracking-wider flex items-center gap-1.5">
+                  <FileText className="h-3.5 w-3.5 text-indigo-400 shrink-0" /> Quantidade de Lançamentos
+                </span>
+                <span className="text-lg sm:text-xl font-bold font-mono text-indigo-300 mt-1.5">
+                  {batchMetrics.totalCount} <span className="text-xs font-normal text-gray-400">faturas</span>
+                </span>
+              </div>
+
+              <div className="bg-[#181818] border border-blue-500/20 rounded-lg p-3 flex flex-col justify-between">
+                <span className="text-[10px] uppercase font-mono font-bold text-blue-400/90 tracking-wider flex items-center gap-1.5">
+                  <Sliders className="h-3.5 w-3.5 text-blue-400 shrink-0" /> Consumo Total
+                </span>
+                <span className="text-lg sm:text-xl font-bold font-mono text-blue-300 mt-1.5">
+                  {batchMetrics.totalConsumption.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-xs font-normal text-gray-400">{batchMetrics.unit}</span>
+                </span>
+              </div>
+
+              <div className={`bg-[#181818] border ${batchMetrics.isCelesc ? 'border-amber-500/30' : 'border-white/5 opacity-60'} rounded-lg p-3 flex flex-col justify-between`}>
+                <span className="text-[10px] uppercase font-mono font-bold text-amber-400/90 tracking-wider flex items-center gap-1.5">
+                  <Zap className="h-3.5 w-3.5 text-amber-400 shrink-0" /> Quantidade Injetada Total
+                </span>
+                <span className="text-lg sm:text-xl font-bold font-mono text-amber-300 mt-1.5">
+                  {batchMetrics.isCelesc ? (
+                    <>{batchMetrics.totalInjected.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-xs font-normal text-gray-400">kWh</span></>
+                  ) : (
+                    <span className="text-xs text-gray-400 font-normal">N/A (Não é CELESC)</span>
+                  )}
+                </span>
               </div>
             </div>
 
@@ -2596,12 +2600,62 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                   Descartar Lote
                 </button>
                 <button
+                  onClick={exportBatchToCSV}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-md shadow-lg flex items-center gap-1.5 transition border border-emerald-400/30"
+                  title="Exportar dados do lote para planilha CSV"
+                >
+                  <Download className="h-4 w-4" /> Exportar CSV
+                </button>
+                <button
                   onClick={handleFinalSave}
                   disabled={loading}
                   className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-6 py-2 rounded-md shadow-lg flex items-center gap-1.5 transition"
                 >
                   <Save className="h-4 w-4" /> {loading ? "Salvando..." : `Salvar Lançamentos (${sessionDocs.length})`}
                 </button>
+              </div>
+            </div>
+
+            {/* Consolidated Batch Info Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 bg-black/40 border border-white/10 rounded-xl p-3 shadow-inner">
+              <div className="bg-[#181818] border border-emerald-500/20 rounded-lg p-3 flex flex-col justify-between">
+                <span className="text-[10px] uppercase font-mono font-bold text-emerald-400/90 tracking-wider flex items-center gap-1.5">
+                  <Landmark className="h-3.5 w-3.5 text-emerald-400 shrink-0" /> Valor Total
+                </span>
+                <span className="text-lg sm:text-xl font-bold font-mono text-emerald-400 mt-1.5">
+                  R$ {batchMetrics.totalValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
+
+              <div className="bg-[#181818] border border-indigo-500/20 rounded-lg p-3 flex flex-col justify-between">
+                <span className="text-[10px] uppercase font-mono font-bold text-indigo-400/90 tracking-wider flex items-center gap-1.5">
+                  <FileText className="h-3.5 w-3.5 text-indigo-400 shrink-0" /> Quantidade de Lançamentos
+                </span>
+                <span className="text-lg sm:text-xl font-bold font-mono text-indigo-300 mt-1.5">
+                  {batchMetrics.totalCount} <span className="text-xs font-normal text-gray-400">faturas</span>
+                </span>
+              </div>
+
+              <div className="bg-[#181818] border border-blue-500/20 rounded-lg p-3 flex flex-col justify-between">
+                <span className="text-[10px] uppercase font-mono font-bold text-blue-400/90 tracking-wider flex items-center gap-1.5">
+                  <Sliders className="h-3.5 w-3.5 text-blue-400 shrink-0" /> Consumo Total
+                </span>
+                <span className="text-lg sm:text-xl font-bold font-mono text-blue-300 mt-1.5">
+                  {batchMetrics.totalConsumption.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-xs font-normal text-gray-400">{batchMetrics.unit}</span>
+                </span>
+              </div>
+
+              <div className={`bg-[#181818] border ${batchMetrics.isCelesc ? 'border-amber-500/30' : 'border-white/5 opacity-60'} rounded-lg p-3 flex flex-col justify-between`}>
+                <span className="text-[10px] uppercase font-mono font-bold text-amber-400/90 tracking-wider flex items-center gap-1.5">
+                  <Zap className="h-3.5 w-3.5 text-amber-400 shrink-0" /> Quantidade Injetada Total
+                </span>
+                <span className="text-lg sm:text-xl font-bold font-mono text-amber-300 mt-1.5">
+                  {batchMetrics.isCelesc ? (
+                    <>{batchMetrics.totalInjected.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-xs font-normal text-gray-400">kWh</span></>
+                  ) : (
+                    <span className="text-xs text-gray-400 font-normal">N/A (Não é CELESC)</span>
+                  )}
+                </span>
               </div>
             </div>
 
@@ -2612,6 +2666,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                     <th className="px-4 py-3">Pág/ID</th>
                     <th className="px-4 py-3">Concessionária</th>
                     <th className="px-4 py-3">Contrato CODNUM</th>
+                    <th className="px-4 py-3">Unidade Gestora</th>
                     <th className="px-4 py-3 text-right">Consumo</th>
                     <th className="px-4 py-3 text-right">Valor Total</th>
                     <th className="px-4 py-3 text-center">Status</th>
@@ -2620,12 +2675,15 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                 </thead>
                 <tbody className="divide-y divide-white/5">
                   {sessionDocs.map((doc, index) => {
+                    if (!doc) return null;
                     const pageNum = index + 1;
-                    const isAusente = (doc.dados_extraidos as any).isAusente;
+                    const isAusente = (doc.dados_extraidos as any)?.isAusente;
                     const isIgnored = doc.status === "IGNORADA" && !isAusente;
+                    const unidadeNome = (doc.dados_extraidos as any)?.unidade_nome || "NÃO LOCALIZADA";
+                    const isNaoLocalizada = !unidadeNome || unidadeNome === "NÃO LOCALIZADA";
                     return (
                       <tr 
-                        key={doc.id} 
+                        key={doc?.id || `doc-${index}`} 
                         onDoubleClick={() => !isAusente && handleDocEdit(doc)}
                         className={`transition select-none group ${
                           isAusente 
@@ -2653,6 +2711,26 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                           </span>
                         </td>
                         <td className="px-4 py-3 font-mono font-bold">{doc.dados_extraidos.codigo_numero}</td>
+                        <td className="px-4 py-3">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedDocForUnidade(doc);
+                            }}
+                            className={`px-2 py-1 rounded border text-left text-xs font-semibold transition flex items-center gap-1.5 group ${
+                              !isNaoLocalizada
+                                ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20 hover:bg-emerald-500/25'
+                                : 'bg-rose-500/15 text-rose-300 border-rose-500/30 hover:bg-rose-500/30 animate-pulse'
+                            }`}
+                            title="Clique para vincular ou alterar a Unidade Gestora em tempo real"
+                          >
+                            <Building2 className="h-3 w-3 shrink-0" />
+                            <span className="truncate max-w-[160px]">
+                              {unidadeNome}
+                            </span>
+                          </button>
+                        </td>
                         <td className="px-4 py-3 text-right font-mono font-bold">
                           {isAusente ? (
                             <span className="text-rose-400/70 text-[10px]">AUSENTE</span>
@@ -2692,7 +2770,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                 </button>
                                 
                                 <button
-                                  onClick={() => handleApproveDoc(doc.id)}
+                                  onClick={() => doc?.id && handleApproveDoc(doc.id)}
                                   className={`p-1.5 rounded border transition ${
                                     doc.status === 'VALIDADO'
                                       ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30"
@@ -2704,7 +2782,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                 </button>
 
                                 <button
-                                  onClick={() => handleToggleIgnoreDoc(doc.id)}
+                                  onClick={() => doc?.id && handleToggleIgnoreDoc(doc.id)}
                                   className={`p-1.5 rounded border transition ${
                                     doc.status === 'IGNORADA'
                                       ? "bg-amber-500/20 text-amber-400 border-amber-500/20 hover:bg-amber-500/30"
@@ -2716,7 +2794,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                 </button>
 
                                 <button
-                                  onClick={() => handleDeleteDoc(doc.id, doc.nome_arquivo)}
+                                  onClick={() => doc?.id && handleDeleteDoc(doc.id, doc.nome_arquivo)}
                                   className="bg-white/5 hover:bg-rose-600/20 hover:text-rose-400 text-gray-400 p-1.5 rounded border border-white/5 transition"
                                   title="Excluir Lançamento"
                                 >
@@ -2837,24 +2915,10 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                 <div className="space-y-4">
                   {/* High-Fidelity Position Metadata (Etapa 9) */}
                   <div className="bg-indigo-500/10 border border-indigo-500/20 p-3 rounded-lg text-xs space-y-2">
-                    <div className="flex justify-between items-center">
-                      <span className="font-bold text-indigo-300 flex items-center gap-1.5 font-mono uppercase text-[9px]">
-                        <Info className="h-3.5 w-3.5 text-indigo-400" />
-                        Rastreabilidade de Importação (FaturaImportada)
-                      </span>
-                      {(!activeDoc.dados_extraidos?.secretaria_id && !activeDoc.dados_extraidos?.secretaria_nome) && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedSecId(secretariasList[0]?.id || "");
-                            setShowLinkSecModal(true);
-                          }}
-                          className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[10px] rounded flex items-center gap-1 transition shadow-sm"
-                        >
-                          🔗 Vincular Secretaria
-                        </button>
-                      )}
-                    </div>
+                    <span className="font-bold text-indigo-300 flex items-center gap-1.5 font-mono uppercase text-[9px]">
+                      <Info className="h-3.5 w-3.5 text-indigo-400" />
+                      Rastreabilidade de Importação (FaturaImportada)
+                    </span>
                     <div className="grid grid-cols-3 gap-2 text-[10px] font-mono text-gray-300">
                       <div className="bg-black/40 p-2 rounded border border-white/5 text-center">
                         <span className="text-gray-500 block text-[8px] uppercase">Pág. PDF</span>
@@ -3094,14 +3158,17 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                               );
                             }
 
-                            return validItens.map((item: any) => (
-                              <tr key={item.id} className="hover:bg-white/5 transition-colors">
+                            return validItens.map((item: any, itemIdx: number) => {
+                              if (!item) return null;
+                              const itemId = item.id || `item-${itemIdx}`;
+                              return (
+                                <tr key={itemId} className="hover:bg-white/5 transition-colors">
                                 {/* 1. Descrição */}
                                 <td className="p-0.5 border-r border-white/5">
                                   <input
                                     type="text"
                                     value={item.descricao || ""}
-                                    onChange={(e) => handleItemFieldChange(item.id, "descricao", e.target.value)}
+                                    onChange={(e) => handleItemFieldChange(itemId, "descricao", e.target.value)}
                                     className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-gray-200 outline-none text-[10px] truncate"
                                     title={item.descricao}
                                   />
@@ -3112,7 +3179,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                     type="number"
                                     step="0.001"
                                     value={typeof item.quantidade === 'number' ? Number(item.quantidade.toFixed(3)) : (item.quantidade ?? 0)}
-                                    onChange={(e) => handleItemFieldChange(item.id, "quantidade", e.target.value)}
+                                    onChange={(e) => handleItemFieldChange(itemId, "quantidade", e.target.value)}
                                     className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                   />
                                 </td>
@@ -3122,7 +3189,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                     type="number"
                                     step="any"
                                     value={item.valor_unitario ?? 0}
-                                    onChange={(e) => handleItemFieldChange(item.id, "valor_unitario", e.target.value)}
+                                    onChange={(e) => handleItemFieldChange(itemId, "valor_unitario", e.target.value)}
                                     className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                   />
                                 </td>
@@ -3132,7 +3199,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                     type="number"
                                     step="0.01"
                                     value={typeof item.valor === 'number' ? Number(item.valor.toFixed(2)) : (item.valor ?? 0)}
-                                    onChange={(e) => handleItemFieldChange(item.id, "valor", e.target.value)}
+                                    onChange={(e) => handleItemFieldChange(itemId, "valor", e.target.value)}
                                     className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-indigo-300 font-semibold outline-none text-[10px]"
                                   />
                                 </td>
@@ -3142,7 +3209,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                     type="number"
                                     step="0.01"
                                     value={typeof item.pis === 'number' ? Number(item.pis.toFixed(2)) : (item.pis ?? 0)}
-                                    onChange={(e) => handleItemFieldChange(item.id, "pis", e.target.value)}
+                                    onChange={(e) => handleItemFieldChange(itemId, "pis", e.target.value)}
                                     className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                     title="COFINS/PIS"
                                   />
@@ -3153,7 +3220,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                     type="number"
                                     step="0.01"
                                     value={typeof item.icms === 'number' ? Number(item.icms.toFixed(2)) : (item.icms ?? 0)}
-                                    onChange={(e) => handleItemFieldChange(item.id, "icms", e.target.value)}
+                                    onChange={(e) => handleItemFieldChange(itemId, "icms", e.target.value)}
                                     className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                     title="ICMS"
                                   />
@@ -3164,7 +3231,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                     type="number"
                                     step="0.01"
                                     value={item.irpj_pct ?? 0}
-                                    onChange={(e) => handleItemFieldChange(item.id, "irpj_pct", e.target.value)}
+                                    onChange={(e) => handleItemFieldChange(itemId, "irpj_pct", e.target.value)}
                                     className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-center font-mono text-gray-400 outline-none text-[10px]"
                                     title="IRPJ (%)"
                                   />
@@ -3175,7 +3242,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                     type="number"
                                     step="0.01"
                                     value={typeof item.irpj_val === 'number' ? Number(item.irpj_val.toFixed(2)) : (item.irpj_val ?? (item.cofins ?? 0))}
-                                    onChange={(e) => handleItemFieldChange(item.id, "irpj_val", e.target.value)}
+                                    onChange={(e) => handleItemFieldChange(itemId, "irpj_val", e.target.value)}
                                     className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-amber-300 outline-none text-[10px]"
                                     title="IRPJ Retido"
                                   />
@@ -3186,7 +3253,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                     type="number"
                                     step="0.01"
                                     value={typeof item.pis_ret === 'number' ? Number(item.pis_ret.toFixed(2)) : (item.pis_ret ?? 0)}
-                                    onChange={(e) => handleItemFieldChange(item.id, "pis_ret", e.target.value)}
+                                    onChange={(e) => handleItemFieldChange(itemId, "pis_ret", e.target.value)}
                                     className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                     title="PIS Retido"
                                   />
@@ -3197,7 +3264,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                     type="number"
                                     step="0.01"
                                     value={typeof item.cofins_ret === 'number' ? Number(item.cofins_ret.toFixed(2)) : (item.cofins_ret ?? 0)}
-                                    onChange={(e) => handleItemFieldChange(item.id, "cofins_ret", e.target.value)}
+                                    onChange={(e) => handleItemFieldChange(itemId, "cofins_ret", e.target.value)}
                                     className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                     title="COFINS Retido"
                                   />
@@ -3208,7 +3275,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                     type="number"
                                     step="0.01"
                                     value={typeof item.csll_ret === 'number' ? Number(item.csll_ret.toFixed(2)) : (item.csll_ret ?? 0)}
-                                    onChange={(e) => handleItemFieldChange(item.id, "csll_ret", e.target.value)}
+                                    onChange={(e) => handleItemFieldChange(itemId, "csll_ret", e.target.value)}
                                     className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                     title="CSLL Retido"
                                   />
@@ -3216,7 +3283,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                 {/* Action cell */}
                                 <td className="p-0.5 text-center">
                                   <button
-                                    onClick={() => handleDeleteItem(item.id)}
+                                    onClick={() => handleDeleteItem(itemId)}
                                     className="text-gray-500 hover:text-rose-400 p-1 transition"
                                     title="Excluir item"
                                   >
@@ -3224,8 +3291,9 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                                   </button>
                                 </td>
                               </tr>
-                            ));
-                          })()}
+                            );
+                          });
+                        })()}
                         </tbody>
                       </table>
                     </div>
@@ -3366,92 +3434,49 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
         </div>
       )}
 
-      {/* MODAL: Vincular Secretaria (Parte A) */}
-      {showLinkSecModal && activeDoc && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
-          <div className="bg-[#121212] border border-white/10 rounded-xl p-5 max-w-md w-full space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
-            <div className="flex justify-between items-center border-b border-white/10 pb-3">
-              <h5 className="font-bold text-sm text-white uppercase tracking-wide flex items-center gap-2">
-                <span>🔗 Vincular Secretaria à Fatura</span>
-              </h5>
-              <button 
-                onClick={() => setShowLinkSecModal(false)}
-                className="text-gray-400 hover:text-white"
-              >
-                ✕
-              </button>
-            </div>
+      {/* Modal para Selecionar Unidade Gestora diretamente na tabela do Relatório */}
+      {selectedDocForUnidade && (
+        <UnidadeSelectorModal
+          isOpen={!!selectedDocForUnidade}
+          codigoNumero={selectedDocForUnidade.dados_extraidos?.codigo_numero}
+          currentUnidadeNome={(selectedDocForUnidade.dados_extraidos as any)?.unidade_nome || "NÃO LOCALIZADA"}
+          unidades={allUnidades}
+          onClose={() => setSelectedDocForUnidade(null)}
+          onSelectUnidade={async (unidadeId, unidadeNome) => {
+            if (!selectedDocForUnidade) return;
 
-            <p className="text-xs text-gray-300">
-              Selecione a Secretaria Municipal para associar a esta fatura/lançamento (UC/CODNUM: <strong className="text-indigo-400 font-mono">{activeDoc.dados_extraidos?.codigo_numero || "N/A"}</strong>):
-            </p>
-
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-mono text-gray-400 uppercase">Secretaria Municipal</label>
-              <select
-                value={selectedSecId}
-                onChange={(e) => setSelectedSecId(e.target.value)}
-                className="w-full bg-[#1a1a1a] border border-white/15 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-semibold"
-              >
-                <option value="">Selecione uma Secretaria...</option>
-                {secretariasList.map(sec => (
-                  <option key={sec.id} value={sec.id}>
-                    {sec.nome} {sec.codigo_legado ? `(Cód: ${sec.codigo_legado})` : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowLinkSecModal(false)}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-800 hover:bg-gray-700 text-gray-300"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={!selectedSecId || linkingSec}
-                onClick={async () => {
-                  setLinkingSec(true);
-                  try {
-                    const res = await fetch(`/api/documentos/${activeDoc.id}/vincular_secretaria`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ secretaria_id: selectedSecId })
-                    });
-                    if (res.ok) {
-                      const data = await res.json();
-                      const secFound = secretariasList.find(s => s.id === selectedSecId);
-                      setActiveDoc((prev: any) => ({
-                        ...prev,
-                        dados_extraidos: {
-                          ...prev.dados_extraidos,
-                          secretaria_id: selectedSecId,
-                          secretaria_nome: secFound?.nome || data.secretaria_nome
-                        }
-                      }));
-                      setMessage({ type: "success", text: `Secretaria "${secFound?.nome}" vinculada com sucesso!` });
-                      setShowLinkSecModal(false);
-                      if (onDocumentProcessed) onDocumentProcessed();
-                    } else {
-                      const err = await res.json();
-                      setMessage({ type: "error", text: err.error || "Erro ao vincular secretaria." });
-                    }
-                  } catch (err: any) {
-                    setMessage({ type: "error", text: "Erro de conexão ao vincular secretaria." });
-                  } finally {
-                    setLinkingSec(false);
+            // 1. Local update in sessionDocs
+            setSessionDocs(prev => prev.map(d => {
+              if (d.id === selectedDocForUnidade.id) {
+                return {
+                  ...d,
+                  dados_extraidos: {
+                    ...d.dados_extraidos,
+                    unidade_id: unidadeId,
+                    unidade_nome: unidadeNome
                   }
-                }}
-                className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50 transition shadow"
-              >
-                {linkingSec ? "Vinculando..." : "Confirmar Vinculação"}
-              </button>
-            </div>
-          </div>
-        </div>
+                };
+              }
+              return d;
+            }));
+
+            // 2. Persist binding in DB for future extractions
+            try {
+              await fetch('/api/vincular-unidade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  codigo_numero: selectedDocForUnidade.dados_extraidos.codigo_numero,
+                  unidade_id: unidadeId
+                })
+              });
+            } catch (err) {
+              console.error("Erro ao vincular unidade:", err);
+            }
+
+            setSelectedDocForUnidade(null);
+          }}
+        />
       )}
 
     </div>

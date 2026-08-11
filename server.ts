@@ -2,11 +2,12 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import dotenv from "dotenv";
+import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
-import {
-  Usuario, Secretaria, Unidade, Despesa, ItemDespesa,
-  Lancamento, Pessoa, ContatoEmail, LogError, AuditoriaRegistro,
-  DocumentoProcessado, CadastroMestreUC
+import { 
+  Usuario, Secretaria, Unidade, Despesa, ItemDespesa, 
+  Lancamento, Pessoa, ContatoEmail, LogError, AuditoriaRegistro, 
+  DocumentoProcessado 
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
 import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool } from "./src/db/postgres";
@@ -14,7 +15,7 @@ import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, rese
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 // Initialize Gemini SDK with telemetry header as required by instructions
 const ai = new GoogleGenAI({
@@ -28,15 +29,6 @@ const ai = new GoogleGenAI({
 
 // JSON Middleware
 app.use(express.json({ limit: '10mb' }));
-
-// Version Check Route for Deploy Sync Test
-app.get("/api/version-check", (req, res) => {
-  res.json({
-    version: "TEST_AUTO_DEPLOY_CHECK_2026_08_03",
-    timestamp: new Date().toISOString(),
-    env: process.env.NODE_ENV || "development"
-  });
-});
 
 // In-Memory/JSON File Database State (Simulating PostgreSQL with triggers)
 const DB_FILE = path.join(process.cwd(), "sispu_db.json");
@@ -53,12 +45,13 @@ interface DatabaseState {
   logs_erros: LogError[];
   auditoria_registros: AuditoriaRegistro[];
   documentos_processados: DocumentoProcessado[];
-  cadastro_mestre_ucs: CadastroMestreUC[];
 }
 
-// Initial Empty DB State (No auto-seeding)
-const emptyDBState: DatabaseState = {
-  usuarios: [],
+// Initial Seed Data (strictly empty, respecting rule: no mock data)
+const initialDBState: DatabaseState = {
+  usuarios: [
+    { id: "1", login: "admin", nome: "Administrador", ativo: true, criado_em: new Date().toISOString() }
+  ],
   secretarias: [],
   unidades: [],
   despesas: [],
@@ -68,8 +61,7 @@ const emptyDBState: DatabaseState = {
   contatos_email: [],
   logs_erros: [],
   auditoria_registros: [],
-  documentos_processados: [],
-  cadastro_mestre_ucs: []
+  documentos_processados: []
 };
 
 // Database utility functions with automatic write persistence (PostgreSQL + Local Cache)
@@ -80,28 +72,18 @@ function loadDB(): DatabaseState {
       return JSON.parse(content);
     }
   } catch (err) {
-    console.error("Error loading DB file:", err);
+    console.error("Error loading DB file, fallback to memory seed:", err);
   }
-  return { ...emptyDBState };
+  // If doesn't exist, seed and save
+  saveDB(initialDBState);
+  return initialDBState;
 }
-
-// Guards against wiping real Neon data: saveAllStateToPostgres() deletes from every table
-// anything whose id isn't in the in-memory arrays it's given. Right after a cold start (or a
-// fresh /api/db-config connection), `db` is still the empty seed state until the real rows are
-// pulled back from Postgres — a save that races ahead of that pull would look like "the user
-// deleted everything" and drop every table. This flag only turns true once we know `db` truly
-// reflects Postgres's contents, so the sync-by-diff logic never fires against a hollow cache.
-let postgresHydrated = false;
 
 function saveDB(state: DatabaseState) {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
   } catch (err) {
     console.error("Error saving DB file:", err);
-  }
-  if (!postgresHydrated) {
-    console.warn("[DB] Sincronização com o PostgreSQL adiada: estado local ainda não foi confirmado contra o banco (evitando apagar dados reais).");
-    return;
   }
   // Asynchronously persist state to PostgreSQL
   saveAllStateToPostgres(state).catch(err => {
@@ -113,18 +95,12 @@ function saveDB(state: DatabaseState) {
 let db: DatabaseState = loadDB();
 
 async function initDatabasePersistence() {
-  try {
-    const initialized = await initPostgresSchema();
-    if (!initialized) {
-      // No DATABASE_URL configured (or Postgres unreachable) — nothing to protect, the JSON
-      // file is the only store, so saves are safe immediately.
-      postgresHydrated = true;
-      return;
-    }
+  const initialized = await initPostgresSchema();
+  if (initialized) {
     const pgState = await loadStateFromPostgres();
-    if (pgState) {
+    if (pgState && (pgState.secretarias?.length > 0 || pgState.documentos_processados?.length > 0)) {
       db = {
-        usuarios: pgState.usuarios?.length > 0 ? pgState.usuarios : db.usuarios,
+        usuarios: pgState.usuarios || [],
         secretarias: pgState.secretarias || [],
         unidades: pgState.unidades || [],
         despesas: pgState.despesas || [],
@@ -135,29 +111,22 @@ async function initDatabasePersistence() {
         logs_erros: pgState.logs_erros || [],
         auditoria_registros: pgState.auditoria_registros || [],
         documentos_processados: pgState.documentos_processados || [],
-        cadastro_mestre_ucs: pgState.cadastro_mestre_ucs || [],
       };
       fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
-      console.log("[DB] Estado carregado do PostgreSQL (Neon) com sucesso (sem re-seeding automático)!");
-      // Only now does `db` provably match Postgres — safe to let saves sync/delete by diff.
-      postgresHydrated = true;
+      console.log("[DB] Estado restaurado com sucesso diretamente do PostgreSQL (Neon)!");
     } else {
-      console.error("[DB] Não foi possível confirmar o estado do PostgreSQL; mantendo sincronização em pausa até o próximo carregamento bem-sucedido.");
+      console.log("[DB] PostgreSQL está sem registros. Semeando dados iniciais no Neon...");
+      await saveAllStateToPostgres(db);
     }
-  } catch (err) {
-    console.error("[DB] Erro ao inicializar banco PostgreSQL:", err);
   }
+  autoSyncOrphanRecords();
 }
 
 
 // Simulated PostgreSQL Trigger-based Auditor
 function logAudit(tabela: string, pk: string, acao: 'INSERT' | 'UPDATE' | 'DELETE', usuario: string, antigo: any, novo: any) {
-  const maxId = db.auditoria_registros.reduce((max, item) => {
-    const num = parseInt(item.id, 10);
-    return !isNaN(num) && num > max ? num : max;
-  }, 0);
   const auditRow: AuditoriaRegistro = {
-    id: (maxId + 1).toString(),
+    id: (db.auditoria_registros.length + 1).toString(),
     tabela,
     registro_pk: pk,
     acao,
@@ -183,6 +152,212 @@ function logTechnicalError(origem: string, mensagem: string, arquivo: string, li
   };
   db.logs_erros.unshift(logRow);
   saveDB(db);
+}
+
+// Helper function to guarantee Unidade Gestora and Contrato CODNUM creation and linking
+function ensureUnidadeAndContract(params: {
+  codigo_numero: string;
+  concessionaria?: 'CASAN' | 'CELESC';
+  unidade_nome?: string;
+  endereco?: string;
+  medidor?: string;
+  usuario?: string;
+}) {
+  const cleanCodnum = (params.codigo_numero || "").trim().toUpperCase();
+  if (!cleanCodnum || cleanCodnum === "DESCONHECIDO" || cleanCodnum === "NÃO LOCALIZADO" || cleanCodnum.startsWith("AUTO-")) {
+    return null;
+  }
+
+  const usuario = params.usuario || "sistema";
+
+  // 1. Infer Concessionária ('CASAN' or 'CELESC')
+  let concessionaria: 'CASAN' | 'CELESC' = params.concessionaria || 'CELESC';
+  const nameOrAddrText = `${params.unidade_nome || ''} ${params.endereco || ''} ${cleanCodnum}`.toUpperCase();
+  if (
+    concessionaria === 'CASAN' ||
+    nameOrAddrText.includes('CASAN') ||
+    nameOrAddrText.includes('ÁGUA') ||
+    nameOrAddrText.includes('AGUA') ||
+    nameOrAddrText.includes('ESGOTO') ||
+    nameOrAddrText.includes('CATARINENSE') ||
+    nameOrAddrText.includes('SANEAMENTO')
+  ) {
+    concessionaria = 'CASAN';
+  }
+
+  // Ensure Tipos de Conta exist
+  let despesaCelesc = db.despesas.find(d => d.id === "1" || d.descricao.includes("CELESC") || d.descricao.includes("ENERGIA"));
+  if (!despesaCelesc) {
+    despesaCelesc = { id: "1", descricao: "ENERGIA ELÉTRICA (CELESC)", ativo: true, criado_em: new Date().toISOString(), atualizado_em: new Date().toISOString() };
+    db.despesas.push(despesaCelesc);
+  }
+  let despesaCasan = db.despesas.find(d => d.id === "2" || d.descricao.includes("CASAN") || d.descricao.includes("ÁGUA") || d.descricao.includes("AGUA"));
+  if (!despesaCasan) {
+    despesaCasan = { id: "2", descricao: "ÁGUA E ESGOTO (CASAN)", ativo: true, criado_em: new Date().toISOString(), atualizado_em: new Date().toISOString() };
+    db.despesas.push(despesaCasan);
+  }
+
+  const targetDespesaId = concessionaria === 'CASAN' ? despesaCasan.id : despesaCelesc.id;
+
+  // Ensure default Secretaria
+  let defaultSec = db.secretarias.find(s => s.ativo);
+  if (!defaultSec) {
+    defaultSec = {
+      id: "1",
+      nome: "SECRETARIA GERAL / A CLASSIFICAR",
+      sigla: "SEC-GERAL",
+      ativo: true,
+      criado_em: new Date().toISOString(),
+      atualizado_em: new Date().toISOString()
+    };
+    db.secretarias.push(defaultSec);
+  }
+
+  // 2. Find or Create Unidade Gestora
+  let unidade = db.unidades.find(u => 
+    (u.uc && u.uc.trim().toUpperCase() === cleanCodnum) || 
+    (u.codnum && u.codnum.trim().toUpperCase() === cleanCodnum)
+  );
+
+  const cleanEndereco = (params.endereco || "").trim().toUpperCase();
+  const cleanNomeUnidade = (params.unidade_nome || "").trim().toUpperCase();
+
+  if (unidade) {
+    let updated = false;
+    if ((!unidade.endereco || unidade.endereco === "N/A" || unidade.endereco === "ENDEREÇO A CADASTRAR") && cleanEndereco && cleanEndereco !== "N/A") {
+      unidade.endereco = cleanEndereco;
+      updated = true;
+    }
+    if ((!unidade.nome || unidade.nome === "N/A" || unidade.nome.startsWith("UNIDADE UC") || unidade.nome.startsWith("UNIDADE ")) && cleanNomeUnidade && cleanNomeUnidade !== "N/A") {
+      unidade.nome = cleanNomeUnidade;
+      updated = true;
+    }
+    if (!unidade.concessionaria || unidade.concessionaria !== concessionaria) {
+      unidade.concessionaria = concessionaria;
+      updated = true;
+    }
+    if (updated) {
+      unidade.atualizado_em = new Date().toISOString();
+      logAudit("unidades", unidade.id, "UPDATE", usuario, null, unidade);
+    }
+  } else {
+    const newUnidadeId = (Math.max(...db.unidades.map(u => (u?.id ? parseInt(u.id) : 0) || 0), 0) + 1).toString();
+    const finalNome = (cleanNomeUnidade && cleanNomeUnidade !== "N/A") ? cleanNomeUnidade : `UNIDADE ${cleanCodnum}`;
+    const finalEndereco = (cleanEndereco && cleanEndereco !== "N/A") ? cleanEndereco : "ENDEREÇO A CADASTRAR";
+    
+    unidade = {
+      id: newUnidadeId,
+      secretaria_id: defaultSec.id,
+      nome: finalNome,
+      uc: cleanCodnum,
+      codnum: cleanCodnum,
+      concessionaria: concessionaria,
+      endereco: finalEndereco,
+      ativo: true,
+      criado_em: new Date().toISOString(),
+      atualizado_em: new Date().toISOString()
+    };
+    db.unidades.push(unidade);
+    logAudit("unidades", newUnidadeId, "INSERT", usuario, null, unidade);
+  }
+
+  // 3. Find or Create ItemDespesa (Contrato CODNUM)
+  let item = db.itens_despesas.find(it => it.codigo_numero && it.codigo_numero.trim().toUpperCase() === cleanCodnum);
+
+  if (item) {
+    let updated = false;
+    if (!item.unidade_id || item.unidade_id !== unidade.id) {
+      item.unidade_id = unidade.id;
+      updated = true;
+    }
+    if (!item.despesa_id || item.despesa_id !== targetDespesaId) {
+      item.despesa_id = targetDespesaId;
+      updated = true;
+    }
+    if (params.medidor && params.medidor !== "N/A" && (!item.medidor || item.medidor === "N/A")) {
+      item.medidor = params.medidor;
+      updated = true;
+    }
+    if (updated) {
+      item.atualizado_em = new Date().toISOString();
+      logAudit("itens_despesas", item.id, "UPDATE", usuario, null, item);
+    }
+  } else {
+    const newItemId = (Math.max(...db.itens_despesas.map(it => (it?.id ? parseInt(it.id) : 0) || 0), 0) + 1).toString();
+    item = {
+      id: newItemId,
+      codigo_numero: cleanCodnum,
+      despesa_id: targetDespesaId,
+      unidade_id: unidade.id,
+      medidor: params.medidor || "N/A",
+      ativo: true,
+      criado_em: new Date().toISOString(),
+      atualizado_em: new Date().toISOString()
+    };
+    db.itens_despesas.push(item);
+    logAudit("itens_despesas", newItemId, "INSERT", usuario, null, item);
+  }
+
+  return { unidade, item };
+}
+
+// Function to automatically sync and create Unidades & Contratos for all existing documents and launches
+function autoSyncOrphanRecords() {
+  let hasChanges = false;
+
+  // Sync from documentos_processados
+  (db.documentos_processados || []).forEach(doc => {
+    if (doc?.dados_extraidos?.codigo_numero) {
+      const isCasan = Boolean(
+        (doc.layout && doc.layout.includes("CASAN")) ||
+        (doc.nome_arquivo && /casan|catarinense/i.test(doc.nome_arquivo)) ||
+        (doc.dados_extraidos.unidade_nome && /casan/i.test(doc.dados_extraidos.unidade_nome))
+      );
+      const res = ensureUnidadeAndContract({
+        codigo_numero: doc.dados_extraidos.codigo_numero,
+        concessionaria: isCasan ? 'CASAN' : 'CELESC',
+        unidade_nome: doc.dados_extraidos.unidade_nome,
+        endereco: doc.dados_extraidos.endereco,
+        medidor: doc.dados_extraidos.medidor
+      });
+      if (res) hasChanges = true;
+    }
+  });
+
+  // Sync from lancamentos
+  (db.lancamentos || []).forEach(lanc => {
+    const matchingDoc = db.documentos_processados?.find(d => 
+      d.dados_extraidos && d.dados_extraidos.codigo_numero && 
+      d.dados_extraidos.mes_ano?.substring(0,7) === lanc.mes_ano?.substring(0,7)
+    );
+    const item = db.itens_despesas.find(it => it.id === lanc.item_despesa_id);
+    const codnum = item?.codigo_numero || matchingDoc?.dados_extraidos?.codigo_numero;
+
+    if (codnum) {
+      const isCasan = Boolean(
+        (matchingDoc?.layout && matchingDoc.layout.includes("CASAN")) ||
+        (matchingDoc?.nome_arquivo && /casan|catarinense/i.test(matchingDoc.nome_arquivo)) ||
+        (item?.despesa_id === "2")
+      );
+      const res = ensureUnidadeAndContract({
+        codigo_numero: codnum,
+        concessionaria: isCasan ? 'CASAN' : 'CELESC',
+        unidade_nome: matchingDoc?.dados_extraidos?.unidade_nome,
+        endereco: matchingDoc?.dados_extraidos?.endereco,
+        medidor: matchingDoc?.dados_extraidos?.medidor || item?.medidor
+      });
+      if (res && res.item) {
+        if (lanc.item_despesa_id !== res.item.id) {
+          lanc.item_despesa_id = res.item.id;
+          hasChanges = true;
+        }
+      }
+    }
+  });
+
+  if (hasChanges) {
+    saveDB(db);
+  }
 }
 
 // REST API DEFINITIONS - Mirroring PySide6 repositories and FastAPI routes
@@ -372,7 +547,7 @@ app.post("/api/secretarias", (req, res) => {
     return res.status(400).json({ error: "Já existe uma secretaria com este nome." });
   }
 
-  const newId = (Math.max(...db.secretarias.map(s => parseInt(s.id)), 0) + 1).toString();
+  const newId = (Math.max(...db.secretarias.map(s => (s?.id ? parseInt(s.id) : 0) || 0), 0) + 1).toString();
   const newSecretaria: Secretaria = {
     id: newId,
     codigo_legado: codigo_legado ? parseInt(codigo_legado) : undefined,
@@ -439,31 +614,10 @@ app.delete("/api/secretarias/:id", (req, res) => {
     return res.status(404).json({ error: "Secretaria não encontrada." });
   }
 
-  // Relational integrity check: check if any unidades, itens, lancamentos or documentos belong to this secretaria
-  const unidadesDaSec = db.unidades.filter(u => String(u.secretaria_id) === String(id));
-  const unidadeIds = unidadesDaSec.map(u => String(u.id));
-
-  const itensDaSec = db.itens_despesas.filter(it => 
-    unidadeIds.includes(String(it.unidade_id)) || String((it as any).secretaria_id) === String(id)
-  );
-  const itemIds = itensDaSec.map(it => String(it.id));
-  const itemCodnums = itensDaSec.map(it => it.codigo_numero).filter(Boolean);
-
-  const hasLancamentos = db.lancamentos.some(l => 
-    itemIds.includes(String(l.item_despesa_id)) || 
-    String((l as any).secretaria_id) === String(id) || 
-    ((l as any).unidade_id && unidadeIds.includes(String((l as any).unidade_id)))
-  );
-
-  const hasDocumentos = db.documentos_processados.some(d => {
-    const ext = (d.dados_extraidos || {}) as any;
-    if (String(ext.secretaria_id) === String(id)) return true;
-    if (ext.codigo_numero && itemCodnums.includes(ext.codigo_numero)) return true;
-    return false;
-  });
-
-  if (hasLancamentos || hasDocumentos || unidadesDaSec.length > 0) {
-    return res.status(400).json({ error: "Não é possível excluir esta secretaria pois há faturas/lançamentos vinculados a ela." });
+  // Check references in unidades
+  const hasUnidades = db.unidades.some(u => String(u.secretaria_id) === String(id));
+  if (hasUnidades) {
+    return res.status(400).json({ error: "Não é possível excluir esta secretaria pois ela possui unidades vinculadas." });
   }
 
   const oldVal = { ...db.secretarias[index] };
@@ -475,104 +629,6 @@ app.delete("/api/secretarias/:id", (req, res) => {
   res.json({ message: "Secretaria excluída com sucesso." });
 });
 
-// --- CADASTRO MESTRE DE UNIDADES CONSUMIDORAS (UCs) ---
-// Antes vivia só no localStorage do navegador com uma lista fixa de exemplos no código-fonte
-// (DEFAULT_MASTER_UCS): qualquer exclusão sumia ao trocar de navegador/dispositivo, e ao reabrir
-// o sistema em um contexto sem esse localStorage os exemplos fabricados voltavam a aparecer como
-// se fossem cadastros reais. Agora é uma entidade normal, persistida no mesmo banco (JSON local +
-// Postgres/Neon) que todo o resto do sistema.
-app.get("/api/cadastro-mestre-ucs", (req, res) => {
-  const list = [...db.cadastro_mestre_ucs].sort((a, b) => a.uc.localeCompare(b.uc));
-  res.json(list);
-});
-
-app.post("/api/cadastro-mestre-ucs", (req, res) => {
-  const { uc, codnum, concessionaria, secretaria, unidade_administrativa, endereco, classe, grupo_tarifario, situacao } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
-
-  if (!uc || !codnum) {
-    return res.status(400).json({ error: "Informe a UC e o CODNUM." });
-  }
-  if (db.cadastro_mestre_ucs.some(u => u.uc === uc)) {
-    return res.status(400).json({ error: "Esta UC já está cadastrada no Cadastro Mestre." });
-  }
-
-  const newId = `UC-${(Math.max(0, ...db.cadastro_mestre_ucs.map(u => parseInt(u.id.replace("UC-", ""), 10) || 0)) + 1).toString().padStart(2, "0")}`;
-  const newUc: CadastroMestreUC = {
-    id: newId,
-    uc,
-    codnum,
-    concessionaria: concessionaria === "CASAN" ? "CASAN" : "CELESC",
-    secretaria: secretaria || "",
-    unidade_administrativa: unidade_administrativa || "",
-    endereco: endereco || "",
-    classe: classe || "",
-    grupo_tarifario: grupo_tarifario || "",
-    situacao: situacao === "Inativa" ? "Inativa" : "Ativa",
-    criado_em: new Date().toISOString(),
-    atualizado_em: new Date().toISOString()
-  };
-
-  db.cadastro_mestre_ucs.push(newUc);
-  saveDB(db);
-  logAudit("cadastro_mestre_ucs", newId, "INSERT", usuario, null, newUc);
-
-  res.status(201).json(newUc);
-});
-
-app.put("/api/cadastro-mestre-ucs/:id", (req, res) => {
-  const { id } = req.params;
-  const { uc, codnum, concessionaria, secretaria, unidade_administrativa, endereco, classe, grupo_tarifario, situacao } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
-
-  const index = db.cadastro_mestre_ucs.findIndex(u => u.id === id);
-  if (index === -1) {
-    return res.status(404).json({ error: "UC não encontrada no Cadastro Mestre." });
-  }
-
-  if (uc) {
-    const duplicate = db.cadastro_mestre_ucs.find(u => u.uc === uc && u.id !== id);
-    if (duplicate) {
-      return res.status(400).json({ error: "Já existe outra UC cadastrada com este código." });
-    }
-  }
-
-  const oldVal = { ...db.cadastro_mestre_ucs[index] };
-  db.cadastro_mestre_ucs[index] = {
-    ...db.cadastro_mestre_ucs[index],
-    uc: uc ?? db.cadastro_mestre_ucs[index].uc,
-    codnum: codnum ?? db.cadastro_mestre_ucs[index].codnum,
-    concessionaria: concessionaria ?? db.cadastro_mestre_ucs[index].concessionaria,
-    secretaria: secretaria ?? db.cadastro_mestre_ucs[index].secretaria,
-    unidade_administrativa: unidade_administrativa ?? db.cadastro_mestre_ucs[index].unidade_administrativa,
-    endereco: endereco ?? db.cadastro_mestre_ucs[index].endereco,
-    classe: classe ?? db.cadastro_mestre_ucs[index].classe,
-    grupo_tarifario: grupo_tarifario ?? db.cadastro_mestre_ucs[index].grupo_tarifario,
-    situacao: situacao ?? db.cadastro_mestre_ucs[index].situacao,
-    atualizado_em: new Date().toISOString()
-  };
-  saveDB(db);
-  logAudit("cadastro_mestre_ucs", id, "UPDATE", usuario, oldVal, db.cadastro_mestre_ucs[index]);
-
-  res.json(db.cadastro_mestre_ucs[index]);
-});
-
-app.delete("/api/cadastro-mestre-ucs/:id", (req, res) => {
-  const { id } = req.params;
-  const usuario = req.headers["x-user"] as string || "admin";
-
-  const index = db.cadastro_mestre_ucs.findIndex(u => u.id === id);
-  if (index === -1) {
-    return res.status(404).json({ error: "UC não encontrada no Cadastro Mestre." });
-  }
-
-  const oldVal = { ...db.cadastro_mestre_ucs[index] };
-  db.cadastro_mestre_ucs.splice(index, 1);
-  saveDB(db);
-  logAudit("cadastro_mestre_ucs", id, "DELETE", usuario, oldVal, null);
-
-  res.json({ message: "UC removida do Cadastro Mestre com sucesso." });
-});
 
 // --- UNIDADES ---
 app.get("/api/unidades", (req, res) => {
@@ -612,7 +668,7 @@ app.post("/api/unidades", (req, res) => {
     return res.status(400).json({ error: "Já existe uma unidade com este nome nesta secretaria." });
   }
 
-  const newId = (Math.max(...db.unidades.map(u => parseInt(u.id)), 0) + 1).toString();
+  const newId = (Math.max(...db.unidades.map(u => (u?.id ? parseInt(u.id) : 0) || 0), 0) + 1).toString();
   const newUnidade: Unidade = {
     id: newId,
     codigo_legado: codigo_legado ? parseInt(codigo_legado) : undefined,
@@ -728,7 +784,7 @@ app.post("/api/despesas", (req, res) => {
     return res.status(400).json({ error: "Já existe uma despesa com esta descrição." });
   }
 
-  const newId = (Math.max(...db.despesas.map(d => parseInt(d.id)), 0) + 1).toString();
+  const newId = (Math.max(...db.despesas.map(d => (d?.id ? parseInt(d.id) : 0) || 0), 0) + 1).toString();
   const newDespesa: Despesa = {
     id: newId,
     codigo_legado: codigo_legado ? parseInt(codigo_legado) : undefined,
@@ -852,7 +908,7 @@ app.post("/api/itens_despesas", (req, res) => {
     return res.status(400).json({ error: "Já existe um item cadastrado com este código/número (CODNUM)." });
   }
 
-  const newId = (Math.max(...db.itens_despesas.map(it => parseInt(it.id)), 0) + 1).toString();
+  const newId = (Math.max(...db.itens_despesas.map(it => (it?.id ? parseInt(it.id) : 0) || 0), 0) + 1).toString();
   const newItem: ItemDespesa = {
     id: newId,
     codigo_numero: cleanCodigo,
@@ -931,9 +987,68 @@ app.delete("/api/itens_despesas/:id", (req, res) => {
   res.json({ message: "Item excluído com sucesso." });
 });
 
+// Endpoint para vincular Unidade Gestora a um CODNUM / Contrato existente ou novo
+app.post("/api/vincular-unidade", (req, res) => {
+  const { codigo_numero, item_despesa_id, unidade_id } = req.body;
+  const usuario = req.headers["x-user"] as string || "admin";
+
+  if (!unidade_id) {
+    return res.status(400).json({ error: "Selecione uma unidade gestora válida." });
+  }
+
+  const cleanCodnum = (codigo_numero || "").trim().toUpperCase();
+  let itemIndex = -1;
+
+  if (item_despesa_id) {
+    itemIndex = db.itens_despesas.findIndex(it => String(it.id) === String(item_despesa_id));
+  }
+  if (itemIndex === -1 && cleanCodnum) {
+    itemIndex = db.itens_despesas.findIndex(it => it.codigo_numero.toUpperCase() === cleanCodnum);
+  }
+
+  let item = null;
+  if (itemIndex !== -1) {
+    const oldVal = { ...db.itens_despesas[itemIndex] };
+    db.itens_despesas[itemIndex].unidade_id = unidade_id;
+    db.itens_despesas[itemIndex].atualizado_em = new Date().toISOString();
+    item = db.itens_despesas[itemIndex];
+    logAudit("itens_despesas", item.id, "UPDATE", usuario, oldVal, item);
+  } else if (cleanCodnum) {
+    const newId = String(Date.now());
+    item = {
+      id: newId,
+      codigo_numero: cleanCodnum,
+      despesa_id: "1", // Padrão Celesc / Energia se não especificado
+      unidade_id,
+      tipo_fone: "",
+      medidor: "",
+      ativo: true,
+      criado_em: new Date().toISOString(),
+      atualizado_em: new Date().toISOString()
+    };
+    db.itens_despesas.push(item);
+    logAudit("itens_despesas", newId, "INSERT", usuario, null, item);
+  }
+
+  saveDB(db);
+
+  const unidade = db.unidades.find(u => String(u.id) === String(unidade_id));
+  const secretaria = unidade ? db.secretarias.find(s => String(s.id) === String(unidade.secretaria_id)) : null;
+
+  res.json({
+    success: true,
+    item,
+    unidade_id,
+    unidade_nome: unidade ? unidade.nome : "NÃO LOCALIZADA",
+    secretaria_nome: secretaria ? secretaria.nome : "NÃO LOCALIZADA"
+  });
+});
+
 
 // --- LANÇAMENTOS ---
 app.get("/api/lancamentos", (req, res) => {
+  autoSyncOrphanRecords();
+
   const { item_despesa_id, mes_ano } = req.query;
   let list = db.lancamentos;
 
@@ -953,13 +1068,37 @@ app.get("/api/lancamentos", (req, res) => {
     const unidade = item ? db.unidades.find(u => u.id === item.unidade_id) : null;
     const secretaria = unidade ? db.secretarias.find(s => s.id === unidade.secretaria_id) : null;
 
+    const matchingDoc = db.documentos_processados?.find(d => 
+      d.dados_extraidos && 
+      d.dados_extraidos.codigo_numero === item?.codigo_numero &&
+      d.dados_extraidos.mes_ano?.substring(0,7) === l.mes_ano?.substring(0,7)
+    );
+    const energia_injetada = (l as any).energia_injetada ?? matchingDoc?.dados_extraidos?.energia_injetada ?? 0;
+
+    let concessionaria: 'CASAN' | 'CELESC' = (unidade?.concessionaria as 'CASAN' | 'CELESC') || (despesa?.id === "2" ? "CASAN" : "CELESC");
+    if (!unidade?.concessionaria && matchingDoc) {
+      if ((matchingDoc.layout && matchingDoc.layout.includes("CASAN")) || /casan|catarinense/i.test(matchingDoc.nome_arquivo || "")) {
+        concessionaria = "CASAN";
+      }
+    }
+
+    const finalDespesaDesc = despesa 
+      ? despesa.descricao 
+      : (concessionaria === "CASAN" ? "ÁGUA E ESGOTO (CASAN)" : "ENERGIA ELÉTRICA (CELESC)");
+
+    const finalUnidadeNome = unidade 
+      ? unidade.nome 
+      : (matchingDoc?.dados_extraidos?.unidade_nome || (item?.codigo_numero ? `UNIDADE ${item.codigo_numero}` : "NÃO LOCALIZADA"));
+
     return {
       ...l,
-      codigo_numero: item ? item.codigo_numero : "NÃO LOCALIZADO",
-      medidor: item ? item.medidor : "",
-      despesa_id: item ? item.despesa_id : null,
-      despesa_descricao: despesa ? despesa.descricao : "NÃO LOCALIZADA",
-      unidade_nome: unidade ? unidade.nome : "NÃO LOCALIZADA",
+      energia_injetada,
+      concessionaria,
+      codigo_numero: item ? item.codigo_numero : (matchingDoc?.dados_extraidos?.codigo_numero || "NÃO LOCALIZADO"),
+      medidor: item ? item.medidor : (matchingDoc?.dados_extraidos?.medidor || ""),
+      despesa_id: item ? item.despesa_id : (concessionaria === "CASAN" ? "2" : "1"),
+      despesa_descricao: finalDespesaDesc,
+      unidade_nome: finalUnidadeNome,
       secretaria_id: secretaria ? secretaria.id : null,
       secretaria_nome: secretaria ? secretaria.nome : "NÃO LOCALIZADA"
     };
@@ -1012,7 +1151,7 @@ app.post("/api/lancamentos", (req, res) => {
     return res.status(200).json(exists);
   }
 
-  const newId = (Math.max(...db.lancamentos.map(l => parseInt(l.id)), 0) + 1).toString();
+  const newId = (Math.max(...db.lancamentos.map(l => (l?.id ? parseInt(l.id) : 0) || 0), 0) + 1).toString();
   const newLancamento: Lancamento = {
     id: newId,
     item_despesa_id,
@@ -1041,9 +1180,8 @@ app.post("/api/lancamentos", (req, res) => {
 app.put("/api/lancamentos/:id", (req, res) => {
   const { id } = req.params;
   const { 
-    item_despesa_id, mes_ano, consumo, valor_total, valor_imposto, 
-    valor_celular, valor_internet, valor_diversos, valor_linha_privada, 
-    valor_credito, data_lancamento, secretaria_id
+    consumo, valor_total, valor_imposto, valor_celular, valor_internet, 
+    valor_diversos, valor_linha_privada, valor_credito, data_lancamento 
   } = req.body;
   const usuario = req.headers["x-user"] as string || "admin";
 
@@ -1054,12 +1192,6 @@ app.put("/api/lancamentos/:id", (req, res) => {
 
   const oldVal = { ...db.lancamentos[index] };
 
-  if (item_despesa_id !== undefined) db.lancamentos[index].item_despesa_id = item_despesa_id;
-  if (mes_ano !== undefined) {
-    let cleanMesAno = mes_ano;
-    if (mes_ano.length === 7) cleanMesAno = `${mes_ano}-01`;
-    db.lancamentos[index].mes_ano = cleanMesAno;
-  }
   if (consumo !== undefined) db.lancamentos[index].consumo = parseFloat(consumo || 0);
   if (valor_total !== undefined) db.lancamentos[index].valor_total = parseFloat(valor_total || 0);
   if (valor_imposto !== undefined) db.lancamentos[index].valor_imposto = parseFloat(valor_imposto || 0);
@@ -1069,17 +1201,6 @@ app.put("/api/lancamentos/:id", (req, res) => {
   if (valor_linha_privada !== undefined) db.lancamentos[index].valor_linha_privada = parseFloat(valor_linha_privada || 0);
   if (valor_credito !== undefined) db.lancamentos[index].valor_credito = parseFloat(valor_credito || 0);
   if (data_lancamento !== undefined) db.lancamentos[index].data_lancamento = data_lancamento;
-  if (secretaria_id) {
-    (db.lancamentos[index] as any).secretaria_id = secretaria_id;
-    const item = db.itens_despesas.find(it => it.id === db.lancamentos[index].item_despesa_id);
-    if (item) {
-      const unidade = db.unidades.find(u => u.id === item.unidade_id);
-      if (unidade) {
-        unidade.secretaria_id = secretaria_id;
-        unidade.atualizado_em = new Date().toISOString();
-      }
-    }
-  }
 
   db.lancamentos[index].atualizado_em = new Date().toISOString();
   saveDB(db);
@@ -1089,74 +1210,64 @@ app.put("/api/lancamentos/:id", (req, res) => {
   res.json(db.lancamentos[index]);
 });
 
-app.post("/api/lancamentos/:id/vincular_secretaria", (req, res) => {
-  const { id } = req.params;
-  const { secretaria_id } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
-
-  const sec = db.secretarias.find(s => s.id === secretaria_id);
-  if (!sec) {
-    return res.status(400).json({ error: "Secretaria não encontrada." });
-  }
-
-  const index = db.lancamentos.findIndex(l => l.id === id);
-  if (index === -1) {
-    return res.status(404).json({ error: "Lançamento não encontrado." });
-  }
-
-  const oldVal = { ...db.lancamentos[index] };
-  (db.lancamentos[index] as any).secretaria_id = secretaria_id;
-  db.lancamentos[index].atualizado_em = new Date().toISOString();
-
-  // Also update associated ItemDespesa and Unidade if present
-  const item = db.itens_despesas.find(it => it.id === db.lancamentos[index].item_despesa_id);
-  if (item) {
-    const unidade = db.unidades.find(u => u.id === item.unidade_id);
-    if (unidade) {
-      unidade.secretaria_id = secretaria_id;
-      unidade.atualizado_em = new Date().toISOString();
-    }
-  }
-
-  // Also update any matching documentos_processados
-  const matchingDoc = db.documentos_processados.find(d => {
-    const ext = (d.dados_extraidos || {}) as any;
-    return item && ext.codigo_numero === item.codigo_numero;
-  });
-  if (matchingDoc && matchingDoc.dados_extraidos) {
-    (matchingDoc.dados_extraidos as any).secretaria_id = secretaria_id;
-    (matchingDoc.dados_extraidos as any).secretaria_nome = sec.nome;
-  }
-
-  saveDB(db);
-  logAudit("lancamentos", id, "UPDATE", usuario, oldVal, db.lancamentos[index]);
-
-  res.json({
-    message: `Secretaria ${sec.nome} vinculada com sucesso ao lançamento!`,
-    lancamento: {
-      ...db.lancamentos[index],
-      secretaria_id: sec.id,
-      secretaria_nome: sec.nome
-    }
-  });
-});
-
 app.delete("/api/lancamentos/:id", (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
+  let found = false;
+
+  // 1. Check in lancamentos
   const index = db.lancamentos.findIndex(l => String(l.id) === String(id));
-  if (index === -1) {
+  if (index !== -1) {
+    const oldVal = { ...db.lancamentos[index] };
+    const deletedLanc = db.lancamentos.splice(index, 1)[0];
+    found = true;
+
+    // Clean up corresponding item in documentos_processados if linked
+    if (db.documentos_processados) {
+      db.documentos_processados = db.documentos_processados.filter(d => String(d.id) !== String(id));
+    }
+
+    logAudit("lancamentos", id, "DELETE", usuario, oldVal, null);
+  }
+
+  // 2. Check in documentos_processados as fallback
+  if (db.documentos_processados) {
+    const docIndex = db.documentos_processados.findIndex(d => String(d.id) === String(id));
+    if (docIndex !== -1) {
+      const oldDoc = db.documentos_processados[docIndex];
+      db.documentos_processados.splice(docIndex, 1);
+      found = true;
+      logAudit("documentos_processados", id, "DELETE", usuario, oldDoc, null);
+    }
+  }
+
+  if (!found) {
     return res.status(404).json({ error: "Lançamento não encontrado." });
   }
 
-  const oldVal = { ...db.lancamentos[index] };
-  db.lancamentos.splice(index, 1);
+  saveDB(db);
+  res.json({ message: "Lançamento excluído com sucesso." });
+});
+
+app.delete("/api/documentos/:id", (req, res) => {
+  const { id } = req.params;
+  const usuario = req.headers["x-user"] as string || "admin";
+
+  if (!db.documentos_processados) db.documentos_processados = [];
+
+  const index = db.documentos_processados.findIndex(d => String(d.id) === String(id));
+  if (index === -1) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+
+  const oldVal = { ...db.documentos_processados[index] };
+  db.documentos_processados.splice(index, 1);
   saveDB(db);
 
-  logAudit("lancamentos", id, "DELETE", usuario, oldVal, null);
+  logAudit("documentos_processados", id, "DELETE", usuario, oldVal, null);
 
-  res.json({ message: "Lançamento excluído com sucesso." });
+  res.json({ message: "Documento excluído com sucesso." });
 });
 
 
@@ -1203,76 +1314,6 @@ app.get("/api/auditoria", (req, res) => {
   res.json(db.auditoria_registros.slice(0, limit));
 });
 
-// TODO: REMOVER ESTE BOTÃO ANTES DE IR PARA USO REAL DEFINITIVO
-// ROUTE: ZERAR BANCO DE DADOS (APENAS TESTES)
-app.post("/api/admin/reset_database", async (req, res) => {
-  const usuario = (req.headers["x-user"] as string) || "admin";
-
-  try {
-    // 1. Snapshot of counts before reset
-    const snapshot = {
-      secretarias: db.secretarias?.length || 0,
-      unidades: db.unidades?.length || 0,
-      despesas: db.despesas?.length || 0,
-      itens_despesas: db.itens_despesas?.length || 0,
-      lancamentos: db.lancamentos?.length || 0,
-      pessoas: db.pessoas?.length || 0,
-      contatos_email: db.contatos_email?.length || 0,
-      documentos_processados: db.documentos_processados?.length || 0,
-    };
-
-    const total_removidos = Object.values(snapshot).reduce((a, b) => a + b, 0);
-    const timestamp = new Date().toISOString();
-
-    // 2. Audit log entry BEFORE wiping data tables
-    const maxAuditId = db.auditoria_registros.reduce((max, item) => {
-      const num = parseInt(item.id, 10);
-      return !isNaN(num) && num > max ? num : max;
-    }, 0);
-
-    const auditRow = {
-      id: (maxAuditId + 1).toString(),
-      tabela: "DATABASE_RESET",
-      registro_pk: "RESET_TOTAL",
-      acao: "RESET_TOTAL",
-      usuario,
-      valor_antigo: snapshot,
-      valor_novo: { status: "BANCO_ZERADO", timestamp, total_removidos },
-      criado_em: timestamp
-    };
-
-    // Insert audit row into auditoria_registros FIRST
-    db.auditoria_registros.unshift(auditRow);
-
-    // 3. Clear data tables in memory
-    db.secretarias = [];
-    db.unidades = [];
-    db.despesas = [];
-    db.itens_despesas = [];
-    db.lancamentos = [];
-    db.pessoas = [];
-    db.contatos_email = [];
-    db.documentos_processados = [];
-
-    // 4. Persist to local JSON and PostgreSQL / Neon DB
-    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
-    await saveAllStateToPostgres(db);
-
-    console.log(`[RESET DB] Banco de dados zerado com sucesso às ${timestamp}. ${total_removidos} registros removidos por '${usuario}'.`);
-
-    res.json({
-      success: true,
-      message: `Banco de dados zerado com sucesso às ${timestamp}. ${total_removidos} registros removidos.`,
-      timestamp,
-      total_removidos,
-      snapshot
-    });
-  } catch (err: any) {
-    console.error("[RESET DB] Erro ao zerar banco de dados:", err);
-    res.status(500).json({ error: "Falha ao zerar banco de dados: " + (err.message || err) });
-  }
-});
-
 
 // --- LOGS DE ERROS TÉCNICOS ---
 app.get("/api/logs_erros", (req, res) => {
@@ -1295,7 +1336,22 @@ app.get("/api/documentos", (req, res) => {
 app.post("/api/documentos", (req, res) => {
   const { nome_arquivo, layout, tamanho, origem_conteudo, dados_extraidos } = req.body;
 
-  const newId = (Math.max(...db.documentos_processados.map(d => parseInt(d.id)), 0) + 1).toString();
+  if (dados_extraidos?.codigo_numero) {
+    const isCasan = Boolean(
+      (layout && layout.includes("CASAN")) ||
+      (nome_arquivo && /casan|catarinense/i.test(nome_arquivo)) ||
+      (dados_extraidos.unidade_nome && /casan/i.test(dados_extraidos.unidade_nome))
+    );
+    ensureUnidadeAndContract({
+      codigo_numero: dados_extraidos.codigo_numero,
+      concessionaria: isCasan ? 'CASAN' : 'CELESC',
+      unidade_nome: dados_extraidos.unidade_nome,
+      endereco: dados_extraidos.endereco,
+      medidor: dados_extraidos.medidor
+    });
+  }
+
+  const newId = (Math.max(...db.documentos_processados.map(d => (d?.id ? parseInt(d.id) : 0) || 0), 0) + 1).toString();
   const doc: DocumentoProcessado = {
     id: newId,
     nome_arquivo,
@@ -1312,22 +1368,21 @@ app.post("/api/documentos", (req, res) => {
 
   // Run validation step automatically
   const logs: string[] = [];
-  const ext = dados_extraidos || {};
   
   // Rule 1: check if item despesa already exists for this CODNUM
-  const itemMatch = ext.codigo_numero ? db.itens_despesas.find(it => it.codigo_numero === ext.codigo_numero) : null;
-  if (!itemMatch && ext.codigo_numero) {
-    logs.push(`⚠️ CODNUM "${ext.codigo_numero}" não cadastrado no banco. Itens de despesa deverão ser vinculados durante a conferência.`);
+  const itemMatch = db.itens_despesas.find(it => it.codigo_numero === dados_extraidos.codigo_numero);
+  if (!itemMatch) {
+    logs.push(`⚠️ CODNUM "${dados_extraidos.codigo_numero}" não cadastrado no banco. Itens de despesa deverão ser vinculados durante a conferência.`);
   }
 
   // Rule 2: check if consumption matches normal ranges
-  if (ext.consumo !== undefined && ext.consumo <= 0) {
-    logs.push(`⚠️ Consumo extraído de ${ext.consumo} é inválido ou nulo. Verifique a fatura original.`);
+  if (dados_extraidos.consumo <= 0) {
+    logs.push(`⚠️ Consumo extraído de ${dados_extraidos.consumo} é inválido ou nulo. Verifique a fatura original.`);
   }
 
   // Rule 3: check if value matches normal ranges
-  if (ext.valor_total !== undefined && ext.valor_total <= 0) {
-    logs.push(`❌ Valor total extraído de R$ ${ext.valor_total} é nulo ou negativo.`);
+  if (dados_extraidos.valor_total <= 0) {
+    logs.push(`❌ Valor total extraído de R$ ${dados_extraidos.valor_total} é nulo ou negativo.`);
   }
 
   doc.status = logs.some(l => l.includes('❌')) ? 'NORMALIZADO' : 'VALIDADO';
@@ -1422,30 +1477,39 @@ app.post("/api/documentos/:id/homologar", (req, res) => {
   }
 
   const doc = db.documentos_processados[index];
-  const extr = doc.dados_extraidos;
+  const extr = doc?.dados_extraidos || ({} as any);
 
-  // Enforce item despesa existence
-  let item = db.itens_despesas.find(it => it.codigo_numero === extr.codigo_numero);
+  const isCasan = Boolean(
+    (doc?.layout && doc.layout.includes("CASAN")) ||
+    (doc?.nome_arquivo && /casan|catarinense/i.test(doc.nome_arquivo)) ||
+    (extr?.unidade_nome && /casan/i.test(extr.unidade_nome))
+  );
+
+  let result = null;
+  if (extr?.codigo_numero) {
+    result = ensureUnidadeAndContract({
+      codigo_numero: extr.codigo_numero,
+      concessionaria: isCasan ? 'CASAN' : 'CELESC',
+      unidade_nome: extr.unidade_nome,
+      endereco: extr.endereco,
+      medidor: extr.medidor,
+      usuario
+    });
+  }
+
+  let item = result?.item || (extr?.codigo_numero ? db.itens_despesas.find(it => it?.codigo_numero === extr.codigo_numero) : undefined);
   
   if (!item) {
-    // Automatically match or prompt error
-    // In strict mode, we should have a match, but if we don't, let's look for any matching despesa type
-    // If not, auto-create a realistic item so the user workflow is perfectly smooth!
-    let depId = "1"; // Default CELESC
-    if (doc.layout.includes("CASAN")) {
-      depId = "2"; // CASAN
-    }
+    let depId = isCasan ? "2" : "1";
+    const defaultUnidade = (db.unidades && db.unidades.length > 0) ? db.unidades[0] : { id: "1" };
 
-    // Auto find or create realistic item/unidade to satisfy SQL constraints seamlessly
-    const defaultUnidade = db.unidades[0]; // Prefeitura
-
-    const newItemId = (Math.max(...db.itens_despesas.map(it => parseInt(it.id)), 0) + 1).toString();
+    const newItemId = (Math.max(...db.itens_despesas.map(it => (it?.id ? parseInt(it.id) : 0) || 0), 0) + 1).toString();
     item = {
       id: newItemId,
-      codigo_numero: extr.codigo_numero || `AUTO-${Date.now()}`,
+      codigo_numero: extr?.codigo_numero || `AUTO-${Date.now()}`,
       despesa_id: depId,
-      unidade_id: defaultUnidade.id,
-      medidor: extr.medidor || "N/A",
+      unidade_id: defaultUnidade?.id || "1",
+      medidor: extr?.medidor || "N/A",
       ativo: true,
       criado_em: new Date().toISOString(),
       atualizado_em: new Date().toISOString()
@@ -1455,140 +1519,58 @@ app.post("/api/documentos/:id/homologar", (req, res) => {
   }
 
   // Persist to lancamentos (shared table)
-  const mesAnoDate = extr.mes_ano || new Date().toISOString().split('T')[0];
+  const mesAnoDate = extr?.mes_ano || new Date().toISOString().split('T')[0];
   
   // Check if exists - if exists, update it instead of failing
-  const existingLanc = db.lancamentos.find(l => l.item_despesa_id === item!.id && l.mes_ano.substring(0, 7) === mesAnoDate.substring(0, 7));
+  const existingLanc = db.lancamentos.find(l => l?.item_despesa_id === item?.id && l?.mes_ano?.substring(0, 7) === mesAnoDate.substring(0, 7));
   if (existingLanc) {
     const oldVal = { ...existingLanc };
-    existingLanc.consumo = parseFloat(extr.consumo as any || 0);
-    existingLanc.valor_total = parseFloat(extr.valor_total as any || 0);
-    existingLanc.valor_imposto = parseFloat(extr.valor_imposto as any || 0);
-    existingLanc.valor_celular = parseFloat(extr.valor_celular as any || 0);
-    existingLanc.valor_internet = parseFloat(extr.valor_internet as any || 0);
-    existingLanc.valor_diversos = parseFloat(extr.valor_diversos as any || 0);
-    existingLanc.valor_linha_privada = parseFloat(extr.valor_linha_privada as any || 0);
-    existingLanc.valor_credito = parseFloat(extr.valor_credito as any || 0);
+    existingLanc.consumo = parseFloat(extr?.consumo as any || 0);
+    existingLanc.valor_total = parseFloat(extr?.valor_total as any || 0);
+    existingLanc.valor_imposto = parseFloat(extr?.valor_imposto as any || 0);
+    existingLanc.valor_celular = parseFloat(extr?.valor_celular as any || 0);
+    existingLanc.valor_internet = parseFloat(extr?.valor_internet as any || 0);
+    existingLanc.valor_diversos = parseFloat(extr?.valor_diversos as any || 0);
+    existingLanc.valor_linha_privada = parseFloat(extr?.valor_linha_privada as any || 0);
+    existingLanc.valor_credito = parseFloat(extr?.valor_credito as any || 0);
     existingLanc.data_lancamento = new Date().toISOString().split('T')[0];
     existingLanc.atualizado_em = new Date().toISOString();
-    doc.status = 'HOMOLOGADO';
+    if (doc) doc.status = 'HOMOLOGADO';
     saveDB(db);
 
     logAudit("lancamentos", existingLanc.id, "UPDATE", usuario, oldVal, existingLanc);
-    logAudit("documentos_processados", doc.id, "UPDATE", usuario, { status: doc.status }, { status: "HOMOLOGADO" });
+    if (doc) logAudit("documentos_processados", doc.id, "UPDATE", usuario, { status: doc.status }, { status: "HOMOLOGADO" });
 
     return res.json({ message: "Lançamento atualizado e homologado com sucesso!", lancamento: existingLanc });
   }
 
-  const newLancId = (Math.max(...db.lancamentos.map(l => parseInt(l.id)), 0) + 1).toString();
+  const newLancId = (Math.max(...db.lancamentos.map(l => (l?.id ? parseInt(l.id) : 0) || 0), 0) + 1).toString();
   const newLanc: Lancamento = {
     id: newLancId,
     item_despesa_id: item.id,
     mes_ano: mesAnoDate,
-    consumo: parseFloat(extr.consumo as any || 0),
-    valor_total: parseFloat(extr.valor_total as any || 0),
-    valor_imposto: parseFloat(extr.valor_imposto as any || 0),
-    valor_celular: parseFloat(extr.valor_celular as any || 0),
-    valor_internet: parseFloat(extr.valor_internet as any || 0),
-    valor_diversos: parseFloat(extr.valor_diversos as any || 0),
-    valor_linha_privada: parseFloat(extr.valor_linha_privada as any || 0),
-    valor_credito: parseFloat(extr.valor_credito as any || 0),
+    consumo: parseFloat(extr?.consumo as any || 0),
+    valor_total: parseFloat(extr?.valor_total as any || 0),
+    valor_imposto: parseFloat(extr?.valor_imposto as any || 0),
+    valor_celular: parseFloat(extr?.valor_celular as any || 0),
+    valor_internet: parseFloat(extr?.valor_internet as any || 0),
+    valor_diversos: parseFloat(extr?.valor_diversos as any || 0),
+    valor_linha_privada: parseFloat(extr?.valor_linha_privada as any || 0),
+    valor_credito: parseFloat(extr?.valor_credito as any || 0),
     data_lancamento: new Date().toISOString().split('T')[0],
     criado_em: new Date().toISOString(),
     atualizado_em: new Date().toISOString()
   };
 
   db.lancamentos.push(newLanc);
-  doc.status = 'HOMOLOGADO';
+  if (doc) doc.status = 'HOMOLOGADO';
   saveDB(db);
 
   // PostgreSQL-style audit triggers
   logAudit("lancamentos", newLancId, "INSERT", usuario, null, newLanc);
-  logAudit("documentos_processados", doc.id, "UPDATE", usuario, { status: "VALIDADO" }, { status: "HOMOLOGADO" });
+  if (doc) logAudit("documentos_processados", doc.id, "UPDATE", usuario, { status: "VALIDADO" }, { status: "HOMOLOGADO" });
 
   res.json({ message: "Documento homologado e despesa persistida com sucesso!", lancamento: newLanc });
-});
-
-app.delete("/api/documentos/:id", (req, res) => {
-  const { id } = req.params;
-  const usuario = req.headers["x-user"] as string || "admin";
-
-  const index = db.documentos_processados.findIndex(d => String(d.id) === String(id));
-  if (index === -1) {
-    return res.status(404).json({ error: "Documento não encontrado." });
-  }
-
-  const oldVal = { ...db.documentos_processados[index] };
-
-  // If this document had generated a lancamento, clean up the matching lancamento as well
-  const extr = oldVal.dados_extraidos;
-  if (extr && extr.codigo_numero) {
-    const item = db.itens_despesas.find(it => it.codigo_numero === extr.codigo_numero);
-    if (item) {
-      const mesAnoDate = extr.mes_ano || "";
-      if (mesAnoDate) {
-        const lIndex = db.lancamentos.findIndex(l => String(l.item_despesa_id) === String(item.id) && l.mes_ano.substring(0, 7) === mesAnoDate.substring(0, 7));
-        if (lIndex !== -1) {
-          const oldLanc = { ...db.lancamentos[lIndex] };
-          db.lancamentos.splice(lIndex, 1);
-          logAudit("lancamentos", oldLanc.id, "DELETE", usuario, oldLanc, null);
-        }
-      }
-    }
-  }
-
-  db.documentos_processados.splice(index, 1);
-  saveDB(db);
-
-  logAudit("documentos_processados", id, "DELETE", usuario, oldVal, null);
-
-  res.json({ message: "Documento/Fatura excluído com sucesso." });
-});
-
-app.post("/api/documentos/:id/vincular_secretaria", (req, res) => {
-  const { id } = req.params;
-  const { secretaria_id } = req.body;
-  const usuario = req.headers["x-user"] as string || "admin";
-
-  const sec = db.secretarias.find(s => s.id === secretaria_id);
-  if (!sec) {
-    return res.status(400).json({ error: "Secretaria não encontrada." });
-  }
-
-  const doc = db.documentos_processados.find(d => d.id === id);
-  if (!doc) {
-    return res.status(404).json({ error: "Documento não encontrado." });
-  }
-
-  const oldVal = JSON.parse(JSON.stringify(doc));
-  if (!doc.dados_extraidos) doc.dados_extraidos = {} as any;
-  (doc.dados_extraidos as any).secretaria_id = secretaria_id;
-  (doc.dados_extraidos as any).secretaria_nome = sec.nome;
-
-  // Also update matching item, unidade and lancamentos
-  if (doc.dados_extraidos.codigo_numero) {
-    const item = db.itens_despesas.find(it => it.codigo_numero === doc.dados_extraidos.codigo_numero);
-    if (item) {
-      const unidade = db.unidades.find(u => u.id === item.unidade_id);
-      if (unidade) {
-        unidade.secretaria_id = secretaria_id;
-        unidade.atualizado_em = new Date().toISOString();
-      }
-      const matchingLancs = db.lancamentos.filter(l => l.item_despesa_id === item.id);
-      matchingLancs.forEach(l => {
-        (l as any).secretaria_id = secretaria_id;
-        l.atualizado_em = new Date().toISOString();
-      });
-    }
-  }
-
-  saveDB(db);
-  logAudit("documentos_processados", id, "UPDATE", usuario, oldVal, doc);
-
-  res.json({
-    message: `Secretaria ${sec.nome} vinculada com sucesso à fatura!`,
-    documento: doc
-  });
 });
 
 
@@ -1827,30 +1809,38 @@ function validateExtractedFaturaSanity(data: any, provider: 'CELESC' | 'CASAN'):
   return result;
 }
 
-// --- GEMINI MULTIMODAL PARSER CORE FUNCTION ---
-async function parseSinglePageWithGeminiCore(params: {
-  texto_fatura?: string;
-  imagem_base64?: string;
-  imagens_base64?: string[];
-  layout?: string;
-  nome_arquivo?: string;
-}): Promise<any> {
-  const { texto_fatura, imagem_base64, imagens_base64, layout, nome_arquivo } = params;
+// --- GEMINI MULTIMODAL PARSER ENDPOINT ---
+app.post("/api/documentos/parse", async (req, res) => {
+  const { texto_fatura, imagem_base64, imagens_base64, layout, nome_arquivo } = req.body;
 
   if (!texto_fatura && !imagem_base64 && (!imagens_base64 || imagens_base64.length === 0)) {
-    throw new Error("Nenhum conteúdo (texto ou imagem) de fatura enviado para o parser.");
+    return res.status(400).json({ error: "Nenhum conteúdo (texto ou imagem) de fatura enviado para o parser." });
   }
 
-  const isCelesc = (layout && layout.includes("CELESC")) || 
-                  (nome_arquivo && /celesc/i.test(nome_arquivo)) || 
-                  (texto_fatura && /celesc/i.test(texto_fatura));
-  const isCasan = (layout && layout.includes("CASAN")) || 
-                 (nome_arquivo && /casan/i.test(nome_arquivo)) || 
-                 (texto_fatura && /casan/i.test(texto_fatura));
+  const isCasanHeader = Boolean(
+    (nome_arquivo && /casan|catarinense|centralizada/i.test(nome_arquivo)) || 
+    (texto_fatura && (/casan/i.test(texto_fatura) || 
+                      /catarinense/i.test(texto_fatura) || 
+                      /SISTEMA COMERCIAL INTEGRADO/i.test(texto_fatura) || 
+                      /SCI8095/i.test(texto_fatura) || 
+                      /CONTAS QUE COMPÕEM/i.test(texto_fatura) || 
+                      /CONTAS QUE COMPOEM/i.test(texto_fatura) || 
+                      /COBRANÇA CENTRALIZADA/i.test(texto_fatura) || 
+                      /COBRANCA CENTRALIZADA/i.test(texto_fatura)))
+  );
 
-  const isCasanCentralizada = (isCasan || (layout && layout.includes("CASAN"))) &&
-    ((nome_arquivo && (/COBRANÇA CENTRALIZADA/i.test(nome_arquivo) || /CONTAS QUE COMPÕEM/i.test(nome_arquivo))) ||
-     (texto_fatura && (/COBRANÇA CENTRALIZADA/i.test(texto_fatura) || /CONTAS QUE COMPÕEM/i.test(texto_fatura))));
+  const isCasanCentralizada = isCasanHeader && Boolean(
+    (nome_arquivo && (/COBRANÇA CENTRALIZADA|COBRANCA CENTRALIZADA|CENTRALIZADA|CONTAS QUE COMPÕEM|CONTAS QUE COMPOEM/i.test(nome_arquivo))) ||
+    (texto_fatura && (/COBRANÇA CENTRALIZADA|COBRANCA CENTRALIZADA|CONTAS QUE COMPÕEM|CONTAS QUE COMPOEM|SISTEMA COMERCIAL INTEGRADO|SCI8095/i.test(texto_fatura))) ||
+    (layout && layout.includes("CASAN"))
+  );
+
+  const isCasan = isCasanCentralizada || isCasanHeader || Boolean(layout && layout.includes("CASAN"));
+  const isCelesc = !isCasan && Boolean(
+    (layout && layout.includes("CELESC")) || 
+    (nome_arquivo && /celesc/i.test(nome_arquivo)) || 
+    (texto_fatura && /celesc/i.test(texto_fatura))
+  );
 
   let promptInstrucoes = "";
   if (isCasanCentralizada) {
@@ -1931,399 +1921,225 @@ LAYOUT DE ENTRADA: ${layout || (isCasan ? "CASAN_FATURA" : "CELESC_FATURA")}
   contentsParts.push({ text: textPartContent });
 
   try {
-    const candidateModels = ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+    const candidateModels = [
+      "gemini-3.6-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-flash-latest"
+    ];
     let response: any = null;
     let lastModelError: any = null;
 
     for (const modelName of candidateModels) {
-      try {
-        response = await ai.models.generateContent({
-          model: modelName,
-          contents: { parts: contentsParts },
-          config: {
-            maxOutputTokens: 16384,
-            responseMimeType: "application/json",
-            responseSchema: isCasanCentralizada ? {
-              type: Type.OBJECT,
-              properties: {
-                tipo_relatorio: { type: Type.STRING, description: "Sempre 'CASAN_CENTRALIZADA'" },
-                referencia: { type: Type.STRING, description: "Mês/ano no formato YYYY-MM-01" },
-                contas: {
-                  type: Type.ARRAY,
-                  description: "Uma entrada para CADA linha/matrícula da tabela, sem pular nenhuma",
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      matricula: { type: Type.STRING },
-                      localizacao: { type: Type.STRING },
-                      usuario: { type: Type.STRING },
-                      leitura_anterior: { type: Type.NUMBER },
-                      leitura_atual: { type: Type.NUMBER },
-                      consumo: { type: Type.NUMBER },
-                      valor_agua: { type: Type.NUMBER },
-                      valor_esgoto: { type: Type.NUMBER },
-                      valor_servico: { type: Type.NUMBER },
-                      valor_bonus: { type: Type.NUMBER },
-                      valor_total: { type: Type.NUMBER }
-                    },
-                    required: ["matricula", "consumo", "valor_total"]
+      let attempts = 0;
+      const maxAttempts = 2;
+      while (attempts < maxAttempts) {
+        attempts++;
+        try {
+          response = await ai.models.generateContent({
+            model: modelName,
+            contents: { parts: contentsParts },
+            config: {
+              maxOutputTokens: 16384,
+              responseMimeType: "application/json",
+              responseSchema: isCasanCentralizada ? {
+                type: Type.OBJECT,
+                properties: {
+                  tipo_relatorio: { type: Type.STRING, description: "Sempre 'CASAN_CENTRALIZADA'" },
+                  referencia: { type: Type.STRING, description: "Mês/ano no formato YYYY-MM-01" },
+                  contas: {
+                    type: Type.ARRAY,
+                    description: "Uma entrada para CADA linha/matrícula da tabela, sem pular nenhuma",
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        matricula: { type: Type.STRING },
+                        localizacao: { type: Type.STRING },
+                        usuario: { type: Type.STRING },
+                        logradouro: { type: Type.STRING, description: "Endereço do imóvel/instalação impresso logo abaixo da linha da matrícula (ex: ROD. VER. CARLOS PROBST,S/N)" },
+                        leitura_anterior: { type: Type.NUMBER },
+                        leitura_atual: { type: Type.NUMBER },
+                        consumo: { type: Type.NUMBER },
+                        valor_agua: { type: Type.NUMBER },
+                        valor_esgoto: { type: Type.NUMBER },
+                        valor_servico: { type: Type.NUMBER },
+                        valor_bonus: { type: Type.NUMBER },
+                        valor_total: { type: Type.NUMBER }
+                      },
+                      required: ["matricula", "consumo", "valor_total"]
+                    }
                   }
-                }
-              },
-              required: ["tipo_relatorio", "referencia", "contas"]
-            } : {
-              type: Type.OBJECT,
-              properties: {
-                mes_ano: { type: Type.STRING, description: "Data de competência no formato YYYY-MM-DD (ex: 2026-06-01)" },
-                consumo: { type: Type.NUMBER, description: "Consumo total medido (kWh para CELESC, m³ para CASAN)" },
-                tarifa_unitaria: { type: Type.NUMBER, description: "Tarifa unitária cobrada por kWh ou m³ (R$)" },
-                valor_total: { type: Type.NUMBER, description: "Valor total líquido/bruto a pagar da fatura em Reais (R$)" },
-                valor_imposto: { type: Type.NUMBER, description: "Soma total dos tributos e impostos (ICMS, PIS, COFINS, COSIP) em Reais (R$)" },
-                valor_celular: { type: Type.NUMBER, description: "Valor de telefonia celular se houver, senão 0" },
-                valor_internet: { type: Type.NUMBER, description: "Valor de serviço de internet se houver, senão 0" },
-                valor_diversos: { type: Type.NUMBER, description: "Outras taxas ou serviços diversos em Reais (R$), senão 0" },
-                valor_linha_privada: { type: Type.NUMBER, description: "Valor de linha privada se houver, senão 0" },
-                valor_credito: { type: Type.NUMBER, description: "Valor total de descontos ou créditos aplicados em Reais (R$), senão 0" },
-                codigo_numero: { type: Type.STRING, description: "Código identificador da Unidade Consumidora (UC) ou Matrícula/Ligação" },
-                medidor: { type: Type.STRING, description: "Número de série do medidor elétrico ou hidrômetro" },
-                endereco: { type: Type.STRING, description: "Endereço físico específico da instalação/imóvel da UC" },
-                unidade_nome: { type: Type.STRING, description: "Nome do cliente/unidade consumidora cadastrado na fatura" },
-                leitura_anterior: { type: Type.NUMBER, description: "Valor numérico da leitura anterior do medidor" },
-                leitura_atual: { type: Type.NUMBER, description: "Valor numérico da leitura atual do medidor" },
-                data_vencimento: { type: Type.STRING, description: "Data de vencimento da fatura" },
-                municipio: { type: Type.STRING, description: "Nome do município em Santa Catarina" },
-                classe: { type: Type.STRING, description: "Classe ou categoria de consumo (ex: Poder Público, Residencial, Comercial)" },
-                grupo_tarifario: { type: Type.STRING, description: "Grupo tarifário (ex: B3, A4, B1)" },
-                fatura_num: { type: Type.STRING, description: "Número da fatura ou documento fiscal" },
-                data_leitura: { type: Type.STRING, description: "Data em que foi realizada a leitura do medidor" },
-                dias_faturados: { type: Type.NUMBER, description: "Quantidade de dias compreendidos no período faturado" },
-                nota_fiscal: { type: Type.STRING, description: "Número da Nota Fiscal Eletrônica (NF-e) ou Série" },
-                chave_acesso: { type: Type.STRING, description: "Chave de acesso de 44 dígitos da NF-e se houver" },
-                energia_injetada: { type: Type.NUMBER, description: "Quantidade de energia injetada no sistema em kWh" },
-                demanda: { type: Type.NUMBER, description: "Demanda de potência medida/faturada em kW" },
-                energia_reativa: { type: Type.NUMBER, description: "Energia reativa excedente medida em kVArh" },
-                confianca: { type: Type.NUMBER, description: "Nível de confiança da extração de 0 a 100" },
-                baixa_confianca: { type: Type.BOOLEAN, description: "Verdadeiro se a extração necessita de revisão humana (HITL)" },
-                motivo_baixa_confianca: { type: Type.STRING, description: "Motivo detalhado para sinalização de baixa confiança se houver" },
-                itens: {
-                  type: Type.ARRAY,
-                  description: "Lista de TODAS as linhas da tabela de itens da fatura, uma por uma, sem pular nenhuma.",
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      descricao: { type: Type.STRING },
-                      quantidade: { type: Type.NUMBER },
-                      preco_unitario: { type: Type.NUMBER },
-                      valor: { type: Type.NUMBER },
-                      icms: { type: Type.NUMBER },
-                      cofins_pis: { type: Type.NUMBER },
-                      irpj_percentual: { type: Type.NUMBER },
-                      irpj: { type: Type.NUMBER },
-                      pis: { type: Type.NUMBER },
-                      cofins: { type: Type.NUMBER },
-                      csll: { type: Type.NUMBER }
-                    },
-                    required: ["descricao", "valor"]
+                },
+                required: ["tipo_relatorio", "referencia", "contas"]
+              } : {
+                type: Type.OBJECT,
+                properties: {
+                  mes_ano: { type: Type.STRING, description: "Data de competência no formato YYYY-MM-DD (ex: 2026-06-01)" },
+                  consumo: { type: Type.NUMBER, description: "Consumo total medido (kWh para CELESC, m³ para CASAN)" },
+                  tarifa_unitaria: { type: Type.NUMBER, description: "Tarifa unitária cobrada por kWh ou m³ (R$)" },
+                  valor_total: { type: Type.NUMBER, description: "Valor total líquido/bruto a pagar da fatura em Reais (R$)" },
+                  valor_imposto: { type: Type.NUMBER, description: "Soma total dos tributos e impostos (ICMS, PIS, COFINS, COSIP) em Reais (R$)" },
+                  valor_celular: { type: Type.NUMBER, description: "Valor de telefonia celular se houver, senão 0" },
+                  valor_internet: { type: Type.NUMBER, description: "Valor de serviço de internet se houver, senão 0" },
+                  valor_diversos: { type: Type.NUMBER, description: "Outras taxas ou serviços diversos em Reais (R$), senão 0" },
+                  valor_linha_privada: { type: Type.NUMBER, description: "Valor de linha privada se houver, senão 0" },
+                  valor_credito: { type: Type.NUMBER, description: "Valor total de descontos ou créditos aplicados em Reais (R$), senão 0" },
+                  codigo_numero: { type: Type.STRING, description: "Código identificador da Unidade Consumidora (UC) ou Matrícula/Ligação" },
+                  medidor: { type: Type.STRING, description: "Número de série do medidor elétrico ou hidrômetro" },
+                  endereco: { type: Type.STRING, description: "Endereço físico específico da instalação/imóvel da UC" },
+                  unidade_nome: { type: Type.STRING, description: "Nome do cliente/unidade consumidora cadastrado na fatura" },
+                  leitura_anterior: { type: Type.NUMBER, description: "Valor numérico da leitura anterior do medidor" },
+                  leitura_atual: { type: Type.NUMBER, description: "Valor numérico da leitura atual do medidor" },
+                  data_vencimento: { type: Type.STRING, description: "Data de vencimento da fatura" },
+                  municipio: { type: Type.STRING, description: "Nome do município em Santa Catarina" },
+                  classe: { type: Type.STRING, description: "Classe ou categoria de consumo (ex: Poder Público, Residencial, Comercial)" },
+                  grupo_tarifario: { type: Type.STRING, description: "Grupo tarifário (ex: B3, A4, B1)" },
+                  fatura_num: { type: Type.STRING, description: "Número da fatura ou documento fiscal" },
+                  data_leitura: { type: Type.STRING, description: "Data em que foi realizada a leitura do medidor" },
+                  dias_faturados: { type: Type.NUMBER, description: "Quantidade de dias compreendidos no período faturado" },
+                  nota_fiscal: { type: Type.STRING, description: "Número da Nota Fiscal Eletrônica (NF-e) ou Série" },
+                  chave_acesso: { type: Type.STRING, description: "Chave de acesso de 44 dígitos da NF-e se houver" },
+                  energia_injetada: { type: Type.NUMBER, description: "Quantidade de energia injetada no sistema em kWh" },
+                  demanda: { type: Type.NUMBER, description: "Demanda de potência medida/faturada em kW" },
+                  energia_reativa: { type: Type.NUMBER, description: "Energia reativa excedente medida em kVArh" },
+                  confianca: { type: Type.NUMBER, description: "Nível de confiança da extração de 0 a 100" },
+                  baixa_confianca: { type: Type.BOOLEAN, description: "Verdadeiro se a extração necessita de revisão humana (HITL)" },
+                  motivo_baixa_confianca: { type: Type.STRING, description: "Motivo detalhado para sinalização de baixa confiança se houver" },
+                  itens: {
+                    type: Type.ARRAY,
+                    description: "Lista de TODAS as linhas da tabela de itens da fatura, uma por uma, sem pular nenhuma",
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        descricao: { type: Type.STRING, description: "Nome literal da linha, exatamente como aparece na fatura" },
+                        quantidade: { type: Type.NUMBER, description: "Quantidade/consumo dessa linha" },
+                        preco_unitario: { type: Type.NUMBER, description: "Preço unitário com tributos, se houver" },
+                        valor: { type: Type.NUMBER, description: "Valor total dessa linha em Reais" },
+                        icms: { type: Type.NUMBER, description: "ICMS dessa linha, senão 0" },
+                        cofins_pis: { type: Type.NUMBER, description: "COFINS/PIS dessa linha, senão 0" },
+                        irpj_percentual: { type: Type.NUMBER, description: "Percentual de IRPJ retido dessa linha, senão 0" },
+                        irpj: { type: Type.NUMBER, description: "Valor de IRPJ retido dessa linha, senão 0" },
+                        pis: { type: Type.NUMBER, description: "PIS retido dessa linha, senão 0" },
+                        cofins: { type: Type.NUMBER, description: "COFINS retido dessa linha, senão 0" },
+                        csll: { type: Type.NUMBER, description: "CSLL retido dessa linha, senão 0" }
+                      },
+                      required: ["descricao", "valor"]
+                    }
                   }
-                }
-              },
-              required: [
-                "mes_ano", "consumo", "valor_total", "valor_imposto", "codigo_numero", "medidor",
-                "valor_celular", "valor_internet", "valor_diversos", "valor_linha_privada", "valor_credito",
-                "confianca", "baixa_confianca"
-              ]
+                },
+                required: [
+                  "mes_ano", "consumo", "valor_total", "valor_imposto", "codigo_numero", "medidor",
+                  "valor_celular", "valor_internet", "valor_diversos", "valor_linha_privada", "valor_credito",
+                  "confianca", "baixa_confianca"
+                ]
+              }
             }
+          });
+          if (response && response.text) {
+            const textLength = response.text.length;
+            let rawParseStatus = "SUCESSO";
+            let rawParseError = "";
+            try {
+              JSON.parse(response.text);
+            } catch (e: any) {
+              rawParseStatus = "ERRO_PARSE";
+              rawParseError = e.message;
+            }
+            console.log(`[Gemini Raw Response Log] Modelo: ${modelName} | Tamanho: ${textLength} chars | JSON.parse Cru: ${rawParseStatus}${rawParseError ? ` (${rawParseError})` : ""}`);
+            break;
           }
-        });
-        if (response && response.text) {
-          break;
-        }
-      } catch (err: any) {
-        lastModelError = err;
-        console.warn(`Model ${modelName} attempt failed: ${err.message || err}`);
-        // If quota rate limit (429) or temporary error occurs, pause briefly before retrying
-        if (err.message && (err.message.includes("429") || err.message.includes("RESOURCE_EXHAUSTED") || err.message.includes("503"))) {
-          await new Promise(resolve => setTimeout(resolve, 1500));
+        } catch (err: any) {
+          lastModelError = err;
+          const isRateLimit = String(err?.message || err).includes("429") || String(err?.message || err).includes("RESOURCE_EXHAUSTED");
+          console.warn(`Model ${modelName} attempt ${attempts} failed: ${err.message || err}`);
+          if (isRateLimit && attempts < maxAttempts) {
+            console.log(`Aguardando 1.5s antes de tentar novamente o modelo ${modelName}...`);
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          } else {
+            break;
+          }
         }
       }
+      if (response && response.text) break;
     }
 
-    if (!response || !response.text) {
-      throw lastModelError || new Error("Nenhum modelo Gemini respondeu com sucesso.");
-    }
+  if (!response || !response.text) {
+    throw lastModelError || new Error("Nenhum modelo Gemini respondeu com sucesso.");
+  }
 
     const resultText = response.text || "{}";
     let parsedData = robustJsonParse(resultText);
 
     if (parsedData && parsedData.tipo_relatorio === "CASAN_CENTRALIZADA") {
-      return parsedData;
+      console.log("[Gemini Multimodal Parser Output - CASAN Centralizada]:", JSON.stringify(parsedData, null, 2));
+      return res.json(parsedData);
     }
 
+    // Apply Post-Extraction Sanity Validation
     parsedData = validateExtractedFaturaSanity(parsedData, isCasan ? 'CASAN' : 'CELESC');
-    return parsedData;
+
+    console.log("[Gemini Multimodal Parser Output]:", JSON.stringify(parsedData, null, 2));
+
+    res.json(parsedData);
 
   } catch (error: any) {
-    console.warn("Gemini API error, falling back to local heuristic parser:", error);
+    console.warn("Gemini API error (Quota exceeded, network, or invalid image), falling back to local heuristic parser:", error);
     logTechnicalError("GEMINI_API_PARSER_FALLBACK", `Heuristic fallback used due to error: ${error.message || "Unknown error"}`, "server.ts", "1300");
-
-    if (isCasanCentralizada) {
-      const contas: any[] = [];
-      const lines = (texto_fatura || "").split("\n");
-      let refDate = "2026-06-01";
-      const refMatch = (texto_fatura || "").match(/(?:REFERÊNCIA|REFERENCIA|COMPETÊNCIA|COMPETENCIA)\s*[:/]*\s*(\d{2})\/(\d{4})/i);
-      if (refMatch) {
-        refDate = `${refMatch[2]}-${refMatch[1]}-01`;
-      }
-      for (const line of lines) {
-        const mMatch = line.match(/^\s*(\d{5,10}[-\s]?\d{1,2})\s+(.+?)\s+(\d+)\s+(\d+)\s+(\d+)\s*(?:m³)?\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)/i);
-        if (mMatch) {
-          contas.push({
-            matricula: mMatch[1].trim(),
-            usuario: mMatch[2].trim(),
-            localizacao: mMatch[2].trim(),
-            leitura_anterior: parseFloat(mMatch[3]) || 0,
-            leitura_atual: parseFloat(mMatch[4]) || 0,
-            consumo: parseFloat(mMatch[5]) || 0,
-            valor_agua: parseFloat(mMatch[6].replace(/\./g, "").replace(",", ".")) || 0,
-            valor_esgoto: parseFloat(mMatch[7].replace(/\./g, "").replace(",", ".")) || 0,
-            valor_servico: parseFloat(mMatch[8].replace(/\./g, "").replace(",", ".")) || 0,
-            valor_bonus: 0,
-            valor_total: parseFloat(mMatch[9].replace(/\./g, "").replace(",", ".")) || 0
-          });
+    
+    try {
+      if (isCasanCentralizada) {
+        const contas: any[] = [];
+        const lines = (texto_fatura || "").split("\n");
+        let refDate = "2026-06-01";
+        const refMatch = (texto_fatura || "").match(/(?:REFERÊNCIA|REFERENCIA|COMPETÊNCIA|COMPETENCIA)\s*[:/]*\s*(\d{2})\/(\d{4})/i);
+        if (refMatch) {
+          refDate = `${refMatch[2]}-${refMatch[1]}-01`;
         }
-      }
-      return {
-        tipo_relatorio: "CASAN_CENTRALIZADA",
-        referencia: refDate,
-        contas: contas
-      };
-    }
-
-    let parsedData = heuristicExtractFatura(texto_fatura || "", nome_arquivo || "fatura_upload.txt", layout);
-    parsedData = validateExtractedFaturaSanity(parsedData, isCasan ? 'CASAN' : 'CELESC');
-    parsedData.baixa_confianca = true;
-    parsedData.confianca = Math.min(parsedData.confianca || 50, 50);
-    const motivoFallback = `Extração realizada via parser heurístico local de contingência (Gemini indisponível: ${error.message || "Erro na API"}). Revisão humana obrigatória.`;
-    parsedData.motivo_baixa_confianca = parsedData.motivo_baixa_confianca ? `${motivoFallback} | ${parsedData.motivo_baixa_confianca}` : motivoFallback;
-    return parsedData;
-  }
-}
-
-// --- GEMINI MULTIMODAL PARSER ENDPOINT (SYNCHRONOUS SINGLE PAGE) ---
-app.post("/api/documentos/parse", async (req, res) => {
-  try {
-    const result = await parseSinglePageWithGeminiCore(req.body);
-    res.json(result);
-  } catch (error: any) {
-    console.error("Error in /api/documentos/parse:", error);
-    res.status(500).json({ error: error.message || "Erro no processamento da fatura." });
-  }
-});
-
-// --- ASYNCHRONOUS EXTRACTION JOBS INFRASTRUCTURE ---
-interface DocumentJob {
-  id: string;
-  status: 'PROCESSING' | 'COMPLETED' | 'FAILED';
-  created_em: string;
-  updated_em: string;
-  nome_arquivo: string;
-  totalPages: number;
-  processedPages: number;
-  extractedContasCount: number;
-  progressMessage: string;
-  pageStats: Array<{ page: number; count: number; truncated: boolean }>;
-  createdDocs: any[];
-  error?: string;
-}
-
-const activeJobs: Record<string, DocumentJob> = {};
-
-// Clean old jobs after 2 hours
-setInterval(() => {
-  const now = Date.now();
-  for (const id of Object.keys(activeJobs)) {
-    const job = activeJobs[id];
-    if (now - new Date(job.created_em).getTime() > 2 * 3600 * 1000) {
-      delete activeJobs[id];
-    }
-  }
-}, 10 * 60 * 1000);
-
-async function runAsyncExtractionJob(jobId: string, payload: {
-  nome_arquivo: string;
-  layout?: string;
-  pages: Array<{ pageNum: number; texto_fatura?: string; imagem_base64?: string }>;
-}) {
-  const job = activeJobs[jobId];
-  if (!job) return;
-
-  try {
-    const totalPages = payload.pages.length;
-    const createdDocs: any[] = [];
-    const pageStats: { page: number; count: number; truncated: boolean }[] = [];
-
-    // Parallel controlled concurrency of 2 pages at a time
-    const CONCURRENCY = 2;
-    for (let i = 0; i < totalPages; i += CONCURRENCY) {
-      const chunk = payload.pages.slice(i, i + CONCURRENCY);
-      job.progressMessage = `Processando páginas ${i + 1} a ${Math.min(i + CONCURRENCY, totalPages)} de ${totalPages} via Gemini Multimodal...`;
-      job.updated_em = new Date().toISOString();
-
-      const results = await Promise.all(
-        chunk.map(async (p) => {
-          try {
-            const pageName = `${payload.nome_arquivo} - Pág ${p.pageNum}`;
-            const parsed = await parseSinglePageWithGeminiCore({
-              texto_fatura: p.texto_fatura,
-              imagem_base64: p.imagem_base64,
-              layout: payload.layout || "CASAN_FATURA",
-              nome_arquivo: pageName
-            });
-            return { pageNum: p.pageNum, text: p.texto_fatura || "", parsed, success: true };
-          } catch (err: any) {
-            console.error(`Job ${jobId} error on page ${p.pageNum}:`, err);
-            return { pageNum: p.pageNum, text: p.texto_fatura || "", parsed: null, success: false, error: err.message };
-          }
-        })
-      );
-
-      for (const res of results) {
-        job.processedPages++;
-        if (res.success && res.parsed) {
-          const parsed = res.parsed;
-          let pageContas: any[] = [];
-          if (parsed.tipo_relatorio === "CASAN_CENTRALIZADA" && Array.isArray(parsed.contas)) {
-            pageContas = parsed.contas;
-          } else if (Array.isArray(parsed.contas)) {
-            pageContas = parsed.contas;
-          } else if (parsed.codigo_numero && parsed.valor_total) {
-            pageContas = [{
-              matricula: parsed.codigo_numero,
-              localizacao: parsed.endereco || "N/A",
-              usuario: parsed.unidade_nome || "N/A",
-              consumo: parsed.consumo || 0,
-              valor_total: parsed.valor_total || 0,
-              leitura_anterior: parsed.leitura_anterior || 0,
-              leitura_atual: parsed.leitura_atual || 0
-            }];
-          }
-
-          const isTrunc = !!(parsed.json_reparado_truncado || parsed.alerta_truncamento);
-          pageStats.push({
-            page: res.pageNum,
-            count: pageContas.length,
-            truncated: isTrunc
-          });
-
-          pageContas.forEach((conta: any, cIdx: number) => {
-            const logsVal: string[] = [];
-            if (isTrunc) {
-              logsVal.push("⚠️ ALERTA DE IMPORTAÇÃO: Resposta do Gemini para esta página sofreu truncamento de tokens e foi reparada.");
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const mMatch = line.match(/^\s*(\d{5,10}[-\s]?\d{1,2})\s+(.+?)\s+(\d+)\s+(\d+)\s+(\d+)\s*(?:m³)?\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)/i);
+          if (mMatch) {
+            let logradouro = "";
+            if (i + 1 < lines.length) {
+              const nextL = lines[i + 1].trim();
+              if (nextL && !/^\d{5,10}[-\s]?\d{1,2}/.test(nextL) && !/^(MATRÍCULA|MATRICULA|GRUPO|SUPERINTENDÊNCIA|ÓRGÃO|RELATÓRIO|SISTEMA)/i.test(nextL)) {
+                logradouro = nextL;
+              }
             }
-
-            createdDocs.push({
-              id: `DOC-JOB-${jobId}-P${res.pageNum}-${cIdx + 1}`,
-              nome_arquivo: `${payload.nome_arquivo} (Pág ${res.pageNum} | Matrícula: ${conta.matricula || 'N/A'})`,
-              layout: payload.layout || "CASAN_FATURA",
-              tamanho: res.text.length,
-              status: logsVal.length > 0 ? 'NORMALIZADO' : 'VALIDADO',
-              origem_conteudo: res.text,
-              dados_extraidos: {
-                mes_ano: parsed.referencia || "2026-06-01",
-                consumo: conta.consumo || 0,
-                valor_total: conta.valor_total || 0,
-                valor_imposto: 0,
-                valor_celular: 0,
-                valor_internet: 0,
-                valor_diversos: conta.valor_servico || 0,
-                valor_linha_privada: 0,
-                valor_credito: conta.valor_bonus || 0,
-                codigo_numero: conta.matricula || "DESCONHECIDO",
-                medidor: "N/A",
-                unidade_nome: conta.usuario || conta.localizacao || "N/A",
-                endereco: conta.localizacao || "N/A",
-                leitura_anterior: conta.leitura_anterior || 0,
-                leitura_atual: conta.leitura_atual || 0,
-                itens_fatura: []
-              },
-              logs_validacao: logsVal,
-              historico_alteracoes: [],
-              criado_em: new Date().toISOString(),
-              atualizado_em: new Date().toISOString(),
-              numero_pagina: res.pageNum,
-              posicao_na_pagina: cIdx + 1,
-              total_na_pagina: pageContas.length,
-              posicao_no_lote: createdDocs.length + 1,
-              total_no_lote: totalPages,
-              score: 100
+            contas.push({
+              matricula: mMatch[1].trim(),
+              usuario: mMatch[2].trim(),
+              localizacao: mMatch[2].trim(),
+              logradouro: logradouro,
+              leitura_anterior: parseFloat(mMatch[3]) || 0,
+              leitura_atual: parseFloat(mMatch[4]) || 0,
+              consumo: parseFloat(mMatch[5]) || 0,
+              valor_agua: parseFloat(mMatch[6].replace(/\./g, "").replace(",", ".")) || 0,
+              valor_esgoto: parseFloat(mMatch[7].replace(/\./g, "").replace(",", ".")) || 0,
+              valor_servico: parseFloat(mMatch[8].replace(/\./g, "").replace(",", ".")) || 0,
+              valor_bonus: 0,
+              valor_total: parseFloat(mMatch[9].replace(/\./g, "").replace(",", ".")) || 0
             });
-          });
+          }
         }
+        return res.json({
+          tipo_relatorio: "CASAN_CENTRALIZADA",
+          referencia: refDate,
+          contas: contas
+        });
       }
 
-      job.extractedContasCount = createdDocs.length;
-      job.pageStats = pageStats;
-      job.createdDocs = createdDocs;
-      job.updated_em = new Date().toISOString();
-
-      // Pacing delay between chunk iterations to respect Gemini API rate limits (429 prevention)
-      if (i + CONCURRENCY < totalPages) {
-        await new Promise(resolve => setTimeout(resolve, 800));
-      }
+      let parsedData = heuristicExtractFatura(texto_fatura || "", nome_arquivo || "fatura_upload.txt", layout);
+      parsedData = validateExtractedFaturaSanity(parsedData, isCasan ? 'CASAN' : 'CELESC');
+      parsedData.baixa_confianca = true;
+      parsedData.confianca = Math.min(parsedData.confianca || 50, 50);
+      const motivoFallback = `Extração realizada via parser heurístico local de contingência (Gemini indisponível: ${error.message || "Erro na API"}). Revisão humana obrigatória.`;
+      parsedData.motivo_baixa_confianca = parsedData.motivo_baixa_confianca ? `${motivoFallback} | ${parsedData.motivo_baixa_confianca}` : motivoFallback;
+      res.json(parsedData);
+    } catch (fallbackError: any) {
+      console.error("Critical: Fallback heuristic parser also failed:", fallbackError);
+      res.status(500).json({ error: "Falha na comunicação com o Parser do Gemini e no extrator de contingência: " + fallbackError.message });
     }
-
-    job.status = 'COMPLETED';
-    job.progressMessage = `Extração concluída com sucesso! Total: ${createdDocs.length} contas extraídas em ${totalPages} páginas.`;
-    job.updated_em = new Date().toISOString();
-  } catch (err: any) {
-    console.error(`Job ${jobId} execution error:`, err);
-    job.status = 'FAILED';
-    job.error = err.message || "Erro no processamento do job.";
-    job.progressMessage = `Falha no processamento: ${err.message}`;
-    job.updated_em = new Date().toISOString();
   }
-}
-
-app.post("/api/documentos/jobs", (req, res) => {
-  const { nome_arquivo, layout, pages } = req.body;
-  if (!pages || !Array.isArray(pages) || pages.length === 0) {
-    return res.status(400).json({ error: "Nenhuma página enviada para processamento em lote." });
-  }
-
-  const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const newJob: DocumentJob = {
-    id: jobId,
-    status: 'PROCESSING',
-    created_em: new Date().toISOString(),
-    updated_em: new Date().toISOString(),
-    nome_arquivo: nome_arquivo || "relatorio_lote.pdf",
-    totalPages: pages.length,
-    processedPages: 0,
-    extractedContasCount: 0,
-    progressMessage: `Job de extração iniciado para ${pages.length} página(s)...`,
-    pageStats: [],
-    createdDocs: []
-  };
-
-  activeJobs[jobId] = newJob;
-
-  // Launch background execution
-  runAsyncExtractionJob(jobId, { nome_arquivo, layout, pages });
-
-  // Immediate response
-  res.json({
-    jobId,
-    status: 'PROCESSING',
-    totalPages: pages.length
-  });
-});
-
-app.get("/api/documentos/jobs/:id", (req, res) => {
-  const job = activeJobs[req.params.id];
-  if (!job) {
-    return res.status(404).json({ error: "Job de extração não encontrado ou expirado." });
-  }
-  res.json(job);
 });
 
 
@@ -2332,7 +2148,6 @@ app.get("/api/documentos/jobs/:id", (req, res) => {
 
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -2346,18 +2161,13 @@ async function startServer() {
     });
   }
 
-  const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`SisPu.JP 2.0 running on http://localhost:${PORT} [NODE_ENV=${process.env.NODE_ENV || 'development'}]`);
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`SisPu.JP 2.0 running on http://0.0.0.0:${PORT} [NODE_ENV=${process.env.NODE_ENV || 'development'}]`);
   });
 
-  // Configure high HTTP server timeouts for long running workloads
-  server.timeout = 1200000; // 20 minutes
-  server.keepAliveTimeout = 120000; // 2 minutes
-  server.headersTimeout = 125000;
-
-  // Non-blocking background database persistence initialization so Cloud Run health check binds port 3000 immediately
+  // Initialize DB asynchronously so server starts listening without delay
   initDatabasePersistence().catch(err => {
-    console.error("[DB] Falha no startup de persistência em background:", err);
+    console.error("[DB] Erro assíncrono na inicialização do PostgreSQL:", err);
   });
 }
 

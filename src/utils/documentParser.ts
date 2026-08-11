@@ -140,17 +140,24 @@ export const classifyTextWithScore = (text: string): ClassificationResult => {
   }
 
   // CASAN Scoring
-  if (contentUpper.includes("CASAN")) {
+  if (
+    contentUpper.includes("CASAN") ||
+    contentUpper.includes("COMPANHIA CATARINENSE") ||
+    contentUpper.includes("CATARINENSE DE AGUAS") ||
+    contentUpper.includes("CATARINENSE DE ÁGUAS") ||
+    contentUpper.includes("SISTEMA COMERCIAL INTEGRADO") ||
+    contentUpper.includes("SCI8095")
+  ) {
     scoreCasan += 40;
-    logs.push("Casan: palavra 'CASAN' encontrada (+40)");
+    logs.push("Casan: 'CASAN' ou 'Companhia Catarinense de Águas e Saneamento' / 'SCI' encontrada (+40)");
   }
   if (contentUpper.includes("MATRICULA") || contentUpper.includes("MATRÍCULA") || contentUpper.includes("LIGAÇÃO") || contentUpper.includes("LIGACAO")) {
     scoreCasan += 20;
     logs.push("Casan: 'Matrícula' ou 'Ligação' encontrada (+20)");
   }
-  if (contentUpper.includes("AGUA") || contentUpper.includes("ÁGUA")) {
+  if (contentUpper.includes("AGUA") || contentUpper.includes("ÁGUA") || contentUpper.includes("CONTAS QUE COMPÕEM") || contentUpper.includes("CONTAS QUE COMPOEM")) {
     scoreCasan += 20;
-    logs.push("Casan: 'Água' encontrada (+20)");
+    logs.push("Casan: 'Água' ou 'Contas que compõem' encontrada (+20)");
   }
   if (contentUpper.includes("ESGOTO") || contentUpper.includes("SANEAMENTO")) {
     scoreCasan += 20;
@@ -179,7 +186,12 @@ export const identifyDocumentType = (text: string, fileName: string): DocumentLa
   const nameUpper = fileName.toUpperCase();
 
   const hasCelesc = contentUpper.includes("CELESC") || nameUpper.includes("CELESC");
-  const hasCasan = contentUpper.includes("CASAN") || nameUpper.includes("CASAN");
+  const hasCasan = contentUpper.includes("CASAN") || nameUpper.includes("CASAN") ||
+                   contentUpper.includes("COMPANHIA CATARINENSE") ||
+                   contentUpper.includes("CATARINENSE DE AGUAS") || contentUpper.includes("CATARINENSE DE ÁGUAS") ||
+                   contentUpper.includes("SISTEMA COMERCIAL INTEGRADO") || contentUpper.includes("SCI8095") ||
+                   contentUpper.includes("CONTAS QUE COMPÕEM") || contentUpper.includes("CONTAS QUE COMPOEM") ||
+                   contentUpper.includes("COBRANÇA CENTRALIZADA") || contentUpper.includes("COBRANCA CENTRALIZADA");
 
   // A report/consolidated PDF typically contains multiple sections/points or references batch billing
   const pontoCount = (contentUpper.match(/PONTO\s+\d+|PONTO/g) || []).length;
@@ -190,6 +202,8 @@ export const identifyDocumentType = (text: string, fileName: string): DocumentLa
   const isBatch = pontoCount > 1 || ucDebitoCount > 1 || matriculaCount > 1 || ucCount > 1 ||
                   contentUpper.includes("RELATORIO") || contentUpper.includes("RELATÓRIO") || 
                   contentUpper.includes("COLETIV") || contentUpper.includes("LOTE") ||
+                  contentUpper.includes("CONTAS QUE COMPÕEM") || contentUpper.includes("CONTAS QUE COMPOEM") ||
+                  contentUpper.includes("COBRANÇA CENTRALIZADA") || contentUpper.includes("COBRANCA CENTRALIZADA") ||
                   nameUpper.includes("RELATORIO") || nameUpper.includes("RELATÓRIO") || 
                   nameUpper.includes("COLETIV") || nameUpper.includes("LOTE");
 

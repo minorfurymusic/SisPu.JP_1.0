@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef } from "react";
 import { 
   ArrowUpDown, ArrowUp, ArrowDown, Settings, 
-  Eye, EyeOff, RefreshCw, GripVertical, Search 
+  Eye, EyeOff, Pin, PinOff, RefreshCw, GripVertical, Search 
 } from "lucide-react";
 
 export interface SmartTableColumn {
   key: string;
   label: string;
   render?: (item: any) => React.ReactNode;
+  isPinned?: boolean;
   searchable?: boolean;
   type?: "string" | "number" | "currency" | "date" | "boolean";
 }
@@ -27,6 +28,7 @@ interface TableConfig {
   columnOrder: string[];
   hiddenColumns: string[];
   columnWidths: Record<string, number>;
+  pinnedColumns: string[];
 }
 
 export default function SmartTable({
@@ -43,7 +45,8 @@ export default function SmartTable({
   const [config, setConfig] = useState<TableConfig>({
     columnOrder: [],
     hiddenColumns: [],
-    columnWidths: {}
+    columnWidths: {},
+    pinnedColumns: []
   });
 
   // Local filtering & sorting state
@@ -59,9 +62,21 @@ export default function SmartTable({
   // Load configuration from localStorage
   useEffect(() => {
     const saved = localStorage.getItem(`sispu_table_config:${tableId}`);
+    const propKeys = columns.map(c => c.key);
     if (saved) {
       try {
-        const parsed = JSON.parse(saved);
+        const parsed: TableConfig = JSON.parse(saved);
+        const savedKeys = parsed.columnOrder || [];
+        const missingKeys = propKeys.filter(k => !savedKeys.includes(k));
+        if (missingKeys.length > 0) {
+          const updatedOrder = [...savedKeys];
+          propKeys.forEach((key, idx) => {
+            if (!updatedOrder.includes(key)) {
+              updatedOrder.splice(idx, 0, key);
+            }
+          });
+          parsed.columnOrder = updatedOrder;
+        }
         setConfig(parsed);
       } catch (e) {
         resetConfig();
@@ -78,7 +93,8 @@ export default function SmartTable({
       columnWidths: columns.reduce((acc, c) => {
         acc[c.key] = 150; // default starting width
         return acc;
-      }, {} as Record<string, number>)
+      }, {} as Record<string, number>),
+      pinnedColumns: columns.filter(c => c.isPinned).map(c => c.key)
     };
     setConfig(defaultConfig);
     saveConfig(defaultConfig);
@@ -167,6 +183,18 @@ export default function SmartTable({
     saveConfig({ ...config, hiddenColumns: newHidden });
   };
 
+  // Toggle pin
+  const togglePin = (colKey: string) => {
+    const isPinned = config.pinnedColumns.includes(colKey);
+    let newPinned = [...config.pinnedColumns];
+    if (isPinned) {
+      newPinned = newPinned.filter(k => k !== colKey);
+    } else {
+      newPinned.push(colKey);
+    }
+    saveConfig({ ...config, pinnedColumns: newPinned });
+  };
+
   // Toggle sorting
   const handleSort = (colKey: string) => {
     if (sortField === colKey) {
@@ -192,6 +220,7 @@ export default function SmartTable({
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       result = result.filter(item => {
+        if (!item) return false;
         return columns.some(col => {
           if (col.searchable === false) return false;
           
@@ -206,6 +235,9 @@ export default function SmartTable({
     // Sort
     if (sortField && sortDirection) {
       result.sort((a, b) => {
+        if (!a && !b) return 0;
+        if (!a) return 1;
+        if (!b) return -1;
         let valA = a[sortField];
         let valB = b[sortField];
 
@@ -226,12 +258,19 @@ export default function SmartTable({
   }, [data, columns, searchQuery, sortField, sortDirection]);
 
   // Determine actual column order including hidden ones filter
-  const visibleColumns = config.columnOrder
+  const propKeys = columns.map(c => c.key);
+  const effectiveColumnOrder = [
+    ...(config.columnOrder || []).filter(key => propKeys.includes(key)),
+    ...propKeys.filter(key => !(config.columnOrder || []).includes(key))
+  ];
+
+  const visibleColumns = effectiveColumnOrder
     .map(key => columns.find(c => c.key === key))
     .filter((c): c is SmartTableColumn => !!c && !config.hiddenColumns.includes(c.key));
 
   // Render headers
   const renderHeader = (col: SmartTableColumn) => {
+    const isPinned = config.pinnedColumns.includes(col.key);
     const colWidth = config.columnWidths[col.key] || 150;
 
     return (
@@ -241,33 +280,41 @@ export default function SmartTable({
         onDragStart={(e) => handleDragStart(e, col.key)}
         onDragOver={(e) => handleDragOver(e, col.key)}
         onDrop={(e) => handleDrop(e, col.key)}
-        className="px-4 py-3 bg-slate-50 text-slate-700 uppercase font-bold text-[11px] border-b border-slate-200 relative select-none group/th transition-all"
+        className={`px-4 py-3 bg-slate-50 dark:bg-[#0a0a0a] text-slate-700 dark:text-gray-200 uppercase font-bold text-[11px] border-b border-slate-200 dark:border-white/10 relative select-none group/th transition-all ${
+          isPinned ? "sticky left-0 z-20 bg-slate-100 dark:!bg-[#0a0a0a] shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]" : ""
+        }`}
         style={{ width: `${colWidth}px`, minWidth: `${colWidth}px` }}
       >
         <div className="flex items-center justify-between gap-1.5 w-full">
           <span 
             onClick={() => handleSort(col.key)}
-            className="cursor-pointer flex items-center gap-1.5 hover:text-slate-900 flex-1 truncate"
+            className="cursor-pointer flex items-center gap-1.5 hover:text-slate-900 dark:hover:text-white flex-1 truncate"
             title="Clique para ordenar"
           >
-            <GripVertical className="h-3 w-3 text-slate-300 cursor-grab active:cursor-grabbing shrink-0 opacity-0 group-hover/th:opacity-100 transition-opacity" />
+            <GripVertical className="h-3 w-3 text-slate-300 dark:text-gray-600 cursor-grab active:cursor-grabbing shrink-0 opacity-0 group-hover/th:opacity-100 transition-opacity" />
             <span className="truncate">{col.label}</span>
             {sortField === col.key ? (
               sortDirection === "asc" ? (
-                <ArrowUp className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                <ArrowUp className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
               ) : (
-                <ArrowDown className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                <ArrowDown className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
               )
             ) : (
-              <ArrowUpDown className="h-3.5 w-3.5 text-slate-300 shrink-0 opacity-0 group-hover/th:opacity-100 transition-opacity" />
+              <ArrowUpDown className="h-3.5 w-3.5 text-slate-300 dark:text-gray-600 shrink-0 opacity-0 group-hover/th:opacity-100 transition-opacity" />
             )}
           </span>
+
+          {isPinned && (
+            <span className="text-indigo-600 dark:text-indigo-400 shrink-0" title="Coluna fixada">
+              <Pin className="h-2.5 w-2.5" />
+            </span>
+          )}
         </div>
 
         {/* Resize Handle */}
         <div
           onMouseDown={(e) => handleResizeStart(e, col.key)}
-          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-indigo-500/50 bg-slate-200/50 z-30 opacity-0 group-hover/th:opacity-100 transition-opacity"
+          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-indigo-500/50 bg-slate-200/50 dark:bg-white/10 z-30 opacity-0 group-hover/th:opacity-100 transition-opacity"
         />
       </th>
     );
@@ -276,76 +323,80 @@ export default function SmartTable({
   return (
     <div className="w-full space-y-3 font-sans">
       {/* 🔍 SEARCH AND CONTROLS HEADER */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-white p-3 rounded-lg border border-slate-200/80 shadow-sm">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-white dark:bg-[#121212] p-3 rounded-lg border border-slate-200/80 dark:border-white/10 shadow-sm">
         <div className="relative w-full sm:w-72">
           <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-            <Search className="h-4 w-4 text-slate-400" />
+            <Search className="h-4 w-4 text-slate-400 dark:text-gray-500" />
           </span>
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder={searchPlaceholder}
-            className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-9 pr-4 py-1.5 text-xs font-semibold text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white transition"
+            className="w-full bg-slate-50 dark:bg-[#1c1c1c] border border-slate-200 dark:border-white/10 rounded-lg pl-9 pr-4 py-1.5 text-xs font-semibold text-slate-800 dark:text-white placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white dark:focus:bg-[#222] transition"
           />
         </div>
 
         <div className="flex items-center gap-2 self-end sm:self-auto">
           <button
             onClick={() => setShowConfigModal(true)}
-            className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold flex items-center gap-1.5 transition active:scale-95"
+            className="bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-gray-200 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/10 text-xs font-semibold flex items-center gap-1.5 transition active:scale-95"
           >
-            <Settings className="h-3.5 w-3.5 text-slate-500" />
+            <Settings className="h-3.5 w-3.5 text-slate-500 dark:text-gray-400" />
             Gerenciar Colunas
           </button>
           <button
             onClick={resetConfig}
-            className="bg-slate-100 hover:bg-slate-200 text-slate-700 p-1.5 rounded-lg border border-slate-200 text-xs font-semibold flex items-center justify-center transition active:scale-95"
+            className="bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-gray-200 p-1.5 rounded-lg border border-slate-200 dark:border-white/10 text-xs font-semibold flex items-center justify-center transition active:scale-95"
             title="Restaurar layout original da tabela"
           >
-            <RefreshCw className="h-3.5 w-3.5 text-slate-500" />
+            <RefreshCw className="h-3.5 w-3.5 text-slate-500 dark:text-gray-400" />
           </button>
         </div>
       </div>
 
-      {/* 📊 TABLE LAYOUT CONTAINER */}
-      <div className="overflow-x-auto rounded-lg border border-slate-200/80 shadow-sm bg-white">
-        <table className="w-full border-collapse text-left text-xs text-slate-600">
-          <thead>
-            <tr className="border-b border-slate-200">
+      {/* 📊 TABLE LAYOUT CONTAINER WITH SCROLLING */}
+      <div className="overflow-auto max-h-[620px] rounded-lg border border-slate-200/80 dark:border-white/10 shadow-sm bg-white dark:bg-[#0f0f0f] custom-scrollbar">
+        <table className="w-full border-collapse text-left text-xs text-slate-600 dark:text-gray-300">
+          <thead className="sticky top-0 z-30 bg-slate-50 dark:bg-[#0a0a0a] shadow-sm">
+            <tr className="border-b border-slate-200 dark:border-white/10">
               {visibleColumns.map(col => renderHeader(col))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
+          <tbody className="divide-y divide-slate-100 dark:divide-white/5">
             {filteredData.length === 0 ? (
               <tr>
-                <td colSpan={visibleColumns.length} className="px-4 py-10 text-center text-slate-400 italic">
+                <td colSpan={visibleColumns.length} className="px-4 py-10 text-center text-slate-400 dark:text-gray-500 italic">
                   Nenhum registro encontrado.
                 </td>
               </tr>
             ) : (
               filteredData.map((item, idx) => {
+                if (!item) return null;
                 const isExpanded = isRowExpanded ? isRowExpanded(item) : false;
                 const rowCustomClass = rowClassName ? rowClassName(item) : "";
                 
                 return (
-                  <React.Fragment key={item.id || idx}>
+                  <React.Fragment key={item?.id || idx}>
                     <tr
                       onClick={() => onRowClick && onRowClick(item)}
-                      className={`hover:bg-slate-50/80 transition-colors group ${
+                      className={`hover:bg-slate-50/80 dark:hover:bg-white/5 transition-colors group ${
                         onRowClick ? "cursor-pointer" : ""
                       } ${rowCustomClass}`}
                     >
                       {visibleColumns.map(col => {
-                        const width = col.key === "acoes" ? Math.max(config.columnWidths[col.key] || 120, 110) : (config.columnWidths[col.key] || 150);
+                        const isPinned = config.pinnedColumns.includes(col.key);
+                        const width = config.columnWidths[col.key] || 150;
 
                         return (
                           <td
                             key={col.key}
-                            className="px-4 py-2.5 transition-all text-slate-800"
-                            style={{ maxWidth: col.key === "acoes" ? "none" : `${width}px`, minWidth: `${width}px`, width: `${width}px` }}
+                            className={`px-4 py-2.5 transition-all text-slate-800 dark:text-gray-200 ${
+                              isPinned ? "sticky left-0 bg-white dark:!bg-[#0f0f0f] group-hover:bg-slate-50 dark:group-hover:!bg-[#1a1a1a] z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.2)]" : ""
+                            }`}
+                            style={{ maxWidth: `${width}px`, minWidth: `${width}px`, width: `${width}px` }}
                           >
-                            <div className={col.key === "acoes" ? "flex items-center" : "truncate"}>
+                            <div className="truncate">
                               {col.render ? col.render(item) : (item[col.key] !== undefined && item[col.key] !== null ? String(item[col.key]) : "-")}
                             </div>
                           </td>
@@ -353,8 +404,8 @@ export default function SmartTable({
                       })}
                     </tr>
                     {isExpanded && expandedRowRender && (
-                      <tr className="bg-slate-50/80">
-                        <td colSpan={visibleColumns.length} className="px-6 py-4 border-b border-slate-200/80">
+                      <tr className="bg-slate-50/80 dark:bg-black/40">
+                        <td colSpan={visibleColumns.length} className="px-6 py-4 border-b border-slate-200/80 dark:border-white/10">
                           {expandedRowRender(item)}
                         </td>
                       </tr>
@@ -374,7 +425,7 @@ export default function SmartTable({
             <div className="px-5 py-4 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
               <div>
                 <h4 className="font-bold text-slate-800 text-sm">Visualização de Colunas</h4>
-                <p className="text-[10px] text-slate-500 mt-0.5">Ordene e oculte as colunas desta tabela de dados</p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Ordene, oculte ou congele as colunas desta tabela de dados</p>
               </div>
               <button
                 onClick={() => setShowConfigModal(false)}
@@ -392,6 +443,7 @@ export default function SmartTable({
                     const col = columns.find(c => c.key === key);
                     if (!col) return null;
                     const isHidden = config.hiddenColumns.includes(key);
+                    const isPinned = config.pinnedColumns.includes(key);
 
                     return (
                       <div
@@ -412,6 +464,14 @@ export default function SmartTable({
                             title={isHidden ? "Exibir coluna" : "Ocultar coluna"}
                           >
                             {isHidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                          </button>
+                          
+                          <button
+                            onClick={() => togglePin(key)}
+                            className={`p-1 rounded hover:bg-slate-100 transition ${isPinned ? "text-indigo-600" : "text-slate-300"}`}
+                            title={isPinned ? "Descongelar coluna" : "Congelar coluna"}
+                          >
+                            <Pin className="h-3.5 w-3.5" />
                           </button>
                         </div>
                       </div>

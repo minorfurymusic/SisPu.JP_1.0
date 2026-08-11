@@ -14,6 +14,7 @@ export interface Secretaria {
   id: string;
   codigo_legado?: number;
   nome: string;
+  sigla?: string;
   ativo: boolean;
   criado_em: string;
   atualizado_em: string;
@@ -24,6 +25,9 @@ export interface Unidade {
   codigo_legado?: number;
   secretaria_id: string;
   nome: string;
+  uc?: string;
+  codnum?: string;
+  concessionaria?: string;
   endereco?: string;
   ativo: boolean;
   criado_em: string;
@@ -54,10 +58,6 @@ export interface ItemDespesa {
 export interface Lancamento {
   id: string;
   item_despesa_id: string;
-  secretaria_id?: string;
-  secretaria_nome?: string;
-  unidade_nome?: string;
-  codigo_numero?: string;
   mes_ano: string; // YYYY-MM-DD
   consumo: number;
   valor_total: number;
@@ -108,7 +108,7 @@ export interface AuditoriaRegistro {
   id: string;
   tabela: string;
   registro_pk?: string;
-  acao: 'INSERT' | 'UPDATE' | 'DELETE' | 'RESET_TOTAL' | string;
+  acao: 'INSERT' | 'UPDATE' | 'DELETE';
   usuario: string;
   valor_antigo?: any;
   valor_novo?: any;
@@ -232,5 +232,4 @@ export interface CadastroMestreUC {
   grupo_tarifario: string;
   situacao: 'Ativa' | 'Inativa';
   criado_em: string;
-  atualizado_em?: string;
 }
