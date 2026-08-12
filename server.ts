@@ -1305,7 +1305,15 @@ app.get("/api/lancamentos", (req, res) => {
       : (matchingDoc?.dados_extraidos?.unidade_nome || (item?.codigo_numero ? `UNIDADE ${item.codigo_numero}` : "NÃO LOCALIZADA"));
 
     return {
+      // Campos detalhados da fatura (itens_fatura, endereço, chave de acesso, datas de
+      // leitura/vencimento, demanda, energia reativa, etc.) só existem em
+      // documentos_processados.dados_extraidos — a tabela lancamentos guarda só os totais.
+      // Sem isso aqui, a tela sempre mostrava esses campos zerados/vazios ao reabrir um
+      // lançamento já salvo, mesmo quando a extração original tinha vindo correta.
+      ...(matchingDoc?.dados_extraidos || {}),
       ...l,
+      dados_extraidos: matchingDoc?.dados_extraidos,
+      itens_fatura: matchingDoc?.dados_extraidos?.itens_fatura || [],
       energia_injetada,
       concessionaria,
       codigo_numero: item ? item.codigo_numero : (matchingDoc?.dados_extraidos?.codigo_numero || "NÃO LOCALIZADO"),
