@@ -421,27 +421,6 @@ export async function saveAllStateToPostgres(state: any): Promise<void> {
         );
       }
 
-      // Sync deletions for tables
-      const deleteNotIn = async (tableName: string, items: any[]) => {
-        const ids = (items || []).map(x => x?.id).filter(Boolean);
-        if (ids.length > 0) {
-          const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
-          await client.query(`DELETE FROM ${tableName} WHERE id NOT IN (${placeholders})`, ids);
-        } else {
-          await client.query(`DELETE FROM ${tableName}`);
-        }
-      };
-
-      await deleteNotIn('lancamentos', state.lancamentos);
-      await deleteNotIn('documentos_processados', state.documentos_processados);
-      await deleteNotIn('itens_despesas', state.itens_despesas);
-      await deleteNotIn('unidades', state.unidades);
-      await deleteNotIn('secretarias', state.secretarias);
-      await deleteNotIn('despesas', state.despesas);
-      await deleteNotIn('pessoas', state.pessoas);
-      await deleteNotIn('contatos_email', state.contatos_email);
-      await deleteNotIn('cadastro_mestre_ucs', state.cadastro_mestre_ucs);
-
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');
@@ -451,5 +430,32 @@ export async function saveAllStateToPostgres(state: any): Promise<void> {
     }
   } catch (err: any) {
     console.error("[DB] Erro ao sincronizar estado com PostgreSQL:", err.message || err);
+  }
+}
+
+// Tables a single row can be explicitly deleted from. Exclusion here is deliberate: saves
+// only ever INSERT/UPDATE (see saveAllStateToPostgres above) — a row leaves Postgres only when
+// one of these is called for its own id, never as a side effect of some other save producing a
+// smaller in-memory array. That's what protects real data from a stale/partial in-memory `db`.
+const DELETABLE_TABLES = new Set([
+  'lancamentos',
+  'documentos_processados',
+  'itens_despesas',
+  'unidades',
+  'secretarias',
+  'despesas',
+  'cadastro_mestre_ucs',
+]);
+
+export async function deleteRowFromPostgres(tableName: string, id: string): Promise<void> {
+  if (!DELETABLE_TABLES.has(tableName)) {
+    throw new Error(`Tabela não permitida para exclusão: ${tableName}`);
+  }
+  const p = getPool();
+  if (!p || !id) return;
+  try {
+    await p.query(`DELETE FROM ${tableName} WHERE id = $1`, [id]);
+  } catch (err: any) {
+    console.error(`[DB] Erro ao excluir registro de ${tableName} (id=${id}):`, err.message || err);
   }
 }

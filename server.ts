@@ -10,7 +10,7 @@ import {
   DocumentoProcessado, CadastroMestreUC
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
-import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool } from "./src/db/postgres";
+import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, deleteRowFromPostgres } from "./src/db/postgres";
 
 dotenv.config();
 
@@ -81,13 +81,15 @@ function loadDB(): DatabaseState {
   return initialDBState;
 }
 
-// Guards against wiping real Neon data: saveAllStateToPostgres() deletes from every table
-// anything whose id isn't in the in-memory arrays it's given. Right after a cold start, `db`
-// is still the local/empty seed state until the real rows are pulled back from Postgres — a
-// save that races ahead of that pull would look like "the user deleted everything" and drop
-// every table. This flag only turns true once we know `db` truly reflects Postgres's contents
-// (or once we've deliberately decided to seed Postgres from a confirmed-empty state), so the
-// sync-by-diff logic in saveAllStateToPostgres never fires against a hollow cache.
+// Guards against clobbering real Neon data on boot: saveAllStateToPostgres() only ever
+// upserts (INSERT ... ON CONFLICT DO UPDATE) — it never deletes rows. Deletion happens only
+// through deleteRowFromPostgres(), called explicitly from the DELETE endpoints for the exact
+// row a user removed, never as a side effect of some other save producing a smaller array.
+// This flag still matters for the upsert itself: right after a cold start, `db` is still the
+// local/empty seed state (with placeholder ids like "1") until the real rows are pulled back
+// from Postgres — an upsert that races ahead of that pull would overwrite real rows' fields
+// with seed defaults. It only turns true once we know `db` truly reflects Postgres's contents
+// (or once we've deliberately decided to seed Postgres from a confirmed-empty state).
 let postgresHydrated = false;
 
 function saveDB(state: DatabaseState) {
@@ -437,6 +439,7 @@ function autoSyncOrphanRecords() {
         const idx = db.unidades.findIndex(u => String(u.id) === String(dup.id));
         if (idx !== -1) {
           db.unidades.splice(idx, 1);
+          deleteRowFromPostgres("unidades", dup.id).catch(err => console.error("Erro ao excluir unidade duplicada do Postgres:", err));
           hasChanges = true;
         }
       });
@@ -652,6 +655,7 @@ app.delete("/api/secretarias/:id", (req, res) => {
   const oldVal = { ...db.secretarias[index] };
   db.secretarias.splice(index, 1);
   saveDB(db);
+  deleteRowFromPostgres("secretarias", id).catch(err => console.error("Erro ao excluir secretaria do Postgres:", err));
 
   logAudit("secretarias", id, "DELETE", usuario, oldVal, null);
 
@@ -751,6 +755,7 @@ app.delete("/api/cadastro-mestre-ucs/:id", (req, res) => {
   const oldVal = { ...db.cadastro_mestre_ucs[index] };
   db.cadastro_mestre_ucs.splice(index, 1);
   saveDB(db);
+  deleteRowFromPostgres("cadastro_mestre_ucs", id).catch(err => console.error("Erro ao excluir UC do Postgres:", err));
   logAudit("cadastro_mestre_ucs", id, "DELETE", usuario, oldVal, null);
 
   res.json({ message: "UC removida do Cadastro Mestre com sucesso." });
@@ -958,6 +963,7 @@ app.delete("/api/unidades/:id", (req, res) => {
   const oldVal = { ...db.unidades[index] };
   db.unidades.splice(index, 1);
   saveDB(db);
+  deleteRowFromPostgres("unidades", id).catch(err => console.error("Erro ao excluir unidade do Postgres:", err));
 
   logAudit("unidades", id, "DELETE", usuario, oldVal, null);
 
@@ -1062,6 +1068,7 @@ app.delete("/api/despesas/:id", (req, res) => {
   const oldVal = { ...db.despesas[index] };
   db.despesas.splice(index, 1);
   saveDB(db);
+  deleteRowFromPostgres("despesas", id).catch(err => console.error("Erro ao excluir despesa do Postgres:", err));
 
   logAudit("despesas", id, "DELETE", usuario, oldVal, null);
 
@@ -1187,6 +1194,7 @@ app.delete("/api/itens_despesas/:id", (req, res) => {
   const oldVal = { ...db.itens_despesas[index] };
   db.itens_despesas.splice(index, 1);
   saveDB(db);
+  deleteRowFromPostgres("itens_despesas", id).catch(err => console.error("Erro ao excluir item de despesa do Postgres:", err));
 
   logAudit("itens_despesas", id, "DELETE", usuario, oldVal, null);
 
@@ -1408,10 +1416,12 @@ app.delete("/api/lancamentos/:id", (req, res) => {
     const oldVal = { ...db.lancamentos[index] };
     const deletedLanc = db.lancamentos.splice(index, 1)[0];
     found = true;
+    deleteRowFromPostgres("lancamentos", id).catch(err => console.error("Erro ao excluir lançamento do Postgres:", err));
 
     // Clean up corresponding item in documentos_processados if linked
     if (db.documentos_processados) {
       db.documentos_processados = db.documentos_processados.filter(d => String(d.id) !== String(id));
+      deleteRowFromPostgres("documentos_processados", id).catch(err => console.error("Erro ao excluir documento do Postgres:", err));
     }
 
     logAudit("lancamentos", id, "DELETE", usuario, oldVal, null);
@@ -1424,6 +1434,7 @@ app.delete("/api/lancamentos/:id", (req, res) => {
       const oldDoc = db.documentos_processados[docIndex];
       db.documentos_processados.splice(docIndex, 1);
       found = true;
+      deleteRowFromPostgres("documentos_processados", id).catch(err => console.error("Erro ao excluir documento do Postgres:", err));
       logAudit("documentos_processados", id, "DELETE", usuario, oldDoc, null);
     }
   }
@@ -1450,6 +1461,7 @@ app.delete("/api/documentos/:id", (req, res) => {
   const oldVal = { ...db.documentos_processados[index] };
   db.documentos_processados.splice(index, 1);
   saveDB(db);
+  deleteRowFromPostgres("documentos_processados", id).catch(err => console.error("Erro ao excluir documento do Postgres:", err));
 
   logAudit("documentos_processados", id, "DELETE", usuario, oldVal, null);
 
