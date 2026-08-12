@@ -3,7 +3,7 @@ import {
   Building2, Receipt, Lightbulb, Droplets, History,
   TrendingUp, BarChart3, ShieldAlert, Search, Edit2, Trash2,
   Layers, Plus, Trash, Calendar, FolderCheck, CheckCircle2, X,
-  ClipboardList, Settings, Check, HelpCircle, Filter, FolderTree, Table
+  ClipboardList, Settings, Check, HelpCircle, Filter, FolderTree, Table, Eye
 } from "lucide-react";
 import { Secretaria, Unidade, Despesa, ItemDespesa, Lancamento, AuditoriaRegistro } from "../types";
 import DocumentManager from "./DocumentManager";
@@ -86,6 +86,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
   const [editingLancId, setEditingLancId] = useState<string | null>(null);
   const [modalEditItem, setModalEditItem] = useState<any | null>(null);
+  const [modalViewItem, setModalViewItem] = useState<any | null>(null);
   const [lancItemId, setLancItemId] = useState("");
   const [lancMesAno, setLancMesAno] = useState("");
   const [lancConsumo, setLancConsumo] = useState("");
@@ -608,6 +609,11 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     setModalEditItem(l);
   };
 
+  const handleViewLancamento = (l: any) => {
+    if (!l) return;
+    setModalViewItem(l);
+  };
+
   const handleDeleteLancamento = (id: string) => {
     if (!id) return;
     const l = lancamentos.find(x => String(x?.id) === String(id) || String(x?.doc_id) === String(id));
@@ -838,7 +844,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
             const isSolar = activeConcessionaire.toUpperCase().includes("CELESC") || activeConcessionaire.toUpperCase().includes("FOTOVOLTAICO") || activeConcessionaire.toUpperCase().includes("ENERGIA");
             
             return (
-              <div key={it?.id || it?.codigo_numero || `item-${Math.random()}`} className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-sm space-y-3 hover:border-slate-300 transition">
+              <div key={it?.id || it?.codigo_numero || `item-${Math.random()}`} className="bg-white dark:bg-[#121212] p-4 rounded-xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-3 hover:border-slate-300 dark:hover:border-white/20 transition">
                 <div className="flex justify-between items-start gap-4">
                   <div>
                     <span className="text-[9px] text-slate-400 uppercase font-extrabold tracking-wider block">Código CODNUM</span>
@@ -1980,9 +1986,10 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                   </div>
 
                   {faturasViewMode === 'tree' ? (
-                    <FaturasTreeView 
-                      lancamentos={lancamentos} 
+                    <FaturasTreeView
+                      lancamentos={lancamentos}
                       onEdit={handleEditLancamento}
+                      onView={handleViewLancamento}
                       onDelete={handleDeleteLancamento}
                       onDeleteMonth={handleDeleteMonth}
                     />
@@ -2023,8 +2030,15 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                             label: "Ações",
                             render: (item) => (
                               <div className="flex items-center gap-1.5 opacity-90 hover:opacity-100 transition-opacity">
-                                <button 
-                                  onClick={() => item && handleEditLancamento(item)} 
+                                <button
+                                  onClick={() => item && handleViewLancamento(item)}
+                                  className="p-1.5 hover:bg-indigo-900/30 text-indigo-300 rounded-lg transition"
+                                  title="Visualizar Lançamento (somente leitura)"
+                                >
+                                  <Eye className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => item && handleEditLancamento(item)}
                                   className="p-1.5 hover:bg-indigo-900/30 text-indigo-400 rounded-lg transition"
                                   title="Editar Lançamento"
                                 >
@@ -2054,10 +2068,10 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         {/* SECTION: CONTROLE DE AUDITORIA */}
         {activeSection === 'auditoria' && (
           <div className="space-y-6">
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+            <div className="bg-white dark:bg-[#0f0f0f] p-6 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm space-y-4">
               <div>
-                <h4 className="font-bold text-slate-800 text-base">Histórico de Alterações e Rastreabilidade</h4>
-                <p className="text-xs text-slate-500">Histórico de auditoria integrado das ações administrativas executadas por usuários</p>
+                <h4 className="font-bold text-slate-800 dark:text-white text-base">Histórico de Alterações e Rastreabilidade</h4>
+                <p className="text-xs text-slate-500 dark:text-gray-400">Histórico de auditoria integrado das ações administrativas executadas por usuários</p>
               </div>
 
               <SmartTable
@@ -2410,6 +2424,17 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
             notifyChange();
             loadAllData();
           }}
+        />
+
+        {/* Overlay Modal for Read-Only Invoice Viewing */}
+        <EditFaturaModal
+          isOpen={!!modalViewItem}
+          item={modalViewItem}
+          itens={itens}
+          unidades={unidades}
+          readOnly
+          onClose={() => setModalViewItem(null)}
+          onSaveSuccess={() => {}}
         />
 
       </div>

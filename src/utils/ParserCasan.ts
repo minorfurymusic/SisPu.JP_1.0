@@ -171,7 +171,11 @@ export class ParserCasan {
     // Hidrômetro / Medidor. "NRO"/"Nº"/"N°" pode vir antes OU depois da palavra-chave
     // (ex: "MEDIDOR NRO: 34918-02" ou "NRO HIDROMETRO: 34918-02") — sem consumir esse filler
     // explicitamente, a captura pegava "NRO" em vez do número real do medidor.
-    const hidroMatch = medBlock.match(/(?:N[ºRO°.]{0,3}\.?\s+)?(?:HIDR[ÔO]METRO|MEDIDOR)\s*(?:N[ºRO°.]{0,3}\.?\s*)?[:/]?\s*([A-Z0-9][A-Z0-9-]*)/i);
+    // A captura exige que o valor comece com dígito — em faturas com a tabela "Valores
+    // Medidos" (Medidor / Grandeza / Posto Tarifário...), esse mesmo regex sem essa exigência
+    // confundia o cabeçalho da tabela com um rótulo e capturava "Grandeza" como se fosse o
+    // número do medidor.
+    const hidroMatch = medBlock.match(/(?:N[ºRO°.]{0,3}\.?\s+)?(?:HIDR[ÔO]METRO|MEDIDOR)\s*(?:N[ºRO°.]{0,3}\.?\s*)?[:/]?\s*(\d[A-Z0-9-]*)/i);
     if (hidroMatch) {
       medidor = hidroMatch[1].trim();
       debugLogs.push({

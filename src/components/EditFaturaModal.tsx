@@ -8,6 +8,7 @@ interface ConferenciaLancamentoModalProps {
   item: any;
   itens?: any[];
   unidades?: any[];
+  readOnly?: boolean;
   onClose: () => void;
   onSaveSuccess: (updatedDoc?: any) => void;
 }
@@ -16,6 +17,7 @@ export default function ConferenciaLancamentoModal({
   isOpen,
   item,
   unidades = [],
+  readOnly = false,
   onClose,
   onSaveSuccess,
 }: ConferenciaLancamentoModalProps) {
@@ -323,8 +325,13 @@ export default function ConferenciaLancamentoModal({
           <div className="flex items-center gap-2">
             <FileCode className="h-4.5 w-4.5 text-indigo-400" />
             <h4 className="font-bold text-sm uppercase tracking-wide text-gray-200">
-              Conferência do Lançamento: {activeDoc.nome_arquivo}
+              {readOnly ? "Visualização do Lançamento" : "Conferência do Lançamento"}: {activeDoc.nome_arquivo}
             </h4>
+            {readOnly && (
+              <span className="bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 text-[9px] font-bold uppercase px-2 py-0.5 rounded-full tracking-wider">
+                Somente leitura
+              </span>
+            )}
           </div>
           <button 
             type="button"
@@ -392,6 +399,7 @@ export default function ConferenciaLancamentoModal({
                       type="text"
                       value={activeDoc.dados_extraidos.codigo_numero || ""}
                       onChange={(e) => handleFieldChange("codigo_numero", e.target.value)}
+                      disabled={readOnly}
                       className="w-full bg-black/40 border border-white/10 hover:border-white/20 focus:border-indigo-500 rounded px-2.5 py-1.5 text-white font-mono font-bold outline-none transition"
                     />
                   </div>
@@ -402,6 +410,7 @@ export default function ConferenciaLancamentoModal({
                       type="text"
                       value={activeDoc.dados_extraidos.municipio || "Florianópolis"}
                       onChange={(e) => handleFieldChange("municipio", e.target.value)}
+                      disabled={readOnly}
                       className="w-full bg-black/40 border border-white/10 hover:border-white/20 focus:border-indigo-500 rounded px-2.5 py-1.5 text-white font-semibold outline-none transition"
                     />
                   </div>
@@ -424,6 +433,7 @@ export default function ConferenciaLancamentoModal({
                       type="text"
                       value={activeDoc.dados_extraidos.endereco || ""}
                       onChange={(e) => handleFieldChange("endereco", e.target.value)}
+                      disabled={readOnly}
                       className="w-full bg-black/40 border border-white/10 hover:border-white/20 focus:border-indigo-500 rounded px-2.5 py-1.5 text-white outline-none transition"
                     />
                   </div>
@@ -434,6 +444,7 @@ export default function ConferenciaLancamentoModal({
                       type="text"
                       value={activeDoc.dados_extraidos.fatura_num || ""}
                       onChange={(e) => handleFieldChange("fatura_num", e.target.value)}
+                      disabled={readOnly}
                       className="w-full bg-black/40 border border-white/10 hover:border-white/20 focus:border-indigo-500 rounded px-2.5 py-1.5 text-white font-mono outline-none transition"
                     />
                   </div>
@@ -445,6 +456,7 @@ export default function ConferenciaLancamentoModal({
                         type="text"
                         value={activeDoc.dados_extraidos.chave_acesso || ""}
                         onChange={(e) => handleFieldChange("chave_acesso", e.target.value)}
+                        disabled={readOnly}
                         className="flex-1 bg-black/40 border border-white/10 hover:border-white/20 focus:border-indigo-500 rounded px-2 py-1 text-white font-mono text-[9px] outline-none transition"
                       />
                       <button
@@ -472,6 +484,7 @@ export default function ConferenciaLancamentoModal({
                       type="text"
                       value={activeDoc.dados_extraidos.grupo_subgrupo_tensao || "A - A4"}
                       onChange={(e) => handleFieldChange("grupo_subgrupo_tensao", e.target.value)}
+                      disabled={readOnly}
                       className="w-full bg-black/40 border border-white/10 hover:border-white/20 focus:border-indigo-500 rounded px-2.5 py-1.5 text-white outline-none transition"
                     />
                   </div>
@@ -482,6 +495,7 @@ export default function ConferenciaLancamentoModal({
                       type="date"
                       value={activeDoc.dados_extraidos.mes_ano ? activeDoc.dados_extraidos.mes_ano.substring(0, 10) : ""}
                       onChange={(e) => handleFieldChange("mes_ano", e.target.value)}
+                      disabled={readOnly}
                       className="w-full bg-black/40 border border-white/10 hover:border-white/20 focus:border-indigo-500 rounded px-2.5 py-1.5 text-white font-mono outline-none transition"
                     />
                   </div>
@@ -492,6 +506,7 @@ export default function ConferenciaLancamentoModal({
                       type="text"
                       value={activeDoc.dados_extraidos.nota_fiscal || ""}
                       onChange={(e) => handleFieldChange("nota_fiscal", e.target.value)}
+                      disabled={readOnly}
                       className="w-full bg-black/40 border border-white/10 hover:border-white/20 focus:border-indigo-500 rounded px-2.5 py-1.5 text-white font-mono outline-none transition"
                     />
                   </div>
@@ -506,6 +521,7 @@ export default function ConferenciaLancamentoModal({
                           type="text"
                           value={activeDoc.dados_extraidos.data_leitura || ""}
                           onChange={(e) => handleFieldChange("data_leitura", e.target.value)}
+                          disabled={readOnly}
                           className="w-full bg-black/40 border border-white/10 hover:border-white/20 focus:border-indigo-500 rounded px-2 py-1.5 text-white text-center font-mono outline-none transition text-[11px]"
                         />
                       </div>
@@ -515,6 +531,7 @@ export default function ConferenciaLancamentoModal({
                           type="number"
                           value={activeDoc.dados_extraidos.dias_faturados || 30}
                           onChange={(e) => handleFieldChange("dias_faturados", e.target.value)}
+                          disabled={readOnly}
                           className="w-full bg-black/40 border border-white/10 hover:border-white/20 focus:border-indigo-500 rounded px-2 py-1.5 text-white text-center font-mono outline-none transition text-[11px]"
                         />
                       </div>
@@ -527,6 +544,7 @@ export default function ConferenciaLancamentoModal({
                       type="text"
                       value={activeDoc.dados_extraidos.data_vencimento || ""}
                       onChange={(e) => handleFieldChange("data_vencimento", e.target.value)}
+                      disabled={readOnly}
                       className="w-full bg-black/40 border border-white/10 hover:border-white/20 focus:border-indigo-500 rounded px-2.5 py-1.5 text-white font-mono font-bold outline-none transition"
                     />
                   </div>
@@ -538,6 +556,7 @@ export default function ConferenciaLancamentoModal({
                       step="any"
                       value={activeDoc.dados_extraidos.valor_total ?? 0}
                       onChange={(e) => handleFieldChange("valor_total", e.target.value)}
+                      disabled={readOnly}
                       className="w-full bg-black/40 border border-white/10 hover:border-white/20 focus:border-indigo-500 rounded px-2.5 py-1.5 text-white font-mono font-bold outline-none transition"
                     />
                   </div>
@@ -550,13 +569,15 @@ export default function ConferenciaLancamentoModal({
                   <span className="font-mono text-[9px] uppercase tracking-wider text-indigo-400 font-bold block">
                     Bloco 2 — Itens da Fatura (Auditáveis)
                   </span>
-                  <button
-                    type="button"
-                    onClick={handleAddItem}
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold px-2.5 py-1 rounded flex items-center gap-1 transition"
-                  >
-                    <Plus className="h-3 w-3" /> Adicionar Item
-                  </button>
+                  {!readOnly && (
+                    <button
+                      type="button"
+                      onClick={handleAddItem}
+                      className="bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold px-2.5 py-1 rounded flex items-center gap-1 transition"
+                    >
+                      <Plus className="h-3 w-3" /> Adicionar Item
+                    </button>
+                  )}
                 </div>
                 
                 <div className="overflow-x-auto max-h-[600px] border border-white/10 rounded-lg bg-[#111111] shadow-inner">
@@ -605,6 +626,7 @@ export default function ConferenciaLancamentoModal({
                                   type="text"
                                   value={item.descricao || ""}
                                   onChange={(e) => handleItemFieldChange(itemId, "descricao", e.target.value)}
+                                  disabled={readOnly}
                                   className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-gray-200 outline-none text-[10px] truncate"
                                   title={item.descricao}
                                 />
@@ -616,6 +638,7 @@ export default function ConferenciaLancamentoModal({
                                   step="0.001"
                                   value={typeof item.quantidade === 'number' ? Number(item.quantidade.toFixed(3)) : (item.quantidade ?? 0)}
                                   onChange={(e) => handleItemFieldChange(itemId, "quantidade", e.target.value)}
+                                  disabled={readOnly}
                                   className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                 />
                               </td>
@@ -626,6 +649,7 @@ export default function ConferenciaLancamentoModal({
                                   step="any"
                                   value={item.valor_unitario ?? 0}
                                   onChange={(e) => handleItemFieldChange(itemId, "valor_unitario", e.target.value)}
+                                  disabled={readOnly}
                                   className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                 />
                               </td>
@@ -636,6 +660,7 @@ export default function ConferenciaLancamentoModal({
                                   step="0.01"
                                   value={typeof item.valor === 'number' ? Number(item.valor.toFixed(2)) : (item.valor ?? 0)}
                                   onChange={(e) => handleItemFieldChange(itemId, "valor", e.target.value)}
+                                  disabled={readOnly}
                                   className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-indigo-300 font-semibold outline-none text-[10px]"
                                 />
                               </td>
@@ -646,6 +671,7 @@ export default function ConferenciaLancamentoModal({
                                   step="0.01"
                                   value={typeof item.pis === 'number' ? Number(item.pis.toFixed(2)) : (item.pis ?? 0)}
                                   onChange={(e) => handleItemFieldChange(itemId, "pis", e.target.value)}
+                                  disabled={readOnly}
                                   className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                 />
                               </td>
@@ -656,6 +682,7 @@ export default function ConferenciaLancamentoModal({
                                   step="0.01"
                                   value={typeof item.icms === 'number' ? Number(item.icms.toFixed(2)) : (item.icms ?? 0)}
                                   onChange={(e) => handleItemFieldChange(itemId, "icms", e.target.value)}
+                                  disabled={readOnly}
                                   className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                 />
                               </td>
@@ -666,6 +693,7 @@ export default function ConferenciaLancamentoModal({
                                   step="0.01"
                                   value={item.irpj_pct ?? 0}
                                   onChange={(e) => handleItemFieldChange(itemId, "irpj_pct", e.target.value)}
+                                  disabled={readOnly}
                                   className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-center font-mono text-gray-400 outline-none text-[10px]"
                                 />
                               </td>
@@ -676,6 +704,7 @@ export default function ConferenciaLancamentoModal({
                                   step="0.01"
                                   value={typeof item.irpj_val === 'number' ? Number(item.irpj_val.toFixed(2)) : (item.irpj_val ?? (item.cofins ?? 0))}
                                   onChange={(e) => handleItemFieldChange(itemId, "irpj_val", e.target.value)}
+                                  disabled={readOnly}
                                   className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-amber-300 outline-none text-[10px]"
                                 />
                               </td>
@@ -686,6 +715,7 @@ export default function ConferenciaLancamentoModal({
                                   step="0.01"
                                   value={typeof item.pis_ret === 'number' ? Number(item.pis_ret.toFixed(2)) : (item.pis_ret ?? 0)}
                                   onChange={(e) => handleItemFieldChange(itemId, "pis_ret", e.target.value)}
+                                  disabled={readOnly}
                                   className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                 />
                               </td>
@@ -696,6 +726,7 @@ export default function ConferenciaLancamentoModal({
                                   step="0.01"
                                   value={typeof item.cofins_ret === 'number' ? Number(item.cofins_ret.toFixed(2)) : (item.cofins_ret ?? 0)}
                                   onChange={(e) => handleItemFieldChange(itemId, "cofins_ret", e.target.value)}
+                                  disabled={readOnly}
                                   className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                 />
                               </td>
@@ -706,11 +737,13 @@ export default function ConferenciaLancamentoModal({
                                   step="0.01"
                                   value={typeof item.csll_ret === 'number' ? Number(item.csll_ret.toFixed(2)) : (item.csll_ret ?? 0)}
                                   onChange={(e) => handleItemFieldChange(itemId, "csll_ret", e.target.value)}
+                                  disabled={readOnly}
                                   className="w-full bg-transparent border border-transparent hover:border-white/10 focus:bg-black/60 focus:border-indigo-500 rounded px-1 py-0.5 text-right font-mono text-gray-300 outline-none text-[10px]"
                                 />
                               </td>
                               {/* Action cell */}
                               <td className="p-0.5 text-center">
+                                {!readOnly && (
                                 <button
                                   type="button"
                                   onClick={() => handleDeleteItem(itemId)}
@@ -719,6 +752,7 @@ export default function ConferenciaLancamentoModal({
                                 >
                                   <Trash2 className="h-3 w-3" />
                                 </button>
+                                )}
                               </td>
                             </tr>
                           );
@@ -844,22 +878,34 @@ export default function ConferenciaLancamentoModal({
             </div>
 
             <div className="flex justify-end gap-2 border-t border-white/10 pt-4 mt-4">
-              <button 
-                type="button"
-                onClick={onClose}
-                disabled={loading}
-                className="bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-semibold px-4 py-2 rounded-md transition"
-              >
-                Descartar Edição
-              </button>
-              <button 
-                type="button"
-                onClick={handleSave}
-                disabled={loading}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-5 py-2 rounded-md shadow-lg flex items-center gap-1 transition disabled:opacity-50"
-              >
-                <Check className="h-4 w-4" /> {loading ? "Salvando..." : "Aplicar e Validar Lançamento"}
-              </button>
+              {readOnly ? (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-semibold px-4 py-2 rounded-md transition"
+                >
+                  Fechar
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    disabled={loading}
+                    className="bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-semibold px-4 py-2 rounded-md transition"
+                  >
+                    Descartar Edição
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSave}
+                    disabled={loading}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-5 py-2 rounded-md shadow-lg flex items-center gap-1 transition disabled:opacity-50"
+                  >
+                    <Check className="h-4 w-4" /> {loading ? "Salvando..." : "Aplicar e Validar Lançamento"}
+                  </button>
+                </>
+              )}
             </div>
 
           </div>

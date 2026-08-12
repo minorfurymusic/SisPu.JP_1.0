@@ -23,7 +23,8 @@ import {
   Lock,
   Unlock,
   AlertCircle,
-  X
+  X,
+  Eye
 } from 'lucide-react';
 import UnidadeSelectorModal from './UnidadeSelectorModal';
 
@@ -31,6 +32,7 @@ export interface FaturasTreeViewProps {
   lancamentos: any[];
   unidades?: any[];
   onEdit?: (item: any) => void;
+  onView?: (item: any) => void;
   onDelete?: (id: string) => void;
   onDeleteMonth?: (monthKey: string, items: any[], monthLabel: string) => void;
   onRefreshData?: () => void;
@@ -96,13 +98,14 @@ const MONTH_NAMES = [
   'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
 ];
 
-export default function FaturasTreeView({ 
-  lancamentos, 
-  unidades = [], 
-  onEdit, 
+export default function FaturasTreeView({
+  lancamentos,
+  unidades = [],
+  onEdit,
+  onView,
   onDelete,
   onDeleteMonth,
-  onRefreshData 
+  onRefreshData
 }: FaturasTreeViewProps) {
   // Filter States
   const [selectedType, setSelectedType] = useState<'ALL' | 'CELESC' | 'CASAN'>('ALL');
@@ -726,13 +729,23 @@ export default function FaturasTreeView({
                                       </td>
                                       <td className="px-3 py-2 text-center">
                                         <div className="flex items-center justify-center gap-1">
+                                          {onView && (
+                                            <button
+                                              type="button"
+                                              onClick={() => onView(item)}
+                                              className="p-1.5 rounded transition hover:bg-indigo-500/20 text-indigo-300"
+                                              title="Visualizar Fatura (somente leitura)"
+                                            >
+                                              <Eye className="h-3.5 w-3.5" />
+                                            </button>
+                                          )}
                                           {onEdit && (
-                                            <button 
+                                            <button
                                               type="button"
                                               onClick={() => handleActionClick(monthGroup.monthKey, () => onEdit(item))}
                                               className={`p-1.5 rounded transition ${
-                                                !isUnlocked 
-                                                  ? 'opacity-30 cursor-not-allowed text-gray-500' 
+                                                !isUnlocked
+                                                  ? 'opacity-30 cursor-not-allowed text-gray-500'
                                                   : 'hover:bg-amber-500/20 text-amber-300'
                                               }`}
                                               title={
@@ -849,13 +862,23 @@ export default function FaturasTreeView({
                                       </td>
                                       <td className="px-3 py-2 text-center">
                                         <div className="flex items-center justify-center gap-1">
+                                          {onView && (
+                                            <button
+                                              type="button"
+                                              onClick={() => onView(item)}
+                                              className="p-1.5 rounded transition hover:bg-indigo-500/20 text-indigo-300"
+                                              title="Visualizar Fatura (somente leitura)"
+                                            >
+                                              <Eye className="h-3.5 w-3.5" />
+                                            </button>
+                                          )}
                                           {onEdit && (
-                                            <button 
+                                            <button
                                               type="button"
                                               onClick={() => handleActionClick(monthGroup.monthKey, () => onEdit(item))}
                                               className={`p-1.5 rounded transition ${
-                                                !isUnlocked 
-                                                  ? 'opacity-30 cursor-not-allowed text-gray-500' 
+                                                !isUnlocked
+                                                  ? 'opacity-30 cursor-not-allowed text-gray-500'
                                                   : 'hover:bg-blue-500/20 text-blue-300'
                                               }`}
                                               title={

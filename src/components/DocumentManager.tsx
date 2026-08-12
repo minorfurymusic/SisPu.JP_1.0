@@ -1272,7 +1272,12 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
               valor_credito: parsed.valor_credito || 0,
               codigo_numero: parsed.codigo_numero || "DESCONHECIDO",
               medidor: parsed.medidor || "N/A",
-              itens_fatura: parsed.itens || []
+              // Extração via IA (server) e via leitor local server-side devolvem a lista como
+              // "itens"; o fallback local do próprio navegador (runDeterministicParser, chamado
+              // acima quando a própria chamada ao servidor falha) devolve como "itens_fatura".
+              // Aceitar os dois nomes evita perder a lista de itens quando cai nesse terceiro
+              // caminho, no meio de um lote grande.
+              itens_fatura: parsed.itens_fatura || parsed.itens || []
             },
             logs_validacao: logs,
             historico_alteracoes: [],

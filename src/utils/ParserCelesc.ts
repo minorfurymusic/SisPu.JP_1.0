@@ -259,8 +259,10 @@ export class ParserCelesc {
       });
     }
 
-    // Município
-    const munMatch = ucBlock.match(/(?:MUNICIPIO|MUNICÍPIO)\s*:\s*([A-Z\sªº.-]{3,40})/i);
+    // Município. A captura usa espaço literal (não \s) para não atravessar quebras de linha —
+    // \s inclui \n, então quando o texto extraído do PDF quebra logo após o valor, a captura
+    // invadia o rótulo seguinte (ex: "RIO DO SUL\nNota Fiscal" virava um valor só).
+    const munMatch = ucBlock.match(/(?:MUNICIPIO|MUNICÍPIO)\s*:\s*([A-Z ªº.-]{3,40})/i);
     if (munMatch) {
       municipio = munMatch[1].trim();
       debugLogs.push({
@@ -364,8 +366,9 @@ export class ParserCelesc {
       });
     }
 
-    // Grupo / Subgrupo Tensão
-    const gstMatch = text.match(/(?:Grupo\s*\/\s*Subgrupo\s+Tensão|Grupo\s*\/\s*Subgrupo\s+Tensao)[\s.:-]*([A-Z0-9\s-]{1,10})/i);
+    // Grupo / Subgrupo Tensão. Mesmo motivo do Município acima: espaço literal na captura para
+    // não atravessar quebra de linha (ex: "A - A4\nVal..." virava o valor capturado).
+    const gstMatch = text.match(/(?:Grupo\s*\/\s*Subgrupo\s+Tensão|Grupo\s*\/\s*Subgrupo\s+Tensao)[ .:-]*([A-Z0-9 -]{1,10})/i);
     if (gstMatch) {
       grupo_subgrupo_tensao = gstMatch[1].trim();
       debugLogs.push({
@@ -385,7 +388,11 @@ export class ParserCelesc {
     // Medidor. "NRO"/"Nº"/"N°" pode vir antes OU depois de "MEDIDOR" (ex: "MEDIDOR NRO: 123" ou
     // "NRO MEDIDOR: 123") — sem consumir esse filler explicitamente, a captura pegava "NRO" em
     // vez do número real do medidor quando o filler vinha depois da palavra-chave.
-    const medMatch = medBlock.match(/(?:N[ºRO°.]{0,3}\.?\s+)?MEDIDOR\s*(?:N[ºRO°.]{0,3}\.?\s*)?[:/]?\s*([A-Z0-9][A-Z0-9-]*)/i);
+    // A captura exige que o valor comece com dígito — em faturas com a tabela "Valores
+    // Medidos" (Medidor / Grandeza / Posto Tarifário...), esse mesmo regex sem essa exigência
+    // confundia o cabeçalho da tabela com um rótulo e capturava "Grandeza" como se fosse o
+    // número do medidor.
+    const medMatch = medBlock.match(/(?:N[ºRO°.]{0,3}\.?\s+)?MEDIDOR\s*(?:N[ºRO°.]{0,3}\.?\s*)?[:/]?\s*(\d[A-Z0-9-]*)/i);
     if (medMatch) {
       medidor = medMatch[1].trim();
       debugLogs.push({
@@ -745,6 +752,56 @@ export class ParserCelesc {
       }
     }
 
+    // Tabela "Valores Medidos" (formato Grupo A / horo-sazonal: Medidor, Grandeza, Posto
+    // Tarifário, Leitura Anterior, Leitura Atual, Constante, Perdas, Apurado, repetida uma linha
+    // por medição). Diferente do rótulo "MEDIDOR NRO: xxx" de uma fatura simples, aqui o medidor
+    // é uma coluna repetida em várias linhas — por isso precisa de leitura própria, linha a linha.
+    if (blocks.valores_medidos) {
+      const medLines = blocks.valores_medidos.split("\n").map(l => l.trim()).filter(Boolean);
+      let reativaApurado = 0;
+      let reativaFound = false;
+
+      for (const mLine of medLines) {
+        // Primeira coluna de cada linha de medição é o código do medidor (só dígitos/traço).
+        if (!medidor) {
+          const medidorMatch = mLine.match(/^(\d{4,12})\s+(?:Energia|Demanda|DMCR)/i);
+          if (medidorMatch) {
+            medidor = medidorMatch[1];
+            debugLogs.push({
+              campo: "medidor",
+              valor: medidor,
+              bloco: "Valores Medidos",
+              metodo: "Coluna da tabela Valores Medidos",
+              trecho_encontrado: mLine,
+              confianca: 100
+            });
+          }
+        }
+
+        // Energia reativa raramente aparece em "Itens da Fatura" nesse formato — precisa somar
+        // as linhas "Energia reativa" (Ponta + Fora ponta) da tabela de medição diretamente.
+        if (/\bEnergia\s+reativa\b/i.test(mLine)) {
+          const numMatches = mLine.match(/[-+]?\d[\d.,]*/g);
+          if (numMatches && numMatches.length > 0) {
+            reativaApurado += this.parseBrazilianFloat(numMatches[numMatches.length - 1]);
+            reativaFound = true;
+          }
+        }
+      }
+
+      if (reativaFound && !energia_reativa) {
+        energia_reativa = reativaApurado;
+        debugLogs.push({
+          campo: "energia_reativa",
+          valor: energia_reativa,
+          bloco: "Valores Medidos",
+          metodo: "Soma das linhas Energia reativa (Ponta + Fora ponta)",
+          trecho_encontrado: `${medLines.filter(l => /\bEnergia\s+reativa\b/i.test(l)).length} linha(s) somada(s)`,
+          confianca: 90
+        });
+      }
+    }
+
     if (calcConsumo > 0) {
       consumo = parseFloat(calcConsumo.toFixed(2));
     }
@@ -766,8 +823,10 @@ export class ParserCelesc {
       if (descUpper.includes("INJETADA") || descUpper.includes("GERAÇÃO") || descUpper.includes("GERACAO")) {
         // Handled below strictly with TE items
       }
-      // Demanda Contratada / DMCR
-      if (descUpper.includes("DEMANDA") || descUpper.includes("DMCR")) {
+      // Demanda medida / DMCR — "DIFERENÇA DA DEMANDA CONTRATADA" também contém a palavra
+      // "DEMANDA" e, como o forEach processa os itens na ordem em que aparecem na fatura, ela
+      // sobrescrevia o valor correto da linha "Demanda" com a quantidade da diferença/penalidade.
+      if ((descUpper.includes("DEMANDA") || descUpper.includes("DMCR")) && !descUpper.includes("DIFEREN")) {
         demanda = item.quantidade;
       }
       // Energia Reativa Excedente
@@ -1093,8 +1152,12 @@ export class ParserCelesc {
       medidor: medidor || "",
       unidade_nome: unidade_nome || undefined,
       endereco: endereco || undefined,
-      leitura_anterior: leitura_anterior || undefined,
-      leitura_atual: leitura_atual || undefined,
+      // Campos numéricos usam ?? em vez de || — 0 é um valor real (ex: "sem energia reativa
+      // excedente esse mês", que é justamente o dado que importa pro diagnóstico de
+      // desperdício), e "0 || undefined" descartava esse zero como se o campo nunca tivesse
+      // sido capturado.
+      leitura_anterior: leitura_anterior ?? undefined,
+      leitura_atual: leitura_atual ?? undefined,
       data_vencimento: data_vencimento || undefined,
       municipio: municipio || undefined,
       classe: classe || undefined,
@@ -1103,12 +1166,12 @@ export class ParserCelesc {
       fatura_num: fatura_num || undefined,
       grupo_subgrupo_tensao: grupo_subgrupo_tensao || undefined,
       data_leitura: data_leitura || undefined,
-      dias_faturados: dias_faturados || undefined,
+      dias_faturados: dias_faturados ?? undefined,
       nota_fiscal: nota_fiscal || undefined,
       chave_acesso: chave_acesso || undefined,
-      energia_injetada: energia_injetada || undefined,
-      demanda: demanda || undefined,
-      energia_reativa: energia_reativa || undefined,
+      energia_injetada: energia_injetada ?? undefined,
+      demanda: demanda ?? undefined,
+      energia_reativa: energia_reativa ?? undefined,
       historico: historico.length > 0 ? historico : undefined,
       itens_fatura: itens_fatura,
       boleto: boleto || undefined,

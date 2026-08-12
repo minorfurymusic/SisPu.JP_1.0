@@ -544,65 +544,6 @@ app.get("/api/git-status", (req, res) => {
   }
 });
 
-app.post("/api/github-push", async (req, res) => {
-  try {
-    const { execSync } = require("child_process");
-    const { github_token } = req.body || {};
-    
-    let tokenToUse = github_token?.trim() || process.env.GITHUB_TOKEN;
-    if (!tokenToUse && fs.existsSync(".env")) {
-      const match = fs.readFileSync(".env", "utf-8").match(/GITHUB_TOKEN="?([^"\n\r]+)"?/);
-      if (match) tokenToUse = match[1];
-    }
-
-    if (!tokenToUse) {
-      return res.status(400).json({
-        success: false,
-        error: "GITHUB_TOKEN não fornecido e não encontrado no arquivo .env."
-      });
-    }
-
-    // Update process.env and .env safely
-    process.env.GITHUB_TOKEN = tokenToUse;
-    let envContent = fs.existsSync(".env") ? fs.readFileSync(".env", "utf-8") : "";
-    if (envContent.includes("GITHUB_TOKEN=")) {
-      envContent = envContent.replace(/GITHUB_TOKEN=.*(\r?\n|$)/, `GITHUB_TOKEN="${tokenToUse}"\n`);
-    } else {
-      envContent += `\nGITHUB_TOKEN="${tokenToUse}"\n`;
-    }
-    fs.writeFileSync(".env", envContent, "utf-8");
-
-    // Configure git core.askpass
-    const askpassPath = path.join(process.cwd(), "scripts", "git-askpass.sh");
-    execSync(`chmod +x "${askpassPath}" && git config core.askpass "${askpassPath}"`);
-
-    // Execute git push
-    let pushOutput = "";
-    try {
-      pushOutput = execSync("git push origin main 2>&1", { encoding: "utf-8" });
-    } catch (pushErr: any) {
-      return res.status(400).json({
-        success: false,
-        error: `Falha na autenticação ou push: ${pushErr.stdout || pushErr.message}`
-      });
-    }
-
-    const postStatus = execSync("git status 2>&1", { encoding: "utf-8" });
-    const postLog = execSync("git log --oneline -5 2>&1", { encoding: "utf-8" });
-
-    return res.json({
-      success: true,
-      message: "Push realizado com sucesso para origin/main!",
-      push_output: pushOutput,
-      git_status: postStatus,
-      git_log: postLog
-    });
-  } catch (err: any) {
-    console.error("Erro em /api/github-push:", err);
-    return res.status(500).json({ success: false, error: err.message || "Erro interno ao realizar push." });
-  }
-});
-
 // --- USUARIOS ---
 app.get("/api/usuarios", (req, res) => {
   res.json(db.usuarios);
