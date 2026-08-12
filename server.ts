@@ -214,16 +214,25 @@ function ensureUnidadeAndContract(params: {
   }
 
   // 2. Find or Create Unidade Gestora
+  const cleanEndereco = (params.endereco || "").trim().toUpperCase();
+  const cleanNomeUnidade = (params.unidade_nome || "").trim().toUpperCase();
+
   let unidade = db.unidades.find(u => 
     (u.uc && u.uc.trim().toUpperCase() === cleanCodnum) || 
     (u.codnum && u.codnum.trim().toUpperCase() === cleanCodnum)
   );
 
-  const cleanEndereco = (params.endereco || "").trim().toUpperCase();
-  const cleanNomeUnidade = (params.unidade_nome || "").trim().toUpperCase();
+  if (!unidade && cleanNomeUnidade && cleanNomeUnidade !== "N/A") {
+    unidade = db.unidades.find(u => u.nome.trim().toUpperCase() === cleanNomeUnidade && u.secretaria_id === defaultSec.id);
+  }
 
   if (unidade) {
     let updated = false;
+    if ((!unidade.uc || unidade.uc === "N/A") && cleanCodnum) {
+      unidade.uc = cleanCodnum;
+      unidade.codnum = cleanCodnum;
+      updated = true;
+    }
     if ((!unidade.endereco || unidade.endereco === "N/A" || unidade.endereco === "ENDEREÇO A CADASTRAR") && cleanEndereco && cleanEndereco !== "N/A") {
       unidade.endereco = cleanEndereco;
       updated = true;
@@ -352,6 +361,39 @@ function autoSyncOrphanRecords() {
           hasChanges = true;
         }
       }
+    }
+  });
+
+  // Merge duplicate units with same secretaria_id and nome
+  const unitGroups = new Map<string, Unidade[]>();
+  (db.unidades || []).forEach(u => {
+    if (!u) return;
+    const key = `${u.secretaria_id}_${(u.nome || "").trim().toUpperCase()}`;
+    if (!unitGroups.has(key)) unitGroups.set(key, []);
+    unitGroups.get(key)!.push(u);
+  });
+
+  unitGroups.forEach((group) => {
+    if (group.length > 1) {
+      // Pick best primary unit (one with valid uc or address, or first)
+      const primary = group.find(u => u.uc && u.uc !== "N/A") || group.find(u => u.endereco && u.endereco !== "ENDEREÇO A CADASTRAR" && u.endereco !== "N/A") || group[0];
+      const duplicates = group.filter(u => u.id !== primary.id);
+
+      duplicates.forEach(dup => {
+        // Re-link items
+        db.itens_despesas.forEach(it => {
+          if (String(it.unidade_id) === String(dup.id)) {
+            it.unidade_id = primary.id;
+            hasChanges = true;
+          }
+        });
+        // Remove duplicate from db.unidades
+        const idx = db.unidades.findIndex(u => String(u.id) === String(dup.id));
+        if (idx !== -1) {
+          db.unidades.splice(idx, 1);
+          hasChanges = true;
+        }
+      });
     }
   });
 
@@ -640,9 +682,26 @@ app.get("/api/unidades", (req, res) => {
   // Populate reference information
   const listWithSecretaria = list.map(u => {
     const sec = db.secretarias.find(s => s.id === u.secretaria_id);
+    const unitItens = db.itens_despesas.filter(i => String(i.unidade_id) === String(u.id));
+    const firstCodnum = unitItens.find(i => i.codigo_numero)?.codigo_numero;
+
+    let concessionaria = u.concessionaria;
+    if (!concessionaria && unitItens.length > 0) {
+      const hasCasan = unitItens.some(i => i.despesa_id === "2");
+      const hasCelesc = unitItens.some(i => i.despesa_id === "1");
+      if (hasCasan && !hasCelesc) concessionaria = "CASAN";
+      else if (hasCelesc && !hasCasan) concessionaria = "CELESC";
+    }
+
+    const effectiveUC = u.uc || u.codnum || (u.codigo_legado ? String(u.codigo_legado) : undefined) || firstCodnum || "N/A";
+
     return {
       ...u,
-      secretaria_nome: sec ? sec.nome : "NÃO ENCONTRADA"
+      secretaria_nome: sec ? sec.nome : "NÃO ENCONTRADA",
+      uc: effectiveUC,
+      codnum: effectiveUC,
+      codigo_legado: effectiveUC,
+      concessionaria
     };
   });
   // Order by name
@@ -651,7 +710,7 @@ app.get("/api/unidades", (req, res) => {
 });
 
 app.post("/api/unidades", (req, res) => {
-  const { codigo_legado, secretaria_id, nome, endereco } = req.body;
+  const { codigo_legado, secretaria_id, nome, endereco, uc, codnum, concessionaria } = req.body;
   const usuario = req.headers["x-user"] as string || "admin";
 
   const cleanNome = (nome || "").trim().toUpperCase();
@@ -662,19 +721,46 @@ app.post("/api/unidades", (req, res) => {
     return res.status(400).json({ error: "Informe a secretaria vinculada à unidade." });
   }
 
+  const cleanUC = (uc || codnum || codigo_legado || "").toString().trim().toUpperCase();
+
   // Check unique (secretaria_id, nome)
   const exists = db.unidades.find(u => u.secretaria_id === secretaria_id && u.nome === cleanNome);
   if (exists) {
-    return res.status(400).json({ error: "Já existe uma unidade com este nome nesta secretaria." });
+    const oldVal = { ...exists };
+    if (cleanUC) {
+      exists.uc = cleanUC;
+      exists.codnum = cleanUC;
+      exists.codigo_legado = parseInt(cleanUC) || exists.codigo_legado;
+    }
+    if (endereco) exists.endereco = (endereco || "").trim().toUpperCase();
+    if (concessionaria) exists.concessionaria = concessionaria;
+    exists.atualizado_em = new Date().toISOString();
+    saveDB(db);
+
+    if (cleanUC) {
+      ensureUnidadeAndContract({
+        codigo_numero: cleanUC,
+        concessionaria: concessionaria || 'CELESC',
+        unidade_nome: cleanNome,
+        endereco: exists.endereco,
+        usuario
+      });
+    }
+
+    logAudit("unidades", exists.id, "UPDATE", usuario, oldVal, exists);
+    return res.status(200).json(exists);
   }
 
   const newId = (Math.max(...db.unidades.map(u => (u?.id ? parseInt(u.id) : 0) || 0), 0) + 1).toString();
   const newUnidade: Unidade = {
     id: newId,
-    codigo_legado: codigo_legado ? parseInt(codigo_legado) : undefined,
+    codigo_legado: cleanUC ? (parseInt(cleanUC) || undefined) : undefined,
     secretaria_id,
     nome: cleanNome,
-    endereco: endereco || "",
+    uc: cleanUC || undefined,
+    codnum: cleanUC || undefined,
+    concessionaria: concessionaria || undefined,
+    endereco: (endereco || "").trim().toUpperCase(),
     ativo: true,
     criado_em: new Date().toISOString(),
     atualizado_em: new Date().toISOString()
@@ -683,6 +769,16 @@ app.post("/api/unidades", (req, res) => {
   db.unidades.push(newUnidade);
   saveDB(db);
 
+  if (cleanUC) {
+    ensureUnidadeAndContract({
+      codigo_numero: cleanUC,
+      concessionaria: concessionaria || 'CELESC',
+      unidade_nome: cleanNome,
+      endereco: newUnidade.endereco,
+      usuario
+    });
+  }
+
   logAudit("unidades", newId, "INSERT", usuario, null, newUnidade);
 
   res.status(201).json(newUnidade);
@@ -690,7 +786,7 @@ app.post("/api/unidades", (req, res) => {
 
 app.put("/api/unidades/:id", (req, res) => {
   const { id } = req.params;
-  const { codigo_legado, secretaria_id, nome, endereco, ativo } = req.body;
+  const { codigo_legado, secretaria_id, nome, endereco, ativo, uc, codnum, concessionaria } = req.body;
   const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.unidades.findIndex(u => u.id === id);
@@ -705,7 +801,16 @@ app.put("/api/unidades/:id", (req, res) => {
   if (cleanNome) {
     const duplicate = db.unidades.find(u => u.secretaria_id === targetSecId && u.nome === cleanNome && u.id !== id);
     if (duplicate) {
-      return res.status(400).json({ error: "Já existe outra unidade com este nome nesta secretaria." });
+      // Merge into duplicate instead of failing
+      if (endereco) duplicate.endereco = (endereco || "").trim().toUpperCase();
+      const cleanUC = (uc || codnum || codigo_legado || "").toString().trim().toUpperCase();
+      if (cleanUC) {
+        duplicate.uc = cleanUC;
+        duplicate.codnum = cleanUC;
+      }
+      duplicate.atualizado_em = new Date().toISOString();
+      saveDB(db);
+      return res.json(duplicate);
     }
     db.unidades[index].nome = cleanNome;
   }
@@ -714,12 +819,19 @@ app.put("/api/unidades/:id", (req, res) => {
     db.unidades[index].secretaria_id = secretaria_id;
   }
 
-  if (codigo_legado !== undefined) {
-    db.unidades[index].codigo_legado = codigo_legado ? parseInt(codigo_legado) : undefined;
+  const cleanUC = (uc || codnum || codigo_legado || "").toString().trim().toUpperCase();
+  if (cleanUC) {
+    db.unidades[index].uc = cleanUC;
+    db.unidades[index].codnum = cleanUC;
+    db.unidades[index].codigo_legado = parseInt(cleanUC) || db.unidades[index].codigo_legado;
+  }
+
+  if (concessionaria) {
+    db.unidades[index].concessionaria = concessionaria;
   }
 
   if (endereco !== undefined) {
-    db.unidades[index].endereco = endereco;
+    db.unidades[index].endereco = (endereco || "").trim().toUpperCase();
   }
 
   if (ativo !== undefined) {
@@ -728,6 +840,16 @@ app.put("/api/unidades/:id", (req, res) => {
 
   db.unidades[index].atualizado_em = new Date().toISOString();
   saveDB(db);
+
+  if (cleanUC) {
+    ensureUnidadeAndContract({
+      codigo_numero: cleanUC,
+      concessionaria: concessionaria || db.unidades[index].concessionaria || 'CELESC',
+      unidade_nome: db.unidades[index].nome,
+      endereco: db.unidades[index].endereco,
+      usuario
+    });
+  }
 
   logAudit("unidades", id, "UPDATE", usuario, oldVal, db.unidades[index]);
 
@@ -1720,8 +1842,8 @@ function validateExtractedFaturaSanity(data: any, provider: 'CELESC' | 'CASAN'):
   const diversos = Number(result.valor_diversos) || 0;
   const credito = Number(result.valor_credito) || 0;
 
-  // 1. Sanity check: Total value zero when positive consumption
-  if (valorTotal <= 0 && consumo > 0) {
+  // 1. Sanity check: Total value zero when positive consumption (skip warning if provider is CELESC and header Valor was 0/blank or sem_leitura)
+  if (valorTotal < 0 || (valorTotal === 0 && consumo > 0 && provider === 'CASAN')) {
     logsMotivos.push("Valor total zerado ou negativo apesar de haver consumo medido superior a 0.");
   }
 
@@ -1830,8 +1952,8 @@ CONCEITOS A LOCALIZAR NA FATURA DA CELESC:
 3. MÊS E ANO DE COMPETÊNCIA (mes_ano): Identifique o mês e ano de referência (ex: "06/2026", "COMPETÊNCIA 06/2026"). Retorne SEMPRE no formato YYYY-MM-01 (ex: "2026-06-01").
 4. CONSUMO MEDIDO (consumo): Localize o consumo ativo faturado em kWh (kilowatt-hora) no período.
 5. TARIFA UNITÁRIA (tarifa_unitaria): Localize a tarifa unitária em R$/kWh (TE + TUSD ou tarifa homologada).
-6. VALOR TOTAL (valor_total): Localize o valor total a pagar da fatura em Reais (R$), em destaque na área "TOTAL A PAGAR", "VALOR TOTAL" ou "SUBTOTAL".
-7. TRIBUTOS E IMPOSTOS (valor_imposto): Somatório de ICMS, PIS, COFINS e Contribuição de Iluminação Pública (COSIP/CIP).
+6. VALOR TOTAL (valor_total): Localize o valor no campo "Valor:" no topo/cabeçalho da fatura CELESC. ATENÇÃO REGRAS CRÍTICAS: Se o campo "Valor:" no topo da fatura estiver EM BRANCO ou VAZIO (indicando que não houve leitura do medidor ou não há valor faturado no ciclo), defina valor_total OBRIGATORIAMENTE como 0 (zero). NÃO tente calcular ou somar os itens da fatura se o campo "Valor:" do cabeçalho estiver em branco.
+7. TRIBUTOS E IMPOSTOS (valor_imposto): Somatório de ICMS, PIS, COFINS e Contribuição de Iluminação Pública (COSIP/CIP). Se a fatura tiver Valor em branco, defina como 0.
 8. ENDEREÇO DA UC (endereco): Extraia o endereço do local do imóvel onde a energia é consumida (ignore endereço postal genérico do cliente).
 9. UNIDADE / NOME (unidade_nome): Nome da unidade administrativa, escola, posto ou secretaria municipal.
 10. DEMAIS VALORES: Extraia valores de créditos/descontos (valor_credito), serviços diversos (valor_diversos) e energia injetada se houver microgeração solar.

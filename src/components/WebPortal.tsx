@@ -326,7 +326,9 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         nome: uniNome,
         secretaria_id: uniSecretariaId,
         endereco: uniEndereco,
-        codigo_legado: uniCodigo ? parseInt(uniCodigo) : undefined
+        codigo_legado: uniCodigo ? parseInt(uniCodigo) : undefined,
+        uc: uniCodigo || undefined,
+        codnum: uniCodigo || undefined
       };
 
       const res = await fetch(url, {
@@ -1303,7 +1305,12 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     key: "codigo_legado", 
                     label: "Unidade Consumidora / UC", 
                     searchable: true,
-                    render: (item) => <span className="font-bold text-slate-900 dark:text-white font-mono">{item?.codigo_legado || "None"}</span>
+                    render: (item) => {
+                      const displayUC = (item?.uc && item.uc !== "N/A") ? item.uc : 
+                                        (item?.codnum && item.codnum !== "N/A") ? item.codnum : 
+                                        (item?.codigo_legado && item.codigo_legado !== "None" && item.codigo_legado !== "N/A") ? String(item.codigo_legado) : "None";
+                      return <span className="font-bold text-slate-900 dark:text-white font-mono">{displayUC}</span>;
+                    }
                   },
                   {
                     key: "concessionaria",
