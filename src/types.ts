@@ -232,4 +232,5 @@ export interface CadastroMestreUC {
   grupo_tarifario: string;
   situacao: 'Ativa' | 'Inativa';
   criado_em: string;
+  atualizado_em?: string;
 }

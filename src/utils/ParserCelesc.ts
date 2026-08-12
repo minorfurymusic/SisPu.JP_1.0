@@ -382,8 +382,10 @@ export class ParserCelesc {
     // --- 3. VALORES MEDIDOS EXTRACTION ---
     const medBlock = blocks.valores_medidos || text;
 
-    // Medidor
-    const medMatch = medBlock.match(/(?:MEDIDOR|NRO\s+MEDIDOR|MEDIDOR\s*NRO)\s*[:/]*\s*([A-Z0-9-_]+)/i);
+    // Medidor. "NRO"/"Nº"/"N°" pode vir antes OU depois de "MEDIDOR" (ex: "MEDIDOR NRO: 123" ou
+    // "NRO MEDIDOR: 123") — sem consumir esse filler explicitamente, a captura pegava "NRO" em
+    // vez do número real do medidor quando o filler vinha depois da palavra-chave.
+    const medMatch = medBlock.match(/(?:N[ºRO°.]{0,3}\.?\s+)?MEDIDOR\s*(?:N[ºRO°.]{0,3}\.?\s*)?[:/]?\s*([A-Z0-9][A-Z0-9-]*)/i);
     if (medMatch) {
       medidor = medMatch[1].trim();
       debugLogs.push({

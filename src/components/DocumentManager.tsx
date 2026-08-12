@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { 
   FileText, Upload, CheckCircle2, AlertTriangle, Play, Save, Download,
   History, Check, RefreshCw, FileCode, Landmark, Eye, EyeOff,
@@ -55,8 +55,6 @@ export function computeConsumoKWh(itens: any[], isCelesc: boolean = true): numbe
   );
   return genericCons.reduce((sum, it) => sum + Number(it.quantidade || 0), 0);
 }
-
-export const DEFAULT_MASTER_UCS: CadastroMestreUC[] = [];
 
 // High-fidelity templates of invoices for realistic and robust mock-up processing
 const MOCK_SAMPLES = {
@@ -341,7 +339,75 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   // Pipeline-queue states for asynchronously processing multi-document/large reports
   const [processingQueue, setProcessingQueue] = useState<boolean>(false);
   const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0, phase: "" });
-  const [sessionDocs, setSessionDocs] = useState<DocumentoProcessado[]>([]);
+
+  // sessionDocs holds every lançamento parsed for the current batch, up until "Salvar
+  // Lançamentos" persists it to the backend. It used to live only in memory: refreshing the
+  // page, switching to another tab in WebPortal (which unmounts this component), or the OS
+  // locking the screen while the tab was idle all discarded the queue with no way back. It's
+  // now mirrored to localStorage on every change and restored on mount, so the draft survives
+  // reloads/remounts and is only cleared once it's actually saved.
+  const SESSION_DOCS_STORAGE_KEY = "sispu_session_docs_draft";
+  const [sessionDocs, setSessionDocs] = useState<DocumentoProcessado[]>(() => {
+    try {
+      const saved = localStorage.getItem(SESSION_DOCS_STORAGE_KEY);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      if (sessionDocs.length > 0) {
+        localStorage.setItem(SESSION_DOCS_STORAGE_KEY, JSON.stringify(sessionDocs));
+      } else {
+        localStorage.removeItem(SESSION_DOCS_STORAGE_KEY);
+      }
+    } catch (err) {
+      console.error("Não foi possível salvar o rascunho do lote localmente:", err);
+    }
+  }, [sessionDocs]);
+
+  // One-time notice when a draft is recovered after a reload/remount, so the user knows it
+  // wasn't lost and can review before clicking "Salvar Lançamentos".
+  useEffect(() => {
+    if (sessionDocs.length > 0) {
+      setMessage({
+        type: 'warning',
+        text: `Rascunho recuperado: ${sessionDocs.length} lançamento(s) que ainda não tinham sido salvos foram restaurados. Revise e clique em "Salvar Lançamentos" para persistir.`
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Resumo do lote em conferência: totais por concessionária, para o usuário bater com a
+  // fatura consolidada antes de clicar em "Salvar Lançamentos" (o lote ainda não foi persistido).
+  const batchTotals = useMemo(() => {
+    const valid = sessionDocs.filter(d => d && d.status !== 'IGNORADA');
+    const sum = (list: DocumentoProcessado[], key: 'valor_total' | 'consumo' | 'energia_injetada') =>
+      list.reduce((acc, d) => acc + Number((d.dados_extraidos as any)?.[key] || 0), 0);
+
+    const celesc = valid.filter(d => d.layout?.startsWith('CELESC'));
+    const casan = valid.filter(d => d.layout?.startsWith('CASAN'));
+
+    return {
+      total: valid.length,
+      celesc: celesc.length > 0 ? {
+        unidades: celesc.length,
+        valorTotal: sum(celesc, 'valor_total'),
+        consumo: sum(celesc, 'consumo'),
+        energiaInjetada: sum(celesc, 'energia_injetada'),
+      } : null,
+      casan: casan.length > 0 ? {
+        unidades: casan.length,
+        valorTotal: sum(casan, 'valor_total'),
+        consumo: sum(casan, 'consumo'),
+      } : null,
+    };
+  }, [sessionDocs]);
+
+  const fmtMoeda = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtNum = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
 
   // State for linking Unidade Gestora directly on report table
   const [allUnidades, setAllUnidades] = useState<any[]>([]);
@@ -594,23 +660,27 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     }
   };
 
-  // Master Registry of UCs (Etapa 1)
-  const [masterUcs, setMasterUcs] = useState<CadastroMestreUC[]>(() => {
-    const saved = localStorage.getItem("sispu_cadastro_mestre_ucs");
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        // ignore
-      }
-    }
-    return DEFAULT_MASTER_UCS;
-  });
+  // Master Registry of UCs (Etapa 1) — persistido no backend (JSON local + Postgres/Neon),
+  // igual a todo o resto do sistema. Antes vivia só no localStorage do navegador: qualquer
+  // exclusão só valia naquele navegador/dispositivo, e sem esse localStorage os exemplos
+  // fabricados (DEFAULT_MASTER_UCS) reapareciam como se fossem cadastros reais.
+  const [masterUcs, setMasterUcs] = useState<CadastroMestreUC[]>([]);
+  const [loadingMasterUcs, setLoadingMasterUcs] = useState(true);
 
-  const saveMasterUcs = (newUcs: CadastroMestreUC[]) => {
-    setMasterUcs(newUcs);
-    localStorage.setItem("sispu_cadastro_mestre_ucs", JSON.stringify(newUcs));
+  const loadMasterUcs = () => {
+    setLoadingMasterUcs(true);
+    fetch("/api/cadastro-mestre-ucs")
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data)) setMasterUcs(data);
+      })
+      .catch(err => console.error("Erro ao carregar Cadastro Mestre de UCs:", err))
+      .finally(() => setLoadingMasterUcs(false));
   };
+
+  useEffect(() => {
+    loadMasterUcs();
+  }, []);
 
   // State to hold comparison data (Etapa 3)
   const [lastComparison, setLastComparison] = useState<{
@@ -664,89 +734,86 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     setShowAddUcForm(true);
   };
 
-  const handleSaveUc = (e: React.FormEvent) => {
+  const [savingUc, setSavingUc] = useState(false);
+  const blankUcForm = {
+    uc: "",
+    codnum: "",
+    concessionaria: "CELESC" as 'CELESC' | 'CASAN',
+    secretaria: "",
+    unidade_administrativa: "",
+    endereco: "",
+    classe: "Público / Governamental",
+    grupo_tarifario: "B3",
+    situacao: "Ativa" as 'Ativa' | 'Inativa'
+  };
+
+  const handleSaveUc = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUcData.uc || !newUcData.codnum) {
       alert("Por favor, preencha a UC e o CODNUM.");
       return;
     }
 
-    if (editingUcId) {
-      // Edit existing UC
-      if (masterUcs.some(u => u?.uc === newUcData.uc && u?.id !== editingUcId)) {
-        alert("Já existe outra UC cadastrada com este número.");
+    setSavingUc(true);
+    try {
+      const isEditing = !!editingUcId;
+      const res = await fetch(
+        isEditing ? `/api/cadastro-mestre-ucs/${editingUcId}` : "/api/cadastro-mestre-ucs",
+        {
+          method: isEditing ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(newUcData)
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "Erro ao salvar a UC no Cadastro Mestre.");
         return;
       }
 
-      const updated = masterUcs.map(u => {
-        if (u?.id === editingUcId) {
-          return {
-            ...u,
-            ...newUcData
-          };
-        }
-        return u;
-      });
-
-      saveMasterUcs(updated);
+      loadMasterUcs();
       setShowAddUcForm(false);
       setEditingUcId(null);
-      setNewUcData({
-        uc: "",
-        codnum: "",
-        concessionaria: "CELESC",
-        secretaria: "",
-        unidade_administrativa: "",
-        endereco: "",
-        classe: "Público / Governamental",
-        grupo_tarifario: "B3",
-        situacao: "Ativa"
+      setNewUcData(blankUcForm);
+      setMessage({
+        type: 'success',
+        text: isEditing
+          ? `Unidade Consumidora ${data.uc} atualizada com sucesso.`
+          : `Unidade Consumidora ${data.uc} cadastrada com sucesso no cadastro permanente.`
       });
-      setMessage({ type: 'success', text: `Unidade Consumidora ${newUcData.uc} atualizada com sucesso.` });
-    } else {
-      // Create new UC
-      if (masterUcs.some(u => u.uc === newUcData.uc)) {
-        alert("Esta UC já está cadastrada no Cadastro Mestre.");
-        return;
-      }
-
-      const created: CadastroMestreUC = {
-        id: `UC-${Date.now()}`,
-        ...newUcData,
-        criado_em: new Date().toISOString()
-      };
-
-      saveMasterUcs([...masterUcs, created]);
-      setShowAddUcForm(false);
-      setNewUcData({
-        uc: "",
-        codnum: "",
-        concessionaria: "CELESC",
-        secretaria: "",
-        unidade_administrativa: "",
-        endereco: "",
-        classe: "Público / Governamental",
-        grupo_tarifario: "B3",
-        situacao: "Ativa"
-      });
-      setMessage({ type: 'success', text: `Unidade Consumidora ${created.uc} cadastrada com sucesso no cadastro permanente.` });
+    } catch (err: any) {
+      alert(`Erro de rede ao salvar a UC: ${err.message}`);
+    } finally {
+      setSavingUc(false);
     }
   };
 
-  const handleToggleUcStatus = (id: string) => {
-    const updated = masterUcs.map(u => {
-      if (u?.id === id) {
-        return { ...u, situacao: (u.situacao === 'Ativa' ? 'Inativa' : 'Ativa') as 'Ativa' | 'Inativa' };
-      }
-      return u;
-    });
-    saveMasterUcs(updated);
+  const handleToggleUcStatus = async (item: CadastroMestreUC) => {
+    try {
+      const res = await fetch(`/api/cadastro-mestre-ucs/${item.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ situacao: item.situacao === 'Ativa' ? 'Inativa' : 'Ativa' })
+      });
+      if (res.ok) loadMasterUcs();
+    } catch (err) {
+      console.error("Erro ao alternar situação da UC:", err);
+    }
   };
 
-  const handleDeleteUc = (id: string, code: string) => {
-    const filtered = masterUcs.filter(u => u?.id !== id);
-    saveMasterUcs(filtered);
-    setMessage({ type: 'warning', text: `Unidade Consumidora ${code} excluída do cadastro permanente.` });
+  const handleDeleteUc = async (id: string, code: string) => {
+    try {
+      const res = await fetch(`/api/cadastro-mestre-ucs/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        loadMasterUcs();
+        setMessage({ type: 'warning', text: `Unidade Consumidora ${code} excluída do cadastro permanente.` });
+      } else {
+        const data = await res.json();
+        alert(data.error || "Erro ao remover a UC.");
+      }
+    } catch (err: any) {
+      alert(`Erro de rede ao remover a UC: ${err.message}`);
+    }
   };
 
   const addLog = (msg: string) => {
@@ -1760,7 +1827,10 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
     setLoading(true);
     let successCount = 0;
-    let failedCount = 0;
+    // Docs that fail to save/homologar go back into the queue instead of being silently
+    // discarded — a duplicate-competência rejection (or any transient error) shouldn't cost
+    // the user re-typing or re-importing what they already reviewed.
+    const failedDocs: DocumentoProcessado[] = [];
 
     try {
       for (const doc of docsToSave) {
@@ -1783,7 +1853,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
             // Homologar imediatamente para lançar na tabela central de lançamentos e gerar auditoria
             const homolRes = await fetch(`/api/documentos/${dbDoc.id}/homologar`, {
               method: "POST",
-              headers: { 
+              headers: {
                 "Content-Type": "application/json",
                 "x-user": currentUser
               }
@@ -1791,31 +1861,34 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
             if (homolRes.ok) {
               successCount++;
             } else {
-              failedCount++;
+              failedDocs.push(doc);
             }
           } else {
-            failedCount++;
+            failedDocs.push(doc);
           }
         } else {
-          failedCount++;
+          failedDocs.push(doc);
         }
       }
 
-      setSessionDocs([]);
+      // Mantém na fila os que falharam e os que já estavam marcados como IGNORADA (esses nunca
+      // foram enviados); só remove os que realmente foram homologados.
+      const ignoradas = sessionDocs.filter(d => d && d.status === 'IGNORADA');
+      setSessionDocs([...failedDocs, ...ignoradas]);
       setCustomText("");
       setFileName("");
-      
+
       if (onDocumentProcessed) onDocumentProcessed();
 
-      if (failedCount === 0) {
-        setMessage({ 
-          type: 'success', 
-          text: `Sucesso! Todos os ${successCount} lançamentos do lote foram homologados na tabela central com auditoria e atualizados no painel geral.` 
+      if (failedDocs.length === 0) {
+        setMessage({
+          type: 'success',
+          text: `Sucesso! Todos os ${successCount} lançamentos do lote foram homologados na tabela central com auditoria e atualizados no painel geral.`
         });
       } else {
-        setMessage({ 
-          type: 'warning', 
-          text: `Lançamentos processados: ${successCount} com sucesso. ${failedCount} falhas devido a duplicidades de competência.` 
+        setMessage({
+          type: 'warning',
+          text: `Lançamentos processados: ${successCount} com sucesso. ${failedDocs.length} permanecem na fila (falha ao salvar, ex: duplicidade de competência) — revise e tente salvar novamente.`
         });
       }
 
@@ -1861,15 +1934,44 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
       <div className="p-5 space-y-5">
         
-        {/* Status Message */}
-        {message && (
-          <div className={`p-4 rounded-lg flex items-start gap-3 border text-xs leading-relaxed ${
-            message.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' :
-            message.type === 'warning' ? 'bg-amber-500/10 border-amber-500/20 text-amber-300' :
-            'bg-rose-500/10 border-rose-500/20 text-rose-300'
-          }`}>
-            {message.type === 'success' ? <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" /> : <AlertTriangle className="h-5 w-5 shrink-0 text-amber-400" />}
-            <span>{message.text}</span>
+        {/* Status Message + Resumo do Lote em Conferência */}
+        {(message || sessionDocs.length > 0) && (
+          <div className="flex flex-col lg:flex-row gap-3 items-stretch">
+            {message && (
+              <div className={`flex-1 p-4 rounded-lg flex items-start gap-3 border text-xs leading-relaxed ${
+                message.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' :
+                message.type === 'warning' ? 'bg-amber-500/10 border-amber-500/20 text-amber-300' :
+                'bg-rose-500/10 border-rose-500/20 text-rose-300'
+              }`}>
+                {message.type === 'success' ? <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" /> : <AlertTriangle className="h-5 w-5 shrink-0 text-amber-400" />}
+                <span>{message.text}</span>
+              </div>
+            )}
+
+            {sessionDocs.length > 0 && (
+              <div className="lg:w-[420px] shrink-0 bg-[#121212] border border-white/10 rounded-lg p-3 text-[11px] font-mono">
+                <div className="text-gray-400 uppercase tracking-wider font-bold text-[10px] mb-2">
+                  Resumo do Lote em Conferência ({batchTotals.total} conta{batchTotals.total !== 1 ? 's' : ''})
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {batchTotals.celesc && (
+                    <div className="bg-amber-500/5 border border-amber-500/20 rounded p-2 space-y-1 col-span-2 sm:col-span-1">
+                      <div className="text-amber-400 font-bold text-[10px]">⚡ CELESC — {batchTotals.celesc.unidades} unidade{batchTotals.celesc.unidades !== 1 ? 's' : ''}</div>
+                      <div className="text-gray-300">Valor total: <span className="text-white font-bold">{fmtMoeda(batchTotals.celesc.valorTotal)}</span></div>
+                      <div className="text-gray-300">Consumo: <span className="text-white font-bold">{fmtNum(batchTotals.celesc.consumo)} kWh</span></div>
+                      <div className="text-gray-300">Energia injetada: <span className="text-white font-bold">{fmtNum(batchTotals.celesc.energiaInjetada)} kWh</span></div>
+                    </div>
+                  )}
+                  {batchTotals.casan && (
+                    <div className="bg-blue-500/5 border border-blue-500/20 rounded p-2 space-y-1 col-span-2 sm:col-span-1">
+                      <div className="text-blue-400 font-bold text-[10px]">💧 CASAN — {batchTotals.casan.unidades} unidade{batchTotals.casan.unidades !== 1 ? 's' : ''}</div>
+                      <div className="text-gray-300">Valor total: <span className="text-white font-bold">{fmtMoeda(batchTotals.casan.valorTotal)}</span></div>
+                      <div className="text-gray-300">Consumo: <span className="text-white font-bold">{fmtNum(batchTotals.casan.consumo)} m³</span></div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -2085,7 +2187,12 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5 font-mono">
-                  {masterUcs
+                  {loadingMasterUcs && (
+                    <tr>
+                      <td colSpan={8} className="px-4 py-8 text-center text-gray-500">Carregando cadastro...</td>
+                    </tr>
+                  )}
+                  {!loadingMasterUcs && masterUcs
                     .filter(u => {
                       if (!u) return false;
                       const query = ucSearchQuery.toLowerCase();
@@ -2119,7 +2226,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                         </td>
                         <td className="px-4 py-3 text-center">
                           <button
-                            onClick={() => item?.id && handleToggleUcStatus(item.id)}
+                            onClick={() => item?.id && handleToggleUcStatus(item)}
                             className={`px-2 py-0.5 rounded-full font-bold text-[9px] transition ${
                               item?.situacao === "Ativa" 
                                 ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/10 hover:bg-emerald-500/25" 
@@ -2150,7 +2257,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                       </tr>
                     );
                   })}
-                  {masterUcs.filter(u => {
+                  {!loadingMasterUcs && masterUcs.filter(u => {
                     const query = ucSearchQuery.toLowerCase();
                     return u.uc.toLowerCase().includes(query) ||
                            u.codnum.toLowerCase().includes(query) ||

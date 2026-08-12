@@ -168,8 +168,10 @@ export class ParserCasan {
     // --- 3. VALORES MEDIDOS EXTRACTION ---
     const medBlock = blocks.valores_medidos || text;
 
-    // Hidrômetro / Medidor
-    const hidroMatch = medBlock.match(/(?:HIDROMETRO|HIDRÔMETRO|NRO\s+HIDROMETRO|HIDRÔMETRO\s*N°|MEDIDOR)\s*[:/]*\s*([A-Z0-9-_]+)/i);
+    // Hidrômetro / Medidor. "NRO"/"Nº"/"N°" pode vir antes OU depois da palavra-chave
+    // (ex: "MEDIDOR NRO: 34918-02" ou "NRO HIDROMETRO: 34918-02") — sem consumir esse filler
+    // explicitamente, a captura pegava "NRO" em vez do número real do medidor.
+    const hidroMatch = medBlock.match(/(?:N[ºRO°.]{0,3}\.?\s+)?(?:HIDR[ÔO]METRO|MEDIDOR)\s*(?:N[ºRO°.]{0,3}\.?\s*)?[:/]?\s*([A-Z0-9][A-Z0-9-]*)/i);
     if (hidroMatch) {
       medidor = hidroMatch[1].trim();
       debugLogs.push({

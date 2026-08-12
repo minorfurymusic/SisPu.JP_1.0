@@ -4,10 +4,10 @@ import fs from "fs";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
-import { 
-  Usuario, Secretaria, Unidade, Despesa, ItemDespesa, 
-  Lancamento, Pessoa, ContatoEmail, LogError, AuditoriaRegistro, 
-  DocumentoProcessado 
+import {
+  Usuario, Secretaria, Unidade, Despesa, ItemDespesa,
+  Lancamento, Pessoa, ContatoEmail, LogError, AuditoriaRegistro,
+  DocumentoProcessado, CadastroMestreUC
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
 import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool } from "./src/db/postgres";
@@ -45,13 +45,14 @@ interface DatabaseState {
   logs_erros: LogError[];
   auditoria_registros: AuditoriaRegistro[];
   documentos_processados: DocumentoProcessado[];
+  cadastro_mestre_ucs: CadastroMestreUC[];
 }
 
-// Initial Seed Data (strictly empty, respecting rule: no mock data)
+// Initial Seed Data — genuinely empty. No fake/example users, secretarias, UCs, etc.: this app
+// has no login system, so seeding a fake "admin" row here served nothing functional and only
+// showed up as if it were a real registered person.
 const initialDBState: DatabaseState = {
-  usuarios: [
-    { id: "1", login: "admin", nome: "Administrador", ativo: true, criado_em: new Date().toISOString() }
-  ],
+  usuarios: [],
   secretarias: [],
   unidades: [],
   despesas: [],
@@ -61,7 +62,8 @@ const initialDBState: DatabaseState = {
   contatos_email: [],
   logs_erros: [],
   auditoria_registros: [],
-  documentos_processados: []
+  documentos_processados: [],
+  cadastro_mestre_ucs: []
 };
 
 // Database utility functions with automatic write persistence (PostgreSQL + Local Cache)
@@ -79,11 +81,24 @@ function loadDB(): DatabaseState {
   return initialDBState;
 }
 
+// Guards against wiping real Neon data: saveAllStateToPostgres() deletes from every table
+// anything whose id isn't in the in-memory arrays it's given. Right after a cold start, `db`
+// is still the local/empty seed state until the real rows are pulled back from Postgres — a
+// save that races ahead of that pull would look like "the user deleted everything" and drop
+// every table. This flag only turns true once we know `db` truly reflects Postgres's contents
+// (or once we've deliberately decided to seed Postgres from a confirmed-empty state), so the
+// sync-by-diff logic in saveAllStateToPostgres never fires against a hollow cache.
+let postgresHydrated = false;
+
 function saveDB(state: DatabaseState) {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
   } catch (err) {
     console.error("Error saving DB file:", err);
+  }
+  if (!postgresHydrated) {
+    console.warn("[DB] Sincronização com o PostgreSQL adiada: estado local ainda não foi confirmado contra o banco (evitando apagar dados reais).");
+    return;
   }
   // Asynchronously persist state to PostgreSQL
   saveAllStateToPostgres(state).catch(err => {
@@ -95,8 +110,15 @@ function saveDB(state: DatabaseState) {
 let db: DatabaseState = loadDB();
 
 async function initDatabasePersistence() {
-  const initialized = await initPostgresSchema();
-  if (initialized) {
+  try {
+    const initialized = await initPostgresSchema();
+    if (!initialized) {
+      // No DATABASE_URL configured (or Postgres unreachable) — nothing to protect, the JSON
+      // file is the only store, so saves are safe immediately.
+      postgresHydrated = true;
+      autoSyncOrphanRecords();
+      return;
+    }
     const pgState = await loadStateFromPostgres();
     if (pgState && (pgState.secretarias?.length > 0 || pgState.documentos_processados?.length > 0)) {
       db = {
@@ -111,13 +133,23 @@ async function initDatabasePersistence() {
         logs_erros: pgState.logs_erros || [],
         auditoria_registros: pgState.auditoria_registros || [],
         documentos_processados: pgState.documentos_processados || [],
+        cadastro_mestre_ucs: pgState.cadastro_mestre_ucs || [],
       };
       fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
       console.log("[DB] Estado restaurado com sucesso diretamente do PostgreSQL (Neon)!");
-    } else {
+      // Only now does `db` provably match Postgres — safe to let saves sync/delete by diff.
+      postgresHydrated = true;
+    } else if (pgState) {
+      // Postgres reachable and confirmed empty (not a read failure) — safe to seed it once
+      // from the local state, then treat it as the source of truth from here on.
       console.log("[DB] PostgreSQL está sem registros. Semeando dados iniciais no Neon...");
+      postgresHydrated = true;
       await saveAllStateToPostgres(db);
+    } else {
+      console.error("[DB] Não foi possível confirmar o estado do PostgreSQL; mantendo sincronização em pausa até o próximo carregamento bem-sucedido.");
     }
+  } catch (err) {
+    console.error("[DB] Erro ao inicializar banco PostgreSQL:", err);
   }
   autoSyncOrphanRecords();
 }
@@ -271,7 +303,18 @@ function ensureUnidadeAndContract(params: {
   }
 
   // 3. Find or Create ItemDespesa (Contrato CODNUM)
-  let item = db.itens_despesas.find(it => it.codigo_numero && it.codigo_numero.trim().toUpperCase() === cleanCodnum);
+  // Uma mesma UC/CODNUM pode ter mais de um hidrômetro/medidor físico faturado no mesmo
+  // documento (comum em contas CASAN maiores). Se o medidor foi extraído, o item é
+  // identificado pelo par (CODNUM, medidor) — não só pelo CODNUM — para que o segundo medidor
+  // vire um item próprio em vez de ser descartado ao "reaproveitar" o primeiro encontrado.
+  // Sem medidor (formatos de relatório que não trazem essa informação), cai no comportamento
+  // antigo de casar só pelo CODNUM.
+  const cleanMedidor = (params.medidor && params.medidor !== "N/A") ? params.medidor.trim() : null;
+  let item = cleanMedidor
+    ? db.itens_despesas.find(it =>
+        it.codigo_numero && it.codigo_numero.trim().toUpperCase() === cleanCodnum &&
+        it.medidor && it.medidor.trim().toUpperCase() === cleanMedidor.toUpperCase())
+    : db.itens_despesas.find(it => it.codigo_numero && it.codigo_numero.trim().toUpperCase() === cleanCodnum);
 
   if (item) {
     let updated = false;
@@ -283,8 +326,8 @@ function ensureUnidadeAndContract(params: {
       item.despesa_id = targetDespesaId;
       updated = true;
     }
-    if (params.medidor && params.medidor !== "N/A" && (!item.medidor || item.medidor === "N/A")) {
-      item.medidor = params.medidor;
+    if (cleanMedidor && (!item.medidor || item.medidor === "N/A")) {
+      item.medidor = cleanMedidor;
       updated = true;
     }
     if (updated) {
@@ -298,7 +341,7 @@ function ensureUnidadeAndContract(params: {
       codigo_numero: cleanCodnum,
       despesa_id: targetDespesaId,
       unidade_id: unidade.id,
-      medidor: params.medidor || "N/A",
+      medidor: cleanMedidor || "N/A",
       ativo: true,
       criado_em: new Date().toISOString(),
       atualizado_em: new Date().toISOString()
@@ -333,33 +376,36 @@ function autoSyncOrphanRecords() {
     }
   });
 
-  // Sync from lancamentos
+  // Sync from lancamentos — only for genuinely orphaned lançamentos (item_despesa_id points to
+  // nothing). Matching a document by mes_ano alone isn't reliable enough to *relink* an already
+  // valid lançamento: when two documents/medidores share the same competência (a UC billed
+  // through two hydrômetros in one report, for example), that match is ambiguous and this used
+  // to silently move a correctly-linked lançamento onto the wrong item/medidor on every read.
   (db.lancamentos || []).forEach(lanc => {
-    const matchingDoc = db.documentos_processados?.find(d => 
-      d.dados_extraidos && d.dados_extraidos.codigo_numero && 
+    const item = db.itens_despesas.find(it => it.id === lanc.item_despesa_id);
+    if (item) return; // already correctly linked — nothing to sync
+
+    const matchingDoc = db.documentos_processados?.find(d =>
+      d.dados_extraidos && d.dados_extraidos.codigo_numero &&
       d.dados_extraidos.mes_ano?.substring(0,7) === lanc.mes_ano?.substring(0,7)
     );
-    const item = db.itens_despesas.find(it => it.id === lanc.item_despesa_id);
-    const codnum = item?.codigo_numero || matchingDoc?.dados_extraidos?.codigo_numero;
+    const codnum = matchingDoc?.dados_extraidos?.codigo_numero;
 
     if (codnum) {
       const isCasan = Boolean(
         (matchingDoc?.layout && matchingDoc.layout.includes("CASAN")) ||
-        (matchingDoc?.nome_arquivo && /casan|catarinense/i.test(matchingDoc.nome_arquivo)) ||
-        (item?.despesa_id === "2")
+        (matchingDoc?.nome_arquivo && /casan|catarinense/i.test(matchingDoc.nome_arquivo))
       );
       const res = ensureUnidadeAndContract({
         codigo_numero: codnum,
         concessionaria: isCasan ? 'CASAN' : 'CELESC',
         unidade_nome: matchingDoc?.dados_extraidos?.unidade_nome,
         endereco: matchingDoc?.dados_extraidos?.endereco,
-        medidor: matchingDoc?.dados_extraidos?.medidor || item?.medidor
+        medidor: matchingDoc?.dados_extraidos?.medidor
       });
-      if (res && res.item) {
-        if (lanc.item_despesa_id !== res.item.id) {
-          lanc.item_despesa_id = res.item.id;
-          hasChanges = true;
-        }
+      if (res && res.item && lanc.item_despesa_id !== res.item.id) {
+        lanc.item_despesa_id = res.item.id;
+        hasChanges = true;
       }
     }
   });
@@ -671,6 +717,103 @@ app.delete("/api/secretarias/:id", (req, res) => {
   res.json({ message: "Secretaria excluída com sucesso." });
 });
 
+// --- CADASTRO MESTRE DE UNIDADES CONSUMIDORAS (UCs) ---
+// Persistido no mesmo banco (JSON local + Postgres/Neon) que todo o resto do sistema — antes
+// vivia só no localStorage do navegador com uma lista fixa de UCs de exemplo como fallback, o
+// que fazia exclusões sumirem ao trocar de navegador/dispositivo e os exemplos fabricados
+// reaparecerem como se fossem cadastros reais.
+app.get("/api/cadastro-mestre-ucs", (req, res) => {
+  const list = [...db.cadastro_mestre_ucs].sort((a, b) => a.uc.localeCompare(b.uc));
+  res.json(list);
+});
+
+app.post("/api/cadastro-mestre-ucs", (req, res) => {
+  const { uc, codnum, concessionaria, secretaria, unidade_administrativa, endereco, classe, grupo_tarifario, situacao } = req.body;
+  const usuario = req.headers["x-user"] as string || "admin";
+
+  if (!uc || !codnum) {
+    return res.status(400).json({ error: "Informe a UC e o CODNUM." });
+  }
+  if (db.cadastro_mestre_ucs.some(u => u.uc === uc)) {
+    return res.status(400).json({ error: "Esta UC já está cadastrada no Cadastro Mestre." });
+  }
+
+  const newId = `UC-${(Math.max(0, ...db.cadastro_mestre_ucs.map(u => parseInt(u.id.replace("UC-", ""), 10) || 0)) + 1).toString().padStart(2, "0")}`;
+  const newUc: CadastroMestreUC = {
+    id: newId,
+    uc,
+    codnum,
+    concessionaria: concessionaria === "CASAN" ? "CASAN" : "CELESC",
+    secretaria: secretaria || "",
+    unidade_administrativa: unidade_administrativa || "",
+    endereco: endereco || "",
+    classe: classe || "",
+    grupo_tarifario: grupo_tarifario || "",
+    situacao: situacao === "Inativa" ? "Inativa" : "Ativa",
+    criado_em: new Date().toISOString(),
+    atualizado_em: new Date().toISOString()
+  };
+
+  db.cadastro_mestre_ucs.push(newUc);
+  saveDB(db);
+  logAudit("cadastro_mestre_ucs", newId, "INSERT", usuario, null, newUc);
+
+  res.status(201).json(newUc);
+});
+
+app.put("/api/cadastro-mestre-ucs/:id", (req, res) => {
+  const { id } = req.params;
+  const { uc, codnum, concessionaria, secretaria, unidade_administrativa, endereco, classe, grupo_tarifario, situacao } = req.body;
+  const usuario = req.headers["x-user"] as string || "admin";
+
+  const index = db.cadastro_mestre_ucs.findIndex(u => u.id === id);
+  if (index === -1) {
+    return res.status(404).json({ error: "UC não encontrada no Cadastro Mestre." });
+  }
+
+  if (uc) {
+    const duplicate = db.cadastro_mestre_ucs.find(u => u.uc === uc && u.id !== id);
+    if (duplicate) {
+      return res.status(400).json({ error: "Já existe outra UC cadastrada com este código." });
+    }
+  }
+
+  const oldVal = { ...db.cadastro_mestre_ucs[index] };
+  db.cadastro_mestre_ucs[index] = {
+    ...db.cadastro_mestre_ucs[index],
+    uc: uc ?? db.cadastro_mestre_ucs[index].uc,
+    codnum: codnum ?? db.cadastro_mestre_ucs[index].codnum,
+    concessionaria: concessionaria ?? db.cadastro_mestre_ucs[index].concessionaria,
+    secretaria: secretaria ?? db.cadastro_mestre_ucs[index].secretaria,
+    unidade_administrativa: unidade_administrativa ?? db.cadastro_mestre_ucs[index].unidade_administrativa,
+    endereco: endereco ?? db.cadastro_mestre_ucs[index].endereco,
+    classe: classe ?? db.cadastro_mestre_ucs[index].classe,
+    grupo_tarifario: grupo_tarifario ?? db.cadastro_mestre_ucs[index].grupo_tarifario,
+    situacao: situacao ?? db.cadastro_mestre_ucs[index].situacao,
+    atualizado_em: new Date().toISOString()
+  };
+  saveDB(db);
+  logAudit("cadastro_mestre_ucs", id, "UPDATE", usuario, oldVal, db.cadastro_mestre_ucs[index]);
+
+  res.json(db.cadastro_mestre_ucs[index]);
+});
+
+app.delete("/api/cadastro-mestre-ucs/:id", (req, res) => {
+  const { id } = req.params;
+  const usuario = req.headers["x-user"] as string || "admin";
+
+  const index = db.cadastro_mestre_ucs.findIndex(u => u.id === id);
+  if (index === -1) {
+    return res.status(404).json({ error: "UC não encontrada no Cadastro Mestre." });
+  }
+
+  const oldVal = { ...db.cadastro_mestre_ucs[index] };
+  db.cadastro_mestre_ucs.splice(index, 1);
+  saveDB(db);
+  logAudit("cadastro_mestre_ucs", id, "DELETE", usuario, oldVal, null);
+
+  res.json({ message: "UC removida do Cadastro Mestre com sucesso." });
+});
 
 // --- UNIDADES ---
 app.get("/api/unidades", (req, res) => {
