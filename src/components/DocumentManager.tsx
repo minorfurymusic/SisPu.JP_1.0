@@ -470,35 +470,67 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   }, [sessionDocs]);
 
   // Batch Competência state & Manual entry form states requested by user
-  const [batchCompetencia, setBatchCompetencia] = useState<string>("06/2026");
+  // Fica em branco por padrão — um "06/2026" fixo aqui parecia a competência detectada no lote
+  // (e não era, era só um valor inicial que nunca mudava sozinho), levando a homologar faturas
+  // no mês errado sem perceber.
+  const [batchCompetencia, setBatchCompetencia] = useState<string>("");
   const [manualUc, setManualUc] = useState("");
-  const [manualCompetencia, setManualCompetencia] = useState("06/2026");
+  const [manualCompetencia, setManualCompetencia] = useState("");
   const [manualConsumo, setManualConsumo] = useState("");
   const [manualValorTotal, setManualValorTotal] = useState("");
   const [manualImposto, setManualImposto] = useState("");
 
-  const parseCompetenciaToIso = (input: string): string => {
+  // Se todas as faturas do lote já concordam na mesma competência (extraída pelo parser),
+  // mostra ela pronta pra conferência. Se estiverem vazias ou divergentes, deixa em branco —
+  // não inventa um valor.
+  const detectedBatchCompetencia = useMemo(() => {
+    if (sessionDocs.length === 0) return null;
+    const mesesArr = sessionDocs
+      .map(d => d?.dados_extraidos?.mes_ano ? d.dados_extraidos.mes_ano.substring(0, 7) : "")
+      .filter(m => m.length > 0);
+    const meses = new Set(mesesArr);
+    if (meses.size !== 1) return null;
+    const [ano, mes] = mesesArr[0].split("-");
+    return `${mes}/${ano}`;
+  }, [sessionDocs]);
+
+  useEffect(() => {
+    if (detectedBatchCompetencia && !batchCompetencia) {
+      setBatchCompetencia(detectedBatchCompetencia);
+    }
+  }, [detectedBatchCompetencia]);
+
+  const parseCompetenciaToIso = (input: string): string | null => {
     const clean = input.trim();
-    if (!clean) return "2026-06-01";
+    if (!clean) return null;
+
+    let m: string | null = null;
+    let y: string | null = null;
+
     if (clean.includes("/")) {
       const parts = clean.split("/");
       if (parts.length === 2) {
-        let m = parts[0].padStart(2, '0');
-        let y = parts[1];
-        if (y.length === 2) y = "20" + y;
-        return `${y}-${m}-01`;
+        m = parts[0].padStart(2, '0');
+        y = parts[1].length === 2 ? "20" + parts[1] : parts[1];
       }
-    }
-    if (clean.includes("-")) {
+    } else if (clean.includes("-")) {
       const parts = clean.split("-");
       if (parts.length === 2) {
-        return `${parts[0]}-${parts[1].padStart(2, '0')}-01`;
-      }
-      if (parts.length === 3) {
-        return clean;
+        y = parts[0];
+        m = parts[1].padStart(2, '0');
+      } else if (parts.length === 3) {
+        y = parts[0];
+        m = parts[1].padStart(2, '0');
       }
     }
-    return "2026-06-01";
+
+    if (!m || !y || y.length !== 4) return null;
+    const monthNum = parseInt(m, 10);
+    const yearNum = parseInt(y, 10);
+    if (isNaN(monthNum) || monthNum < 1 || monthNum > 12) return null;
+    if (isNaN(yearNum) || yearNum < 2000 || yearNum > 2100) return null;
+
+    return `${y}-${m}-01`;
   };
 
   const applyBatchCompetencia = () => {
@@ -507,8 +539,18 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
       return;
     }
     const isoDate = parseCompetenciaToIso(batchCompetencia);
+    if (!isoDate) {
+      setMessage({ type: 'error', text: `Competência "${batchCompetencia}" inválida. Use o formato MM/AAAA (ex: 07/2026).` });
+      return;
+    }
     const parts = isoDate.split("-");
     const formattedDisplay = `${parts[1]}/${parts[0]}`;
+
+    // Ação de alto impacto (sobrescreve o mês de TODAS as faturas do lote de uma vez) — pede
+    // confirmação explícita antes de aplicar.
+    if (!window.confirm(`Isso vai definir a competência de TODAS as ${sessionDocs.length} faturas deste lote para ${formattedDisplay}, sobrescrevendo o que cada uma já tinha. Confirma?`)) {
+      return;
+    }
 
     setSessionDocs(prev => prev.map(doc => ({
       ...doc,
@@ -594,10 +636,14 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
       return;
     }
 
+    const isoDate = parseCompetenciaToIso(manualCompetencia);
+    if (!isoDate) {
+      setMessage({ type: "error", text: `Competência "${manualCompetencia}" inválida. Use o formato MM/AAAA (ex: 07/2026).` });
+      return;
+    }
+
     setLoading(true);
     try {
-      const isoDate = parseCompetenciaToIso(manualCompetencia);
-      
       const res = await fetch("/api/documentos", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2439,7 +2485,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                     type="text"
                     value={batchCompetencia}
                     onChange={(e) => setBatchCompetencia(e.target.value)}
-                    placeholder="06/2026"
+                    placeholder="MM/AAAA"
                     className="w-20 bg-white/10 border border-white/15 rounded px-2 py-0.5 text-xs text-white font-mono focus:outline-none focus:border-indigo-500 text-center font-bold"
                     title="Informe o mês/ano de competência (ex: 06/2026)"
                   />
@@ -2702,7 +2748,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                     type="text"
                     value={batchCompetencia}
                     onChange={(e) => setBatchCompetencia(e.target.value)}
-                    placeholder="06/2026"
+                    placeholder="MM/AAAA"
                     className="w-20 bg-white/10 border border-white/15 rounded px-2 py-0.5 text-xs text-white font-mono focus:outline-none focus:border-indigo-500 text-center font-bold"
                     title="Informe o mês/ano de competência (ex: 06/2026)"
                   />
