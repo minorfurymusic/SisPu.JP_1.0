@@ -160,7 +160,7 @@ async function initDatabasePersistence() {
 // Simulated PostgreSQL Trigger-based Auditor
 function logAudit(tabela: string, pk: string, acao: 'INSERT' | 'UPDATE' | 'DELETE', usuario: string, antigo: any, novo: any) {
   const auditRow: AuditoriaRegistro = {
-    id: (db.auditoria_registros.length + 1).toString(),
+    id: crypto.randomUUID(),
     tabela,
     registro_pk: pk,
     acao,
@@ -176,7 +176,7 @@ function logAudit(tabela: string, pk: string, acao: 'INSERT' | 'UPDATE' | 'DELET
 // Error Logger Utility
 function logTechnicalError(origem: string, mensagem: string, arquivo: string, linha: string) {
   const logRow: LogError = {
-    id: (db.logs_erros.length + 1).toString(),
+    id: crypto.randomUUID(),
     origem,
     mensagem,
     ocorrido_em: new Date().toISOString(),
@@ -284,7 +284,7 @@ function ensureUnidadeAndContract(params: {
       logAudit("unidades", unidade.id, "UPDATE", usuario, null, unidade);
     }
   } else {
-    const newUnidadeId = (Math.max(...db.unidades.map(u => (u?.id ? parseInt(u.id) : 0) || 0), 0) + 1).toString();
+    const newUnidadeId = crypto.randomUUID();
     const finalNome = (cleanNomeUnidade && cleanNomeUnidade !== "N/A") ? cleanNomeUnidade : `UNIDADE ${cleanCodnum}`;
     const finalEndereco = (cleanEndereco && cleanEndereco !== "N/A") ? cleanEndereco : "ENDEREÇO A CADASTRAR";
     
@@ -337,7 +337,7 @@ function ensureUnidadeAndContract(params: {
       logAudit("itens_despesas", item.id, "UPDATE", usuario, null, item);
     }
   } else {
-    const newItemId = (Math.max(...db.itens_despesas.map(it => (it?.id ? parseInt(it.id) : 0) || 0), 0) + 1).toString();
+    const newItemId = crypto.randomUUID();
     item = {
       id: newItemId,
       codigo_numero: cleanCodnum,
@@ -579,7 +579,7 @@ app.post("/api/secretarias", (req, res) => {
     return res.status(400).json({ error: "Já existe uma secretaria com este nome." });
   }
 
-  const newId = (Math.max(...db.secretarias.map(s => (s?.id ? parseInt(s.id) : 0) || 0), 0) + 1).toString();
+  const newId = crypto.randomUUID();
   const newSecretaria: Secretaria = {
     id: newId,
     codigo_legado: codigo_legado ? parseInt(codigo_legado) : undefined,
@@ -683,7 +683,7 @@ app.post("/api/cadastro-mestre-ucs", (req, res) => {
     return res.status(400).json({ error: "Esta UC já está cadastrada no Cadastro Mestre." });
   }
 
-  const newId = `UC-${(Math.max(0, ...db.cadastro_mestre_ucs.map(u => parseInt(u.id.replace("UC-", ""), 10) || 0)) + 1).toString().padStart(2, "0")}`;
+  const newId = crypto.randomUUID();
   const newUc: CadastroMestreUC = {
     id: newId,
     uc,
@@ -840,7 +840,7 @@ app.post("/api/unidades", (req, res) => {
     return res.status(200).json(exists);
   }
 
-  const newId = (Math.max(...db.unidades.map(u => (u?.id ? parseInt(u.id) : 0) || 0), 0) + 1).toString();
+  const newId = crypto.randomUUID();
   const newUnidade: Unidade = {
     id: newId,
     codigo_legado: cleanUC ? (parseInt(cleanUC) || undefined) : undefined,
@@ -996,7 +996,7 @@ app.post("/api/despesas", (req, res) => {
     return res.status(400).json({ error: "Já existe uma despesa com esta descrição." });
   }
 
-  const newId = (Math.max(...db.despesas.map(d => (d?.id ? parseInt(d.id) : 0) || 0), 0) + 1).toString();
+  const newId = crypto.randomUUID();
   const newDespesa: Despesa = {
     id: newId,
     codigo_legado: codigo_legado ? parseInt(codigo_legado) : undefined,
@@ -1121,7 +1121,7 @@ app.post("/api/itens_despesas", (req, res) => {
     return res.status(400).json({ error: "Já existe um item cadastrado com este código/número (CODNUM)." });
   }
 
-  const newId = (Math.max(...db.itens_despesas.map(it => (it?.id ? parseInt(it.id) : 0) || 0), 0) + 1).toString();
+  const newId = crypto.randomUUID();
   const newItem: ItemDespesa = {
     id: newId,
     codigo_numero: cleanCodigo,
@@ -1353,7 +1353,7 @@ app.post("/api/lancamentos", (req, res) => {
     cleanMesAno = `${mes_ano}-01`;
   }
 
-  const newId = (Math.max(...db.lancamentos.map(l => (l?.id ? parseInt(l.id) : 0) || 0), 0) + 1).toString();
+  const newId = crypto.randomUUID();
   const newLancamento: Lancamento = {
     id: newId,
     item_despesa_id,
@@ -1557,7 +1557,7 @@ app.post("/api/documentos", (req, res) => {
     });
   }
 
-  const newId = (Math.max(...db.documentos_processados.map(d => (d?.id ? parseInt(d.id) : 0) || 0), 0) + 1).toString();
+  const newId = crypto.randomUUID();
   const doc: DocumentoProcessado = {
     id: newId,
     nome_arquivo,
@@ -1709,7 +1709,7 @@ app.post("/api/documentos/:id/homologar", (req, res) => {
     let depId = isCasan ? "2" : "1";
     const defaultUnidade = (db.unidades && db.unidades.length > 0) ? db.unidades[0] : { id: "1" };
 
-    const newItemId = (Math.max(...db.itens_despesas.map(it => (it?.id ? parseInt(it.id) : 0) || 0), 0) + 1).toString();
+    const newItemId = crypto.randomUUID();
     item = {
       id: newItemId,
       codigo_numero: extr?.codigo_numero || `AUTO-${Date.now()}`,
@@ -1727,7 +1727,7 @@ app.post("/api/documentos/:id/homologar", (req, res) => {
   // Persist to lancamentos (shared table)
   const mesAnoDate = extr?.mes_ano || new Date().toISOString().split('T')[0];
   
-  const newLancId = (Math.max(...db.lancamentos.map(l => (l?.id ? parseInt(l.id) : 0) || 0), 0) + 1).toString();
+  const newLancId = crypto.randomUUID();
   const newLanc: Lancamento = {
     id: newLancId,
     item_despesa_id: item.id,
