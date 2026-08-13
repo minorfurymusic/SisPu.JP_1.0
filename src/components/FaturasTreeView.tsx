@@ -35,6 +35,7 @@ export interface FaturasTreeViewProps {
   onView?: (item: any) => void;
   onDelete?: (id: string) => void;
   onDeleteMonth?: (monthKey: string, items: any[], monthLabel: string) => void;
+  onDeleteGroup?: (monthKey: string, items: any[], groupLabel: string) => void;
   onRefreshData?: () => void;
 }
 
@@ -105,6 +106,7 @@ export default function FaturasTreeView({
   onView,
   onDelete,
   onDeleteMonth,
+  onDeleteGroup,
   onRefreshData
 }: FaturasTreeViewProps) {
   // Filter States
@@ -673,9 +675,24 @@ export default function FaturasTreeView({
                             </span>
                           </div>
 
-                          <span className="text-xs font-mono font-bold text-amber-300">
-                            Subtotal: R$ {monthGroup.celescItems.reduce((acc, it) => acc + (parseFloat(it.valor_total) || 0), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </span>
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs font-mono font-bold text-amber-300">
+                              Subtotal: R$ {monthGroup.celescItems.reduce((acc, it) => acc + (parseFloat(it.valor_total) || 0), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                            {onDeleteGroup && Boolean(unlockedMonths[monthGroup.monthKey]) && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onDeleteGroup(monthGroup.monthKey, monthGroup.celescItems, `CELESC de ${monthGroup.label}`);
+                                }}
+                                className="px-2 py-1 rounded text-[10px] font-bold flex items-center gap-1 bg-rose-600/20 text-rose-300 border border-rose-500/40 hover:bg-rose-600 hover:text-white transition"
+                                title={`Excluir todas as ${monthGroup.celescItems.length} faturas CELESC deste mês`}
+                              >
+                                <Trash2 className="h-3 w-3" /> Excluir CELESC
+                              </button>
+                            )}
+                          </div>
                         </div>
 
                         {/* CELESC ITEMS TABLE */}
@@ -806,9 +823,24 @@ export default function FaturasTreeView({
                             </span>
                           </div>
 
-                          <span className="text-xs font-mono font-bold text-blue-300">
-                            Subtotal: R$ {monthGroup.casanItems.reduce((acc, it) => acc + (parseFloat(it.valor_total) || 0), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </span>
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs font-mono font-bold text-blue-300">
+                              Subtotal: R$ {monthGroup.casanItems.reduce((acc, it) => acc + (parseFloat(it.valor_total) || 0), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                            {onDeleteGroup && Boolean(unlockedMonths[monthGroup.monthKey]) && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onDeleteGroup(monthGroup.monthKey, monthGroup.casanItems, `CASAN de ${monthGroup.label}`);
+                                }}
+                                className="px-2 py-1 rounded text-[10px] font-bold flex items-center gap-1 bg-rose-600/20 text-rose-300 border border-rose-500/40 hover:bg-rose-600 hover:text-white transition"
+                                title={`Excluir todas as ${monthGroup.casanItems.length} faturas CASAN deste mês`}
+                              >
+                                <Trash2 className="h-3 w-3" /> Excluir CASAN
+                              </button>
+                            )}
+                          </div>
                         </div>
 
                         {/* CASAN ITEMS TABLE */}

@@ -1110,7 +1110,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
               status: logsVal.length > 0 ? 'NORMALIZADO' : 'VALIDADO',
               origem_conteudo: pageText,
               dados_extraidos: {
-                mes_ano: parsed.referencia || "2026-06-01",
+                mes_ano: parsed.referencia || "",
                 consumo: conta.consumo || 0,
                 valor_total: conta.valor_total || 0,
                 valor_imposto: 0,
@@ -1208,7 +1208,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                 status: 'VALIDADO',
                 origem_conteudo: textToProcess,
                 dados_extraidos: {
-                  mes_ano: parsed.referencia || "2026-06-01",
+                  mes_ano: parsed.referencia || "",
                   consumo: conta.consumo || 0,
                   valor_total: conta.valor_total || 0,
                   valor_imposto: 0,
@@ -1261,7 +1261,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
             status: logs.some(l => l.includes('❌')) ? 'NORMALIZADO' : 'VALIDADO',
             origem_conteudo: textToProcess,
             dados_extraidos: {
-              mes_ano: parsed.mes_ano || "2026-06-01",
+              mes_ano: parsed.mes_ano || "",
               consumo: parsed.consumo || 0,
               valor_total: parsed.valor_total || 0,
               valor_imposto: parsed.valor_imposto || 0,
@@ -1364,7 +1364,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
         if (seg.dados_extraidos && (seg.dados_extraidos as any).tipo_relatorio === "CASAN_CENTRALIZADA" && Array.isArray((seg.dados_extraidos as any).contas)) {
           const contas = (seg.dados_extraidos as any).contas;
-          const refDate = (seg.dados_extraidos as any).referencia || "2026-06-01";
+          const refDate = (seg.dados_extraidos as any).referencia || "";
           contas.forEach((conta: any, cIdx: number) => {
             const cDoc: DocumentoProcessado = {
               id: `DOC-LOTE-CASAN-${Date.now()}-${idx + 1}-${cIdx + 1}`,
@@ -1475,7 +1475,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
               status: "IGNORADA", // Styled as warning, no financial launch created, saved is disabled or bypassed
               origem_conteudo: "",
               dados_extraidos: {
-                mes_ano: docObjects[0]?.dados_extraidos.mes_ano || "2026-06-01", 
+                mes_ano: docObjects[0]?.dados_extraidos.mes_ano || "", 
                 consumo: 0,
                 valor_total: 0,
                 valor_imposto: 0,
@@ -1830,6 +1830,19 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
       return;
     }
 
+    // Trava de segurança: nunca homologar com uma competência "adivinhada". Se o parser não
+    // achou o mês na fatura, o campo fica em branco (ver "Col 2: Competência de Referência"
+    // acima) — sem essa checagem, um mês em branco cairia num Date.parse indefinido e o
+    // usuário só descobriria o mês errado depois, tendo que apagar e reimportar tudo de novo.
+    const semCompetencia = docsToSave.filter(d => !d.dados_extraidos?.mes_ano);
+    if (semCompetencia.length > 0) {
+      setMessage({
+        type: 'error',
+        text: `${semCompetencia.length} fatura(s) na fila estão sem a Competência de Referência preenchida (ex.: "${semCompetencia[0].nome_arquivo}"). Abra cada uma na conferência e selecione o mês antes de salvar.`
+      });
+      return;
+    }
+
     setLoading(true);
     let successCount = 0;
     // Docs that fail to save/homologar go back into the queue instead of being silently
@@ -1837,8 +1850,13 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     // the user re-typing or re-importing what they already reviewed.
     const failedDocs: DocumentoProcessado[] = [];
 
-    try {
-      for (const doc of docsToSave) {
+    // Cada fatura é isolada em seu próprio try/catch: se uma delas falhar por erro de rede (não
+    // só uma resposta não-ok, mas o fetch em si rejeitando), o loop inteiro não pode abortar no
+    // meio — do contrário as faturas já homologadas nas iterações anteriores nunca seriam
+    // removidas de sessionDocs, e continuariam aparecendo prontas para salvar de novo. Foi
+    // assim que um relatório já salvo apareceu de novo pra salvar e duplicou o valor do mês.
+    for (const doc of docsToSave) {
+      try {
         // Enviar os dados de cada fatura do lote para homologar no backend de forma transparente
         const res = await fetch("/api/documentos", {
           method: "POST",
@@ -1874,34 +1892,33 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
         } else {
           failedDocs.push(doc);
         }
+      } catch {
+        failedDocs.push(doc);
       }
-
-      // Mantém na fila os que falharam e os que já estavam marcados como IGNORADA (esses nunca
-      // foram enviados); só remove os que realmente foram homologados.
-      const ignoradas = sessionDocs.filter(d => d && d.status === 'IGNORADA');
-      setSessionDocs([...failedDocs, ...ignoradas]);
-      setCustomText("");
-      setFileName("");
-
-      if (onDocumentProcessed) onDocumentProcessed();
-
-      if (failedDocs.length === 0) {
-        setMessage({
-          type: 'success',
-          text: `Sucesso! Todos os ${successCount} lançamentos do lote foram homologados na tabela central com auditoria e atualizados no painel geral.`
-        });
-      } else {
-        setMessage({
-          type: 'warning',
-          text: `Lançamentos processados: ${successCount} com sucesso. ${failedDocs.length} permanecem na fila (falha ao salvar, ex: duplicidade de competência) — revise e tente salvar novamente.`
-        });
-      }
-
-    } catch (err: any) {
-      setMessage({ type: 'error', text: `Erro de gravação final: ${err.message}` });
-    } finally {
-      setLoading(false);
     }
+
+    // Mantém na fila os que falharam e os que já estavam marcados como IGNORADA (esses nunca
+    // foram enviados); só remove os que realmente foram homologados.
+    const ignoradas = sessionDocs.filter(d => d && d.status === 'IGNORADA');
+    setSessionDocs([...failedDocs, ...ignoradas]);
+    setCustomText("");
+    setFileName("");
+
+    if (onDocumentProcessed) onDocumentProcessed();
+
+    if (failedDocs.length === 0) {
+      setMessage({
+        type: 'success',
+        text: `Sucesso! Todos os ${successCount} lançamentos do lote foram homologados na tabela central com auditoria e atualizados no painel geral.`
+      });
+    } else {
+      setMessage({
+        type: 'warning',
+        text: `Lançamentos processados: ${successCount} com sucesso. ${failedDocs.length} permanecem na fila (falha ao salvar, ex: duplicidade de competência) — revise e tente salvar novamente.`
+      });
+    }
+
+    setLoading(false);
   };
 
   return (
@@ -3155,12 +3172,18 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                       </div>
                       {/* Col 2: Competência de Referência */}
                       <div>
-                        <label className="text-gray-500 text-[10px] uppercase font-mono">Competência de Referência</label>
+                        <label className={`text-[10px] uppercase font-mono ${!activeDoc.dados_extraidos.mes_ano ? "text-rose-400 font-bold" : "text-gray-500"}`}>
+                          Competência de Referência {!activeDoc.dados_extraidos.mes_ano && "— não identificada, selecione"}
+                        </label>
                         <input
                           type="date"
-                          value={activeDoc.dados_extraidos.mes_ano ? activeDoc.dados_extraidos.mes_ano.substring(0, 10) : "2026-05-01"}
+                          value={activeDoc.dados_extraidos.mes_ano ? activeDoc.dados_extraidos.mes_ano.substring(0, 10) : ""}
                           onChange={(e) => handleFieldChange("mes_ano", e.target.value)}
-                          className="w-full bg-black/40 border border-white/10 hover:border-white/20 focus:border-indigo-500 rounded px-2.5 py-1.5 text-white font-mono outline-none transition"
+                          className={`w-full bg-black/40 rounded px-2.5 py-1.5 text-white font-mono outline-none transition ${
+                            !activeDoc.dados_extraidos.mes_ano
+                              ? "border-2 border-rose-500 focus:border-rose-400"
+                              : "border border-white/10 hover:border-white/20 focus:border-indigo-500"
+                          }`}
                         />
                       </div>
                       {/* Col 3: Nota Fiscal (NF) (Literally below Chave de Acesso) */}

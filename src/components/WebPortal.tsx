@@ -652,6 +652,47 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     });
   };
 
+  const executeDeleteBatch = async (items: any[], successLabel: string) => {
+    try {
+      let successCount = 0;
+      let failCount = 0;
+
+      for (const item of items) {
+        const targetId = item.id || item.doc_id;
+        if (!targetId) continue;
+
+        let res = await fetch(`/api/lancamentos/${targetId}`, {
+          method: "DELETE",
+          headers: { "x-user": "gestor_web" }
+        });
+
+        if (!res.ok && res.status === 404) {
+          res = await fetch(`/api/documentos/${targetId}`, {
+            method: "DELETE",
+            headers: { "x-user": "gestor_web" }
+          });
+        }
+
+        if (res.ok) {
+          successCount++;
+        } else {
+          failCount++;
+        }
+      }
+
+      if (successCount > 0) {
+        showSuccess(`${successCount} lançamento(s) de ${successLabel} foram excluídos com sucesso.`);
+        loadAllData();
+        notifyChange();
+      }
+      if (failCount > 0) {
+        showError(`Não foi possível excluir ${failCount} lançamento(s).`);
+      }
+    } catch (err: any) {
+      showError("Erro de conexão ao processar exclusão.");
+    }
+  };
+
   const handleDeleteMonth = (monthKey: string, items: any[], monthLabel: string) => {
     if (!items || items.length === 0) return;
 
@@ -659,46 +700,18 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
       isOpen: true,
       title: `Excluir Mês Completo (${monthLabel})`,
       description: `Atenção: Você está prestes a excluir TODOS os ${items.length} lançamento(s) do mês de ${monthLabel}. Esta ação removerá permanentemente todas as faturas deste mês. Deseja continuar?`,
-      onConfirm: async () => {
-        try {
-          let successCount = 0;
-          let failCount = 0;
+      onConfirm: () => executeDeleteBatch(items, monthLabel)
+    });
+  };
 
-          for (const item of items) {
-            const targetId = item.id || item.doc_id;
-            if (!targetId) continue;
+  const handleDeleteGroup = (monthKey: string, items: any[], groupLabel: string) => {
+    if (!items || items.length === 0) return;
 
-            let res = await fetch(`/api/lancamentos/${targetId}`, {
-              method: "DELETE",
-              headers: { "x-user": "gestor_web" }
-            });
-
-            if (!res.ok && res.status === 404) {
-              res = await fetch(`/api/documentos/${targetId}`, {
-                method: "DELETE",
-                headers: { "x-user": "gestor_web" }
-              });
-            }
-
-            if (res.ok) {
-              successCount++;
-            } else {
-              failCount++;
-            }
-          }
-
-          if (successCount > 0) {
-            showSuccess(`${successCount} lançamento(s) do mês ${monthLabel} foram excluídos com sucesso.`);
-            loadAllData();
-            notifyChange();
-          }
-          if (failCount > 0) {
-            showError(`Não foi possível excluir ${failCount} lançamento(s).`);
-          }
-        } catch (err: any) {
-          showError("Erro de conexão ao processar exclusão do mês.");
-        }
-      }
+    setDeleteModal({
+      isOpen: true,
+      title: `Excluir Grupo (${groupLabel})`,
+      description: `Atenção: Você está prestes a excluir os ${items.length} lançamento(s) de ${groupLabel}, mantendo as demais concessionárias deste mês intactas. Esta ação é permanente. Deseja continuar?`,
+      onConfirm: () => executeDeleteBatch(items, groupLabel)
     });
   };
 
@@ -1992,6 +2005,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       onView={handleViewLancamento}
                       onDelete={handleDeleteLancamento}
                       onDeleteMonth={handleDeleteMonth}
+                      onDeleteGroup={handleDeleteGroup}
                     />
                   ) : (
                     <div className="bg-[#0f0f0f] border border-white/10 p-6 rounded-xl shadow-sm space-y-4 text-gray-300">

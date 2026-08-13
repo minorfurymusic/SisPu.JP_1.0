@@ -279,7 +279,7 @@ export const segmentarCasan = (text: string): { index: number; marker: string }[
 /**
  * Parses a single Celesc segment text using ParserCelesc
  */
-export const parseCelescSegment = (segmentText: string, defaultDate: string): ExtractedFaturaData => {
+export const parseCelescSegment = (segmentText: string, defaultDate?: string): ExtractedFaturaData => {
   const parsed = ParserCelesc.parse(segmentText);
   if (!parsed.mes_ano && defaultDate) {
     parsed.mes_ano = defaultDate;
@@ -290,7 +290,7 @@ export const parseCelescSegment = (segmentText: string, defaultDate: string): Ex
 /**
  * Parses a single Casan segment text using ParserCasan
  */
-export const parseCasanSegment = (segmentText: string, defaultDate: string): ExtractedFaturaData => {
+export const parseCasanSegment = (segmentText: string, defaultDate?: string): ExtractedFaturaData => {
   const parsed = ParserCasan.parse(segmentText);
   if (!parsed.mes_ano && defaultDate) {
     parsed.mes_ano = defaultDate;
@@ -305,7 +305,10 @@ export const runDeterministicParser = (text: string, fileName: string): Extracte
   const docType = identifyDocumentType(text, fileName);
   if (docType === "DESCONHECIDO") return null;
 
-  let defaultDate = "2026-06-01";
+  // Deixa sem valor quando não achamos a competência no texto — um mês "adivinhado" (era um
+  // 2026-06-01 fixo) fica indistinguível de um mês extraído de verdade, e o usuário acaba
+  // homologando faturas no mês errado sem perceber, confiando na data que "veio preenchida".
+  let defaultDate: string | undefined = undefined;
   const generalCompMatch = text.match(/COMPETENCIA[^:]*:\s*(\d{2})\/(\d{4})/i) ||
                            text.match(/COMPETÊNCIA[^:]*:\s*(\d{2})\/(\d{4})/i);
   if (generalCompMatch) {
@@ -425,8 +428,8 @@ export const splitReportIntoFaturas = (text: string, fileName: string): Segmente
     const totalInLote = ucSegments.length;
     
     ucSegments.forEach((seg, idx) => {
-      let defaultDate = "2026-06-01";
-      const generalCompMatch = seg.blockText.match(/COMPETENCIA\s*[^:\n]*:\s*(\d{2})\/(\d{4})/i) || 
+      let defaultDate: string | undefined = undefined;
+      const generalCompMatch = seg.blockText.match(/COMPETENCIA\s*[^:\n]*:\s*(\d{2})\/(\d{4})/i) ||
                                seg.blockText.match(/COMPETENCIA:\s*(\d{2})\/(\d{4})/i) ||
                                seg.blockText.match(/COMPETÊNCIA:\s*(\d{2})\/(\d{4})/i);
       if (generalCompMatch) {
@@ -588,8 +591,8 @@ export const splitReportIntoFaturas = (text: string, fileName: string): Segmente
   // Now, parse each segmented block separately (Etapa 5)
   const totalInLote = tempSegments.length;
   tempSegments.forEach((seg, idx) => {
-    let defaultDate = "2026-06-01";
-    const generalCompMatch = seg.text.match(/COMPETENCIA\s*[^:\n]*:\s*(\d{2})\/(\d{4})/i) || 
+    let defaultDate: string | undefined = undefined;
+    const generalCompMatch = seg.text.match(/COMPETENCIA\s*[^:\n]*:\s*(\d{2})\/(\d{4})/i) ||
                              seg.text.match(/COMPETENCIA:\s*(\d{2})\/(\d{4})/i) ||
                              seg.text.match(/COMPETÊNCIA:\s*(\d{2})\/(\d{4})/i);
     if (generalCompMatch) {

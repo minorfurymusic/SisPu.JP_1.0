@@ -1381,9 +1381,10 @@ app.post("/api/lancamentos", (req, res) => {
 
 app.put("/api/lancamentos/:id", (req, res) => {
   const { id } = req.params;
-  const { 
-    consumo, valor_total, valor_imposto, valor_celular, valor_internet, 
-    valor_diversos, valor_linha_privada, valor_credito, data_lancamento 
+  const {
+    consumo, valor_total, valor_imposto, valor_celular, valor_internet,
+    valor_diversos, valor_linha_privada, valor_credito, data_lancamento,
+    mes_ano, dados_extraidos
   } = req.body;
   const usuario = req.headers["x-user"] as string || "admin";
 
@@ -1393,6 +1394,7 @@ app.put("/api/lancamentos/:id", (req, res) => {
   }
 
   const oldVal = { ...db.lancamentos[index] };
+  const mesAnoAntigo = db.lancamentos[index].mes_ano;
 
   if (consumo !== undefined) db.lancamentos[index].consumo = parseFloat(consumo || 0);
   if (valor_total !== undefined) db.lancamentos[index].valor_total = parseFloat(valor_total || 0);
@@ -1403,6 +1405,25 @@ app.put("/api/lancamentos/:id", (req, res) => {
   if (valor_linha_privada !== undefined) db.lancamentos[index].valor_linha_privada = parseFloat(valor_linha_privada || 0);
   if (valor_credito !== undefined) db.lancamentos[index].valor_credito = parseFloat(valor_credito || 0);
   if (data_lancamento !== undefined) db.lancamentos[index].data_lancamento = data_lancamento;
+  if (mes_ano) db.lancamentos[index].mes_ano = mes_ano;
+
+  // itens_fatura, endereço, chave de acesso, competência etc. só existem no documento vinculado
+  // (documentos_processados.dados_extraidos), não em lancamentos. Sem propagar isso aqui, essa
+  // rota sempre respondia 200 e o fallback do cliente para PUT /api/documentos/:id nunca era
+  // acionado — ou seja, editar qualquer um desses campos na tela de Conferência nunca era salvo
+  // de verdade, inclusive corrigir o mês de uma fatura importada errada.
+  if (dados_extraidos) {
+    const item = db.itens_despesas.find(it => it.id === db.lancamentos[index].item_despesa_id);
+    const matchingDoc = db.documentos_processados?.find(d =>
+      d.dados_extraidos &&
+      d.dados_extraidos.codigo_numero === item?.codigo_numero &&
+      d.dados_extraidos.mes_ano?.substring(0, 7) === mesAnoAntigo?.substring(0, 7)
+    );
+    if (matchingDoc) {
+      matchingDoc.dados_extraidos = { ...matchingDoc.dados_extraidos, ...dados_extraidos };
+      matchingDoc.atualizado_em = new Date().toISOString();
+    }
+  }
 
   db.lancamentos[index].atualizado_em = new Date().toISOString();
   saveDB(db);
@@ -1724,9 +1745,22 @@ app.post("/api/documentos/:id/homologar", (req, res) => {
     logAudit("itens_despesas", newItemId, "INSERT", usuario, null, item);
   }
 
+  if (!extr?.mes_ano) {
+    return res.status(400).json({ error: "Competência de Referência não informada. Volte à conferência e selecione o mês antes de homologar." });
+  }
+
+  // Rejeita duplicidade: mesma unidade/contrato já homologado no mesmo mês. Sem isso, salvar o
+  // mesmo lote duas vezes (ex.: distração do usuário reabrindo um rascunho já salvo) criava um
+  // segundo lançamento e dobrava silenciosamente o valor daquele mês.
+  const mesAnoPrefixo = extr.mes_ano.substring(0, 7);
+  const jaHomologado = db.lancamentos.find(l => l.item_despesa_id === item!.id && l.mes_ano?.substring(0, 7) === mesAnoPrefixo);
+  if (jaHomologado) {
+    return res.status(409).json({ error: `Já existe um lançamento homologado para esta unidade na competência ${mesAnoPrefixo} (id ${jaHomologado.id}). Exclua-o antes ou ajuste o mês desta fatura.` });
+  }
+
   // Persist to lancamentos (shared table)
-  const mesAnoDate = extr?.mes_ano || new Date().toISOString().split('T')[0];
-  
+  const mesAnoDate = extr.mes_ano;
+
   const newLancId = crypto.randomUUID();
   const newLanc: Lancamento = {
     id: newLancId,
