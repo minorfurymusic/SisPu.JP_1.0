@@ -92,6 +92,39 @@ function loadDB(): DatabaseState {
 // (or once we've deliberately decided to seed Postgres from a confirmed-empty state).
 let postgresHydrated = false;
 
+// Espera curta antes de tentar de novo — o plano Free do Neon hiberna o compute quando fica
+// ocioso, e a primeira conexão depois de um tempo parado pode demorar alguns segundos pra
+// acordar. Uma falha isolada nesse instante não deveria virar perda de dado.
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Só usar em rotas onde o cliente precisa saber, de verdade, se a gravação em Postgres
+// funcionou (criar/editar lançamento, documento, homologar) — aguarda a escrita real no banco
+// em vez de disparar em segundo plano, e tenta de novo uma vez antes de desistir. Sem isso, o
+// servidor respondia "sucesso" assim que a escrita no arquivo local terminava, sem saber (nem
+// contar pro cliente) se a gravação no Postgres tinha realmente funcionado — se o Neon estivesse
+// "acordando" de hibernação naquele instante e a escrita falhasse, a fatura parecia salva, só
+// existia no arquivo local daquele container, e sumia de vez no próximo boot/republicação.
+async function saveDBCritical(state: DatabaseState): Promise<void> {
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error saving DB file:", err);
+  }
+  if (!postgresHydrated) {
+    console.warn("[DB] Sincronização com o PostgreSQL adiada: estado local ainda não foi confirmado contra o banco (evitando apagar dados reais).");
+    return;
+  }
+  try {
+    await saveAllStateToPostgres(state);
+  } catch (err) {
+    console.warn("[DB] Falha na 1ª tentativa de gravar no Postgres, tentando novamente em 2s:", err);
+    await delay(2000);
+    await saveAllStateToPostgres(state);
+  }
+}
+
 function saveDB(state: DatabaseState) {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
@@ -637,7 +670,7 @@ app.put("/api/secretarias/:id", (req, res) => {
   res.json(db.secretarias[index]);
 });
 
-app.delete("/api/secretarias/:id", (req, res) => {
+app.delete("/api/secretarias/:id", async (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
@@ -655,7 +688,12 @@ app.delete("/api/secretarias/:id", (req, res) => {
   const oldVal = { ...db.secretarias[index] };
   db.secretarias.splice(index, 1);
   saveDB(db);
-  deleteRowFromPostgres("secretarias", id).catch(err => console.error("Erro ao excluir secretaria do Postgres:", err));
+  try {
+    await deleteRowFromPostgres("secretarias", id);
+  } catch (err: any) {
+    console.error("Erro ao excluir secretaria do Postgres:", err.message || err);
+    return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O Neon pode estar acordando de um período de inatividade — tente de novo em alguns segundos." });
+  }
 
   logAudit("secretarias", id, "DELETE", usuario, oldVal, null);
 
@@ -743,7 +781,7 @@ app.put("/api/cadastro-mestre-ucs/:id", (req, res) => {
   res.json(db.cadastro_mestre_ucs[index]);
 });
 
-app.delete("/api/cadastro-mestre-ucs/:id", (req, res) => {
+app.delete("/api/cadastro-mestre-ucs/:id", async (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
@@ -755,7 +793,12 @@ app.delete("/api/cadastro-mestre-ucs/:id", (req, res) => {
   const oldVal = { ...db.cadastro_mestre_ucs[index] };
   db.cadastro_mestre_ucs.splice(index, 1);
   saveDB(db);
-  deleteRowFromPostgres("cadastro_mestre_ucs", id).catch(err => console.error("Erro ao excluir UC do Postgres:", err));
+  try {
+    await deleteRowFromPostgres("cadastro_mestre_ucs", id);
+  } catch (err: any) {
+    console.error("Erro ao excluir UC do Postgres:", err.message || err);
+    return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O Neon pode estar acordando de um período de inatividade — tente de novo em alguns segundos." });
+  }
   logAudit("cadastro_mestre_ucs", id, "DELETE", usuario, oldVal, null);
 
   res.json({ message: "UC removida do Cadastro Mestre com sucesso." });
@@ -945,7 +988,7 @@ app.put("/api/unidades/:id", (req, res) => {
   res.json(db.unidades[index]);
 });
 
-app.delete("/api/unidades/:id", (req, res) => {
+app.delete("/api/unidades/:id", async (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
@@ -963,7 +1006,12 @@ app.delete("/api/unidades/:id", (req, res) => {
   const oldVal = { ...db.unidades[index] };
   db.unidades.splice(index, 1);
   saveDB(db);
-  deleteRowFromPostgres("unidades", id).catch(err => console.error("Erro ao excluir unidade do Postgres:", err));
+  try {
+    await deleteRowFromPostgres("unidades", id);
+  } catch (err: any) {
+    console.error("Erro ao excluir unidade do Postgres:", err.message || err);
+    return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O Neon pode estar acordando de um período de inatividade — tente de novo em alguns segundos." });
+  }
 
   logAudit("unidades", id, "DELETE", usuario, oldVal, null);
 
@@ -1051,7 +1099,7 @@ app.put("/api/despesas/:id", (req, res) => {
   res.json(db.despesas[index]);
 });
 
-app.delete("/api/despesas/:id", (req, res) => {
+app.delete("/api/despesas/:id", async (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
@@ -1068,7 +1116,12 @@ app.delete("/api/despesas/:id", (req, res) => {
   const oldVal = { ...db.despesas[index] };
   db.despesas.splice(index, 1);
   saveDB(db);
-  deleteRowFromPostgres("despesas", id).catch(err => console.error("Erro ao excluir despesa do Postgres:", err));
+  try {
+    await deleteRowFromPostgres("despesas", id);
+  } catch (err: any) {
+    console.error("Erro ao excluir despesa do Postgres:", err.message || err);
+    return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O Neon pode estar acordando de um período de inatividade — tente de novo em alguns segundos." });
+  }
 
   logAudit("despesas", id, "DELETE", usuario, oldVal, null);
 
@@ -1177,7 +1230,7 @@ app.put("/api/itens_despesas/:id", (req, res) => {
   res.json(db.itens_despesas[index]);
 });
 
-app.delete("/api/itens_despesas/:id", (req, res) => {
+app.delete("/api/itens_despesas/:id", async (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
@@ -1194,7 +1247,12 @@ app.delete("/api/itens_despesas/:id", (req, res) => {
   const oldVal = { ...db.itens_despesas[index] };
   db.itens_despesas.splice(index, 1);
   saveDB(db);
-  deleteRowFromPostgres("itens_despesas", id).catch(err => console.error("Erro ao excluir item de despesa do Postgres:", err));
+  try {
+    await deleteRowFromPostgres("itens_despesas", id);
+  } catch (err: any) {
+    console.error("Erro ao excluir item de despesa do Postgres:", err.message || err);
+    return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O Neon pode estar acordando de um período de inatividade — tente de novo em alguns segundos." });
+  }
 
   logAudit("itens_despesas", id, "DELETE", usuario, oldVal, null);
 
@@ -1332,11 +1390,11 @@ app.get("/api/lancamentos", (req, res) => {
   res.json(populatedList);
 });
 
-app.post("/api/lancamentos", (req, res) => {
-  const { 
-    item_despesa_id, mes_ano, consumo, valor_total, valor_imposto, 
-    valor_celular, valor_internet, valor_diversos, valor_linha_privada, 
-    valor_credito, data_lancamento 
+app.post("/api/lancamentos", async (req, res) => {
+  const {
+    item_despesa_id, mes_ano, consumo, valor_total, valor_imposto,
+    valor_celular, valor_internet, valor_diversos, valor_linha_privada,
+    valor_credito, data_lancamento
   } = req.body;
   const usuario = req.headers["x-user"] as string || "admin";
 
@@ -1372,14 +1430,22 @@ app.post("/api/lancamentos", (req, res) => {
   };
 
   db.lancamentos.push(newLancamento);
-  saveDB(db);
+
+  try {
+    await saveDBCritical(db);
+  } catch (err: any) {
+    console.error("[POST lancamentos] Falha ao confirmar gravação no Postgres:", err.message || err);
+    return res.status(503).json({
+      error: "Não foi possível confirmar a gravação no banco de dados. O Neon pode estar acordando de um período de inatividade — aguarde alguns segundos e tente salvar de novo."
+    });
+  }
 
   logAudit("lancamentos", newId, "INSERT", usuario, null, newLancamento);
 
   res.status(201).json(newLancamento);
 });
 
-app.put("/api/lancamentos/:id", (req, res) => {
+app.put("/api/lancamentos/:id", async (req, res) => {
   const { id } = req.params;
   const {
     consumo, valor_total, valor_imposto, valor_celular, valor_internet,
@@ -1426,18 +1492,27 @@ app.put("/api/lancamentos/:id", (req, res) => {
   }
 
   db.lancamentos[index].atualizado_em = new Date().toISOString();
-  saveDB(db);
+
+  try {
+    await saveDBCritical(db);
+  } catch (err: any) {
+    console.error("[PUT lancamentos] Falha ao confirmar gravação no Postgres:", err.message || err);
+    return res.status(503).json({
+      error: "Não foi possível confirmar a gravação no banco de dados. O Neon pode estar acordando de um período de inatividade — aguarde alguns segundos e tente salvar de novo."
+    });
+  }
 
   logAudit("lancamentos", id, "UPDATE", usuario, oldVal, db.lancamentos[index]);
 
   res.json(db.lancamentos[index]);
 });
 
-app.delete("/api/lancamentos/:id", (req, res) => {
+app.delete("/api/lancamentos/:id", async (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
   let found = false;
+  let pgFailed = false;
 
   // 1. Check in lancamentos
   const index = db.lancamentos.findIndex(l => String(l.id) === String(id));
@@ -1445,12 +1520,22 @@ app.delete("/api/lancamentos/:id", (req, res) => {
     const oldVal = { ...db.lancamentos[index] };
     const deletedLanc = db.lancamentos.splice(index, 1)[0];
     found = true;
-    deleteRowFromPostgres("lancamentos", id).catch(err => console.error("Erro ao excluir lançamento do Postgres:", err));
+    try {
+      await deleteRowFromPostgres("lancamentos", id);
+    } catch (err: any) {
+      console.error("Erro ao excluir lançamento do Postgres:", err.message || err);
+      pgFailed = true;
+    }
 
     // Clean up corresponding item in documentos_processados if linked
     if (db.documentos_processados) {
       db.documentos_processados = db.documentos_processados.filter(d => String(d.id) !== String(id));
-      deleteRowFromPostgres("documentos_processados", id).catch(err => console.error("Erro ao excluir documento do Postgres:", err));
+      try {
+        await deleteRowFromPostgres("documentos_processados", id);
+      } catch (err: any) {
+        console.error("Erro ao excluir documento do Postgres:", err.message || err);
+        pgFailed = true;
+      }
     }
 
     logAudit("lancamentos", id, "DELETE", usuario, oldVal, null);
@@ -1463,7 +1548,12 @@ app.delete("/api/lancamentos/:id", (req, res) => {
       const oldDoc = db.documentos_processados[docIndex];
       db.documentos_processados.splice(docIndex, 1);
       found = true;
-      deleteRowFromPostgres("documentos_processados", id).catch(err => console.error("Erro ao excluir documento do Postgres:", err));
+      try {
+        await deleteRowFromPostgres("documentos_processados", id);
+      } catch (err: any) {
+        console.error("Erro ao excluir documento do Postgres:", err.message || err);
+        pgFailed = true;
+      }
       logAudit("documentos_processados", id, "DELETE", usuario, oldDoc, null);
     }
   }
@@ -1473,10 +1563,15 @@ app.delete("/api/lancamentos/:id", (req, res) => {
   }
 
   saveDB(db);
+
+  if (pgFailed) {
+    return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O Neon pode estar acordando de um período de inatividade — tente de novo em alguns segundos." });
+  }
+
   res.json({ message: "Lançamento excluído com sucesso." });
 });
 
-app.delete("/api/documentos/:id", (req, res) => {
+app.delete("/api/documentos/:id", async (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
@@ -1490,7 +1585,12 @@ app.delete("/api/documentos/:id", (req, res) => {
   const oldVal = { ...db.documentos_processados[index] };
   db.documentos_processados.splice(index, 1);
   saveDB(db);
-  deleteRowFromPostgres("documentos_processados", id).catch(err => console.error("Erro ao excluir documento do Postgres:", err));
+  try {
+    await deleteRowFromPostgres("documentos_processados", id);
+  } catch (err: any) {
+    console.error("Erro ao excluir documento do Postgres:", err.message || err);
+    return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O Neon pode estar acordando de um período de inatividade — tente de novo em alguns segundos." });
+  }
 
   logAudit("documentos_processados", id, "DELETE", usuario, oldVal, null);
 
@@ -1560,7 +1660,7 @@ app.get("/api/documentos", (req, res) => {
   res.json(db.documentos_processados);
 });
 
-app.post("/api/documentos", (req, res) => {
+app.post("/api/documentos", async (req, res) => {
   const { nome_arquivo, layout, tamanho, origem_conteudo, dados_extraidos } = req.body;
 
   if (dados_extraidos?.codigo_numero) {
@@ -1616,13 +1716,21 @@ app.post("/api/documentos", (req, res) => {
   doc.logs_validacao = logs;
 
   db.documentos_processados.unshift(doc);
-  saveDB(db);
+
+  try {
+    await saveDBCritical(db);
+  } catch (err: any) {
+    console.error("[POST documentos] Falha ao confirmar gravação no Postgres:", err.message || err);
+    return res.status(503).json({
+      error: "Não foi possível confirmar a gravação no banco de dados. O Neon pode estar acordando de um período de inatividade — aguarde alguns segundos e tente salvar de novo."
+    });
+  }
 
   res.status(201).json(doc);
 });
 
 // Update Document fields (Tela de Conferência Editing)
-app.put("/api/documentos/:id", (req, res) => {
+app.put("/api/documentos/:id", async (req, res) => {
   const { id } = req.params;
   const { dados_extraidos, observacoes, status } = req.body;
   const usuario = req.headers["x-user"] as string || "admin";
@@ -1688,13 +1796,21 @@ app.put("/api/documentos/:id", (req, res) => {
   }
 
   db.documentos_processados[index] = doc;
-  saveDB(db);
+
+  try {
+    await saveDBCritical(db);
+  } catch (err: any) {
+    console.error("[PUT documentos] Falha ao confirmar gravação no Postgres:", err.message || err);
+    return res.status(503).json({
+      error: "Não foi possível confirmar a gravação no banco de dados. O Neon pode estar acordando de um período de inatividade — aguarde alguns segundos e tente salvar de novo."
+    });
+  }
 
   res.json(doc);
 });
 
 // Homologar Document (Persist directly to DB using Services / Repositories pattern equivalent)
-app.post("/api/documentos/:id/homologar", (req, res) => {
+app.post("/api/documentos/:id/homologar", async (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
 
@@ -1781,7 +1897,15 @@ app.post("/api/documentos/:id/homologar", (req, res) => {
 
   db.lancamentos.push(newLanc);
   if (doc) doc.status = 'HOMOLOGADO';
-  saveDB(db);
+
+  try {
+    await saveDBCritical(db);
+  } catch (err: any) {
+    console.error("[homologar] Falha ao confirmar gravação no Postgres:", err.message || err);
+    return res.status(503).json({
+      error: "Não foi possível confirmar a gravação no banco de dados. O Neon pode estar acordando de um período de inatividade — aguarde alguns segundos e tente homologar de novo."
+    });
+  }
 
   // PostgreSQL-style audit triggers
   logAudit("lancamentos", newLancId, "INSERT", usuario, null, newLanc);

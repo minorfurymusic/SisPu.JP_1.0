@@ -430,6 +430,10 @@ export async function saveAllStateToPostgres(state: any): Promise<void> {
     }
   } catch (err: any) {
     console.error("[DB] Erro ao sincronizar estado com PostgreSQL:", err.message || err);
+    // Repassa o erro: quem chama precisa saber que a gravação não foi confirmada no banco —
+    // silenciar aqui era o que fazia o servidor responder "sucesso" para o cliente mesmo
+    // quando a escrita real no Postgres tinha falhado.
+    throw err;
   }
 }
 
@@ -447,6 +451,15 @@ const DELETABLE_TABLES = new Set([
   'cadastro_mestre_ucs',
 ]);
 
+function delayMs(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Aguarda de verdade a exclusão no Postgres e tenta de novo uma vez (o plano Free do Neon
+// hiberna o compute quando ocioso, e a 1ª conexão depois de um tempo parado pode falhar por
+// timeout). Antes esse erro era só logado e engolido — o endpoint respondia "excluído com
+// sucesso" para o cliente mesmo quando a linha continuava intacta no banco real, e ela
+// reaparecia sozinha na próxima vez que o servidor recarregasse do Postgres.
 export async function deleteRowFromPostgres(tableName: string, id: string): Promise<void> {
   if (!DELETABLE_TABLES.has(tableName)) {
     throw new Error(`Tabela não permitida para exclusão: ${tableName}`);
@@ -456,6 +469,8 @@ export async function deleteRowFromPostgres(tableName: string, id: string): Prom
   try {
     await p.query(`DELETE FROM ${tableName} WHERE id = $1`, [id]);
   } catch (err: any) {
-    console.error(`[DB] Erro ao excluir registro de ${tableName} (id=${id}):`, err.message || err);
+    console.warn(`[DB] Falha na 1ª tentativa de excluir de ${tableName} (id=${id}), tentando novamente em 2s:`, err.message || err);
+    await delayMs(2000);
+    await p.query(`DELETE FROM ${tableName} WHERE id = $1`, [id]);
   }
 }
