@@ -125,6 +125,27 @@ async function saveDBCritical(state: DatabaseState): Promise<void> {
   }
 }
 
+let isSavingToPostgres = false;
+let pendingStateToSave: DatabaseState | null = null;
+
+async function processAsyncPostgresSync() {
+  if (isSavingToPostgres) return;
+  if (!pendingStateToSave) return;
+
+  isSavingToPostgres = true;
+  while (pendingStateToSave) {
+    const currentState = pendingStateToSave;
+    pendingStateToSave = null;
+    try {
+      await saveAllStateToPostgres(currentState);
+    } catch (err: any) {
+      console.error("[DB] Falha ao persistir estado no PostgreSQL:", err.message || err);
+      await delay(2000);
+    }
+  }
+  isSavingToPostgres = false;
+}
+
 function saveDB(state: DatabaseState) {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
@@ -135,9 +156,9 @@ function saveDB(state: DatabaseState) {
     console.warn("[DB] Sincronização com o PostgreSQL adiada: estado local ainda não foi confirmado contra o banco (evitando apagar dados reais).");
     return;
   }
-  // Asynchronously persist state to PostgreSQL
-  saveAllStateToPostgres(state).catch(err => {
-    console.error("Error persisting state to PostgreSQL:", err);
+  pendingStateToSave = state;
+  processAsyncPostgresSync().catch(err => {
+    console.error("[DB] Erro no processAsyncPostgresSync:", err);
   });
 }
 

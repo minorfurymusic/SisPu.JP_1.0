@@ -28,16 +28,36 @@ export function getPool(): pg.Pool | null {
 
   if (!pool) {
     // Configure ssl based on connection string
-    const isSsl = dbUrl.includes('sslmode=require') || dbUrl.includes('neon.tech');
+    const isSsl = dbUrl.includes('sslmode=require') || dbUrl.includes('neon.tech') || dbUrl.includes('.postgres.database.azure.com') || dbUrl.includes('supabase.co');
     pool = new Pool({
       connectionString: dbUrl,
       ssl: isSsl ? { rejectUnauthorized: false } : false,
       max: 10,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
+      connectionTimeoutMillis: 30000, // 30s timeout so serverless wakeups (e.g. Neon) don't timeout
+      keepAlive: true,
+    });
+    pool.on('error', (err) => {
+      console.warn('[DB] Erro no pool de conexões do PostgreSQL:', err.message || err);
     });
   }
   return pool;
+}
+
+export async function connectWithRetry(p: pg.Pool, maxRetries = 3, initialDelayMs = 1500): Promise<pg.PoolClient> {
+  let lastError: any = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await p.connect();
+    } catch (err: any) {
+      lastError = err;
+      console.warn(`[DB] Tentativa ${attempt}/${maxRetries} de conectar ao PostgreSQL falhou: ${err.message || err}`);
+      if (attempt < maxRetries) {
+        await delayMs(initialDelayMs * attempt);
+      }
+    }
+  }
+  throw lastError;
 }
 
 export async function initPostgresSchema(): Promise<boolean> {
@@ -48,7 +68,7 @@ export async function initPostgresSchema(): Promise<boolean> {
   }
 
   try {
-    const client = await p.connect();
+    const client = await connectWithRetry(p);
     try {
       await client.query(`
         CREATE TABLE IF NOT EXISTS usuarios (
@@ -208,7 +228,7 @@ export async function loadStateFromPostgres(): Promise<any | null> {
   if (!p) return null;
 
   try {
-    const client = await p.connect();
+    const client = await connectWithRetry(p);
     try {
       const resUsuarios = await client.query(`SELECT * FROM usuarios ORDER BY id`);
       const resSecretarias = await client.query(`SELECT * FROM secretarias ORDER BY id`);
@@ -268,7 +288,7 @@ export async function saveAllStateToPostgres(state: any): Promise<void> {
   if (!p) return;
 
   try {
-    const client = await p.connect();
+    const client = await connectWithRetry(p);
     try {
       await client.query('BEGIN');
 
@@ -466,11 +486,11 @@ export async function deleteRowFromPostgres(tableName: string, id: string): Prom
   }
   const p = getPool();
   if (!p || !id) return;
+  
+  const client = await connectWithRetry(p);
   try {
-    await p.query(`DELETE FROM ${tableName} WHERE id = $1`, [id]);
-  } catch (err: any) {
-    console.warn(`[DB] Falha na 1ª tentativa de excluir de ${tableName} (id=${id}), tentando novamente em 2s:`, err.message || err);
-    await delayMs(2000);
-    await p.query(`DELETE FROM ${tableName} WHERE id = $1`, [id]);
+    await client.query(`DELETE FROM ${tableName} WHERE id = $1`, [id]);
+  } finally {
+    client.release();
   }
 }
