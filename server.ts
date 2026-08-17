@@ -10,7 +10,7 @@ import {
   DocumentoProcessado, CadastroMestreUC
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
-import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, deleteRowFromPostgres } from "./src/db/postgres";
+import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres } from "./src/db/postgres";
 
 dotenv.config();
 
@@ -91,6 +91,13 @@ function loadDB(): DatabaseState {
 // with seed defaults. It only turns true once we know `db` truly reflects Postgres's contents
 // (or once we've deliberately decided to seed Postgres from a confirmed-empty state).
 let postgresHydrated = false;
+// Promise da hidratação inicial do boot (atribuída em startServer()). app.listen() não espera
+// por ela — o servidor precisa responder rápido pra health checks da plataforma de hospedagem
+// — mas uma gravação crítica que chegue durante essa janela (poucos segundos, mais ainda se o
+// Neon estiver "acordando" de hibernação) precisa esperar ela terminar antes de decidir se tem
+// Postgres pra gravar ou não. Sem isso, postgresHydrated ainda estaria false nesse instante e a
+// gravação "teria sucesso" só localmente, sem nunca ter tentado o Postgres de verdade.
+let hydrationPromise: Promise<void> = Promise.resolve();
 
 // Espera curta antes de tentar de novo — o plano Free do Neon hiberna o compute quando fica
 // ocioso, e a primeira conexão depois de um tempo parado pode demorar alguns segundos pra
@@ -113,7 +120,19 @@ async function saveDBCritical(state: DatabaseState): Promise<void> {
     console.error("Error saving DB file:", err);
   }
   if (!postgresHydrated) {
-    console.warn("[DB] Sincronização com o PostgreSQL adiada: estado local ainda não foi confirmado contra o banco (evitando apagar dados reais).");
+    // Ainda dentro da janela de hidratação do boot? Espera ela terminar antes de decidir —
+    // só depois disso sabemos se DATABASE_URL existe de verdade e se o Postgres está pronto.
+    await hydrationPromise;
+  }
+  if (!postgresHydrated) {
+    if (getDbUrl()) {
+      // DATABASE_URL existe, mas a hidratação ainda não confirmou o Postgres (provavelmente
+      // inacessível no momento — Neon hibernado, rede instável). Não finge sucesso local: o
+      // chamador precisa saber que isso não foi confirmado, pra não achar que salvou quando na
+      // verdade só existe no arquivo local desse container.
+      throw new Error("PostgreSQL configurado mas ainda não confirmado/disponível.");
+    }
+    console.warn("[DB] Sincronização com o PostgreSQL adiada: DATABASE_URL não configurada.");
     return;
   }
   try {
@@ -165,14 +184,45 @@ function saveDB(state: DatabaseState) {
 // Global DB instance
 let db: DatabaseState = loadDB();
 
+// Se DATABASE_URL está configurada mas o Postgres estava inacessível no boot (Neon hibernado,
+// rede instável), postgresHydrated fica false e as gravações críticas passam a reportar erro em
+// vez de fingir sucesso local — mas sem isso aqui, ninguém tentaria o Postgres de novo até o
+// próximo restart do processo. Reagenda uma nova tentativa completa de hidratação a cada 15s até
+// conseguir.
+let hydrationRetryScheduled = false;
+function scheduleHydrationRetry() {
+  if (hydrationRetryScheduled) return;
+  hydrationRetryScheduled = true;
+  setTimeout(() => {
+    hydrationRetryScheduled = false;
+    console.log("[DB] Tentando reconectar ao PostgreSQL em segundo plano...");
+    initDatabasePersistence().catch(err => {
+      console.error("[DB] Erro na nova tentativa de hidratação:", err);
+    });
+  }, 15000);
+}
+
 async function initDatabasePersistence() {
   try {
+    const configuredUrl = getDbUrl();
     const initialized = await initPostgresSchema();
     if (!initialized) {
-      // No DATABASE_URL configured (or Postgres unreachable) — nothing to protect, the JSON
-      // file is the only store, so saves are safe immediately.
-      postgresHydrated = true;
-      autoSyncOrphanRecords();
+      if (!configuredUrl) {
+        // No DATABASE_URL configured at all — nothing to protect, the JSON file is the only
+        // store, so saves are safe immediately. This is the permanent, intentional local mode.
+        postgresHydrated = true;
+        autoSyncOrphanRecords();
+        return;
+      }
+      // DATABASE_URL IS configured but the connection failed (e.g. Neon ainda hibernado demorou
+      // mais que o orçamento de retry do boot). Tratar isso como "sem banco" — o que o código
+      // fazia antes — deixava postgresHydrated=true pro resto da vida do processo: qualquer
+      // gravação depois disso "teria sucesso" só localmente, pra sempre, sem nunca mais tentar o
+      // Postgres de novo até o próximo restart. Em vez disso, mantém postgresHydrated=false
+      // (gravações críticas respondem erro real em vez de fingir sucesso) e tenta de novo em
+      // segundo plano até conseguir.
+      console.warn("[DB] Postgres configurado mas inacessível no boot. Tentando novamente em segundo plano...");
+      scheduleHydrationRetry();
       return;
     }
     const pgState = await loadStateFromPostgres();
@@ -2527,8 +2577,10 @@ async function startServer() {
     console.log(`SisPu.JP 2.0 running on http://0.0.0.0:${PORT} [NODE_ENV=${process.env.NODE_ENV || 'development'}]`);
   });
 
-  // Initialize DB asynchronously so server starts listening without delay
-  initDatabasePersistence().catch(err => {
+  // Initialize DB asynchronously so server starts listening without delay — but track the
+  // promise so saveDBCritical() can wait for it instead of assuming "no Postgres" if a write
+  // request lands in this window.
+  hydrationPromise = initDatabasePersistence().catch(err => {
     console.error("[DB] Erro assíncrono na inicialização do PostgreSQL:", err);
   });
 }
