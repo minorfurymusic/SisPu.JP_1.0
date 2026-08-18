@@ -563,23 +563,38 @@ app.get("/api/db-status", async (req, res) => {
   if (!dbUrl) {
     return res.json({ connected: false, message: "DATABASE_URL não configurada." });
   }
+  // Mascara a senha mas mostra o host/porta/database mesmo quando a conexão falha — sem isso,
+  // um timeout persistente escondia justamente a informação necessária pra saber pra qual
+  // servidor o app está tentando conectar (Neon, Cloud SQL, ou outro).
+  let dbHostInfo = "não foi possível interpretar a URL";
+  try {
+    const u = new URL(dbUrl);
+    dbHostInfo = `${u.hostname}:${u.port || "5432"}${u.pathname}`;
+  } catch {
+    // ignore parse errors, keep placeholder
+  }
+  const db_url_masked = dbUrl.replace(/:([^:@]+)@/, ":*****@");
+
   const pool = getPool();
   if (!pool) {
-    return res.json({ connected: false, message: "Falha ao obter pool de conexão." });
+    return res.json({ connected: false, message: "Falha ao obter pool de conexão.", db_host: dbHostInfo, db_url_masked });
   }
   try {
     const client = await pool.connect();
     client.release();
     return res.json({
       connected: true,
-      message: "Conectado ao PostgreSQL (Neon DB)!",
-      db_url_masked: dbUrl.replace(/:([^:@]+)@/, ":*****@")
+      message: "Conectado ao PostgreSQL!",
+      db_host: dbHostInfo,
+      db_url_masked
     });
   } catch (err: any) {
     return res.json({
       connected: false,
       message: `Erro de conexão: ${err.message || err}`,
-      error: err.message
+      error: err.message,
+      db_host: dbHostInfo,
+      db_url_masked
     });
   }
 });
