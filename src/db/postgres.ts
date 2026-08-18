@@ -283,6 +283,153 @@ export async function loadStateFromPostgres(): Promise<any | null> {
   }
 }
 
+// Upsert (ou insert-only, para tabelas de log) de uma única linha, usada tanto pela
+// sincronização completa (saveAllStateToPostgres, abaixo) quanto pelo upsert pontual
+// (upsertRowToPostgres) chamado pelos endpoints que só tocam 1-4 linhas por operação.
+async function execUpsertRow(client: pg.PoolClient, tableName: string, row: any): Promise<void> {
+  switch (tableName) {
+    case 'usuarios':
+      await client.query(
+        `INSERT INTO usuarios (id, login, nome, ativo, criado_em)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (id) DO UPDATE SET
+           login = EXCLUDED.login, nome = EXCLUDED.nome, ativo = EXCLUDED.ativo`,
+        [row.id, row.login, row.nome, row.ativo !== false, row.criado_em]
+      );
+      return;
+
+    case 'secretarias':
+      await client.query(
+        `INSERT INTO secretarias (id, codigo_legado, nome, ativo, criado_em, atualizado_em)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (id) DO UPDATE SET
+           codigo_legado = EXCLUDED.codigo_legado, nome = EXCLUDED.nome, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em`,
+        [row.id, row.codigo_legado || null, row.nome, row.ativo !== false, row.criado_em, row.atualizado_em]
+      );
+      return;
+
+    case 'unidades':
+      await client.query(
+        `INSERT INTO unidades (id, codigo_legado, secretaria_id, nome, endereco, ativo, criado_em, atualizado_em)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (id) DO UPDATE SET
+           codigo_legado = EXCLUDED.codigo_legado, secretaria_id = EXCLUDED.secretaria_id, nome = EXCLUDED.nome, endereco = EXCLUDED.endereco, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em`,
+        [row.id, row.codigo_legado || null, row.secretaria_id, row.nome, row.endereco || '', row.ativo !== false, row.criado_em, row.atualizado_em]
+      );
+      return;
+
+    case 'despesas':
+      await client.query(
+        `INSERT INTO despesas (id, codigo_legado, descricao, ativo, criado_em, atualizado_em)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (id) DO UPDATE SET
+           codigo_legado = EXCLUDED.codigo_legado, descricao = EXCLUDED.descricao, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em`,
+        [row.id, row.codigo_legado || null, row.descricao, row.ativo !== false, row.criado_em, row.atualizado_em]
+      );
+      return;
+
+    case 'itens_despesas':
+      await client.query(
+        `INSERT INTO itens_despesas (id, codigo_numero, despesa_id, unidade_id, tipo_fone, medidor, ativo, criado_em, atualizado_em)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (id) DO UPDATE SET
+           codigo_numero = EXCLUDED.codigo_numero, despesa_id = EXCLUDED.despesa_id, unidade_id = EXCLUDED.unidade_id, tipo_fone = EXCLUDED.tipo_fone, medidor = EXCLUDED.medidor, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em`,
+        [row.id, row.codigo_numero, row.despesa_id, row.unidade_id, row.tipo_fone || null, row.medidor || null, row.ativo !== false, row.criado_em, row.atualizado_em]
+      );
+      return;
+
+    case 'lancamentos':
+      await client.query(
+        `INSERT INTO lancamentos (id, item_despesa_id, mes_ano, consumo, valor_total, valor_imposto, valor_celular, valor_internet, valor_diversos, valor_linha_privada, valor_credito, data_lancamento, codigo_legado_numero, mes_ano_legado, criado_em, atualizado_em)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+         ON CONFLICT (id) DO UPDATE SET
+           item_despesa_id = EXCLUDED.item_despesa_id, mes_ano = EXCLUDED.mes_ano, consumo = EXCLUDED.consumo, valor_total = EXCLUDED.valor_total, valor_imposto = EXCLUDED.valor_imposto, valor_celular = EXCLUDED.valor_celular, valor_internet = EXCLUDED.valor_internet, valor_diversos = EXCLUDED.valor_diversos, valor_linha_privada = EXCLUDED.valor_linha_privada, valor_credito = EXCLUDED.valor_credito, data_lancamento = EXCLUDED.data_lancamento, codigo_legado_numero = EXCLUDED.codigo_legado_numero, mes_ano_legado = EXCLUDED.mes_ano_legado, atualizado_em = EXCLUDED.atualizado_em`,
+        [row.id, row.item_despesa_id, row.mes_ano, row.consumo || 0, row.valor_total || 0, row.valor_imposto || 0, row.valor_celular || 0, row.valor_internet || 0, row.valor_diversos || 0, row.valor_linha_privada || 0, row.valor_credito || 0, row.data_lancamento || null, row.codigo_legado_numero || null, row.mes_ano_legado || null, row.criado_em, row.atualizado_em]
+      );
+      return;
+
+    case 'pessoas':
+      await client.query(
+        `INSERT INTO pessoas (id, codigo_legado, nome, tipo_pessoa, cpf_cnpj, telefone_residencial, telefone_comercial, telefone_celular, criado_em, atualizado_em)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (id) DO UPDATE SET
+           codigo_legado = EXCLUDED.codigo_legado, nome = EXCLUDED.nome, tipo_pessoa = EXCLUDED.tipo_pessoa, cpf_cnpj = EXCLUDED.cpf_cnpj, telefone_residencial = EXCLUDED.telefone_residencial, telefone_comercial = EXCLUDED.telefone_comercial, telefone_celular = EXCLUDED.telefone_celular, atualizado_em = EXCLUDED.atualizado_em`,
+        [row.id, row.codigo_legado || null, row.nome, row.tipo_pessoa || null, row.cpf_cnpj || null, row.telefone_residencial || null, row.telefone_comercial || null, row.telefone_celular || null, row.criado_em, row.atualizado_em]
+      );
+      return;
+
+    case 'contatos_email':
+      await client.query(
+        `INSERT INTO contatos_email (id, descricao, email, criado_em)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (id) DO UPDATE SET
+           descricao = EXCLUDED.descricao, email = EXCLUDED.email`,
+        [row.id, row.descricao, row.email, row.criado_em]
+      );
+      return;
+
+    case 'logs_erros':
+      await client.query(
+        `INSERT INTO logs_erros (id, origem, mensagem, ocorrido_em, arquivo_origem, linha_original, criado_em)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (id) DO NOTHING`,
+        [row.id, row.origem || null, row.mensagem, row.ocorrido_em || null, row.arquivo_origem || null, row.linha_original || null, row.criado_em]
+      );
+      return;
+
+    case 'auditoria_registros':
+      await client.query(
+        `INSERT INTO auditoria_registros (id, tabela, registro_pk, acao, usuario, valor_antigo, valor_novo, criado_em)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (id) DO NOTHING`,
+        [row.id, row.tabela, row.registro_pk || null, row.acao, row.usuario, row.valor_antigo ? JSON.stringify(row.valor_antigo) : null, row.valor_novo ? JSON.stringify(row.valor_novo) : null, row.criado_em]
+      );
+      return;
+
+    case 'documentos_processados':
+      await client.query(
+        `INSERT INTO documentos_processados (id, nome_arquivo, layout, tamanho, status, origem_conteudo, dados_extraidos, logs_validacao, historico_alteracoes, observacoes, score, score_logs, criado_em, atualizado_em)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         ON CONFLICT (id) DO UPDATE SET
+           nome_arquivo = EXCLUDED.nome_arquivo, layout = EXCLUDED.layout, tamanho = EXCLUDED.tamanho, status = EXCLUDED.status, origem_conteudo = EXCLUDED.origem_conteudo, dados_extraidos = EXCLUDED.dados_extraidos, logs_validacao = EXCLUDED.logs_validacao, historico_alteracoes = EXCLUDED.historico_alteracoes, observacoes = EXCLUDED.observacoes, score = EXCLUDED.score, score_logs = EXCLUDED.score_logs, atualizado_em = EXCLUDED.atualizado_em`,
+        [
+          row.id,
+          row.nome_arquivo,
+          row.layout,
+          row.tamanho || null,
+          row.status,
+          row.origem_conteudo || null,
+          row.dados_extraidos ? JSON.stringify(row.dados_extraidos) : null,
+          row.logs_validacao ? JSON.stringify(row.logs_validacao) : null,
+          row.historico_alteracoes ? JSON.stringify(row.historico_alteracoes) : null,
+          row.observacoes || null,
+          row.score !== undefined ? row.score : null,
+          row.score_logs ? JSON.stringify(row.score_logs) : null,
+          row.criado_em,
+          row.updated_at || row.atualizado_em || row.criado_em
+        ]
+      );
+      return;
+
+    case 'cadastro_mestre_ucs':
+      await client.query(
+        `INSERT INTO cadastro_mestre_ucs (id, uc, codnum, concessionaria, secretaria, unidade_administrativa, endereco, classe, grupo_tarifario, situacao, criado_em, atualizado_em)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         ON CONFLICT (id) DO UPDATE SET
+           uc = EXCLUDED.uc, codnum = EXCLUDED.codnum, concessionaria = EXCLUDED.concessionaria, secretaria = EXCLUDED.secretaria, unidade_administrativa = EXCLUDED.unidade_administrativa, endereco = EXCLUDED.endereco, classe = EXCLUDED.classe, grupo_tarifario = EXCLUDED.grupo_tarifario, situacao = EXCLUDED.situacao, atualizado_em = EXCLUDED.atualizado_em`,
+        [
+          row.id, row.uc, row.codnum, row.concessionaria, row.secretaria || null, row.unidade_administrativa || null,
+          row.endereco || null, row.classe || null, row.grupo_tarifario || null, row.situacao || 'Ativa',
+          row.criado_em, row.atualizado_em || row.criado_em
+        ]
+      );
+      return;
+
+    default:
+      throw new Error(`Tabela não suportada para upsert: ${tableName}`);
+  }
+}
+
 export async function saveAllStateToPostgres(state: any): Promise<void> {
   const p = getPool();
   if (!p) return;
@@ -292,154 +439,18 @@ export async function saveAllStateToPostgres(state: any): Promise<void> {
     try {
       await client.query('BEGIN');
 
-      // Usuarios
-      for (const u of state.usuarios || []) {
-        await client.query(
-          `INSERT INTO usuarios (id, login, nome, ativo, criado_em)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (id) DO UPDATE SET
-             login = EXCLUDED.login, nome = EXCLUDED.nome, ativo = EXCLUDED.ativo`,
-          [u.id, u.login, u.nome, u.ativo !== false, u.criado_em]
-        );
-      }
-
-      // Secretarias
-      for (const s of state.secretarias || []) {
-        await client.query(
-          `INSERT INTO secretarias (id, codigo_legado, nome, ativo, criado_em, atualizado_em)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           ON CONFLICT (id) DO UPDATE SET
-             codigo_legado = EXCLUDED.codigo_legado, nome = EXCLUDED.nome, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em`,
-          [s.id, s.codigo_legado || null, s.nome, s.ativo !== false, s.criado_em, s.atualizado_em]
-        );
-      }
-
-      // Unidades
-      for (const u of state.unidades || []) {
-        await client.query(
-          `INSERT INTO unidades (id, codigo_legado, secretaria_id, nome, endereco, ativo, criado_em, atualizado_em)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           ON CONFLICT (id) DO UPDATE SET
-             codigo_legado = EXCLUDED.codigo_legado, secretaria_id = EXCLUDED.secretaria_id, nome = EXCLUDED.nome, endereco = EXCLUDED.endereco, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em`,
-          [u.id, u.codigo_legado || null, u.secretaria_id, u.nome, u.endereco || '', u.ativo !== false, u.criado_em, u.atualizado_em]
-        );
-      }
-
-      // Despesas
-      for (const d of state.despesas || []) {
-        await client.query(
-          `INSERT INTO despesas (id, codigo_legado, descricao, ativo, criado_em, atualizado_em)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           ON CONFLICT (id) DO UPDATE SET
-             codigo_legado = EXCLUDED.codigo_legado, descricao = EXCLUDED.descricao, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em`,
-          [d.id, d.codigo_legado || null, d.descricao, d.ativo !== false, d.criado_em, d.atualizado_em]
-        );
-      }
-
-      // Itens Despesas
-      for (const it of state.itens_despesas || []) {
-        await client.query(
-          `INSERT INTO itens_despesas (id, codigo_numero, despesa_id, unidade_id, tipo_fone, medidor, ativo, criado_em, atualizado_em)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-           ON CONFLICT (id) DO UPDATE SET
-             codigo_numero = EXCLUDED.codigo_numero, despesa_id = EXCLUDED.despesa_id, unidade_id = EXCLUDED.unidade_id, tipo_fone = EXCLUDED.tipo_fone, medidor = EXCLUDED.medidor, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em`,
-          [it.id, it.codigo_numero, it.despesa_id, it.unidade_id, it.tipo_fone || null, it.medidor || null, it.ativo !== false, it.criado_em, it.atualizado_em]
-        );
-      }
-
-      // Lancamentos
-      for (const l of state.lancamentos || []) {
-        await client.query(
-          `INSERT INTO lancamentos (id, item_despesa_id, mes_ano, consumo, valor_total, valor_imposto, valor_celular, valor_internet, valor_diversos, valor_linha_privada, valor_credito, data_lancamento, codigo_legado_numero, mes_ano_legado, criado_em, atualizado_em)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-           ON CONFLICT (id) DO UPDATE SET
-             item_despesa_id = EXCLUDED.item_despesa_id, mes_ano = EXCLUDED.mes_ano, consumo = EXCLUDED.consumo, valor_total = EXCLUDED.valor_total, valor_imposto = EXCLUDED.valor_imposto, valor_celular = EXCLUDED.valor_celular, valor_internet = EXCLUDED.valor_internet, valor_diversos = EXCLUDED.valor_diversos, valor_linha_privada = EXCLUDED.valor_linha_privada, valor_credito = EXCLUDED.valor_credito, data_lancamento = EXCLUDED.data_lancamento, codigo_legado_numero = EXCLUDED.codigo_legado_numero, mes_ano_legado = EXCLUDED.mes_ano_legado, atualizado_em = EXCLUDED.atualizado_em`,
-          [l.id, l.item_despesa_id, l.mes_ano, l.consumo || 0, l.valor_total || 0, l.valor_imposto || 0, l.valor_celular || 0, l.valor_internet || 0, l.valor_diversos || 0, l.valor_linha_privada || 0, l.valor_credito || 0, l.data_lancamento || null, l.codigo_legado_numero || null, l.mes_ano_legado || null, l.criado_em, l.atualizado_em]
-        );
-      }
-
-      // Pessoas
-      for (const pRow of state.pessoas || []) {
-        await client.query(
-          `INSERT INTO pessoas (id, codigo_legado, nome, tipo_pessoa, cpf_cnpj, telefone_residencial, telefone_comercial, telefone_celular, criado_em, atualizado_em)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-           ON CONFLICT (id) DO UPDATE SET
-             codigo_legado = EXCLUDED.codigo_legado, nome = EXCLUDED.nome, tipo_pessoa = EXCLUDED.tipo_pessoa, cpf_cnpj = EXCLUDED.cpf_cnpj, telefone_residencial = EXCLUDED.telefone_residencial, telefone_comercial = EXCLUDED.telefone_comercial, telefone_celular = EXCLUDED.telefone_celular, atualizado_em = EXCLUDED.atualizado_em`,
-          [pRow.id, pRow.codigo_legado || null, pRow.nome, pRow.tipo_pessoa || null, pRow.cpf_cnpj || null, pRow.telefone_residencial || null, pRow.telefone_comercial || null, pRow.telefone_celular || null, pRow.criado_em, pRow.atualizado_em]
-        );
-      }
-
-      // Contatos Email
-      for (const c of state.contatos_email || []) {
-        await client.query(
-          `INSERT INTO contatos_email (id, descricao, email, criado_em)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (id) DO UPDATE SET
-             descricao = EXCLUDED.descricao, email = EXCLUDED.email`,
-          [c.id, c.descricao, c.email, c.criado_em]
-        );
-      }
-
-      // Logs Erros
-      for (const lg of state.logs_erros || []) {
-        await client.query(
-          `INSERT INTO logs_erros (id, origem, mensagem, ocorrido_em, arquivo_origem, linha_original, criado_em)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
-           ON CONFLICT (id) DO NOTHING`,
-          [lg.id, lg.origem || null, lg.mensagem, lg.ocorrido_em || null, lg.arquivo_origem || null, lg.linha_original || null, lg.criado_em]
-        );
-      }
-
-      // Auditoria
-      for (const a of state.auditoria_registros || []) {
-        await client.query(
-          `INSERT INTO auditoria_registros (id, tabela, registro_pk, acao, usuario, valor_antigo, valor_novo, criado_em)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           ON CONFLICT (id) DO NOTHING`,
-          [a.id, a.tabela, a.registro_pk || null, a.acao, a.usuario, a.valor_antigo ? JSON.stringify(a.valor_antigo) : null, a.valor_novo ? JSON.stringify(a.valor_novo) : null, a.criado_em]
-        );
-      }
-
-      // Documentos Processados
-      for (const doc of state.documentos_processados || []) {
-        await client.query(
-          `INSERT INTO documentos_processados (id, nome_arquivo, layout, tamanho, status, origem_conteudo, dados_extraidos, logs_validacao, historico_alteracoes, observacoes, score, score_logs, criado_em, atualizado_em)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-           ON CONFLICT (id) DO UPDATE SET
-             nome_arquivo = EXCLUDED.nome_arquivo, layout = EXCLUDED.layout, tamanho = EXCLUDED.tamanho, status = EXCLUDED.status, origem_conteudo = EXCLUDED.origem_conteudo, dados_extraidos = EXCLUDED.dados_extraidos, logs_validacao = EXCLUDED.logs_validacao, historico_alteracoes = EXCLUDED.historico_alteracoes, observacoes = EXCLUDED.observacoes, score = EXCLUDED.score, score_logs = EXCLUDED.score_logs, atualizado_em = EXCLUDED.atualizado_em`,
-          [
-            doc.id,
-            doc.nome_arquivo,
-            doc.layout,
-            doc.tamanho || null,
-            doc.status,
-            doc.origem_conteudo || null,
-            doc.dados_extraidos ? JSON.stringify(doc.dados_extraidos) : null,
-            doc.logs_validacao ? JSON.stringify(doc.logs_validacao) : null,
-            doc.historico_alteracoes ? JSON.stringify(doc.historico_alteracoes) : null,
-            doc.observacoes || null,
-            doc.score !== undefined ? doc.score : null,
-            doc.score_logs ? JSON.stringify(doc.score_logs) : null,
-            doc.criado_em,
-            doc.updated_at || doc.atualizado_em || doc.criado_em
-          ]
-        );
-      }
-
-      // Cadastro Mestre de UCs
-      for (const u of state.cadastro_mestre_ucs || []) {
-        await client.query(
-          `INSERT INTO cadastro_mestre_ucs (id, uc, codnum, concessionaria, secretaria, unidade_administrativa, endereco, classe, grupo_tarifario, situacao, criado_em, atualizado_em)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-           ON CONFLICT (id) DO UPDATE SET
-             uc = EXCLUDED.uc, codnum = EXCLUDED.codnum, concessionaria = EXCLUDED.concessionaria, secretaria = EXCLUDED.secretaria, unidade_administrativa = EXCLUDED.unidade_administrativa, endereco = EXCLUDED.endereco, classe = EXCLUDED.classe, grupo_tarifario = EXCLUDED.grupo_tarifario, situacao = EXCLUDED.situacao, atualizado_em = EXCLUDED.atualizado_em`,
-          [
-            u.id, u.uc, u.codnum, u.concessionaria, u.secretaria || null, u.unidade_administrativa || null,
-            u.endereco || null, u.classe || null, u.grupo_tarifario || null, u.situacao || 'Ativa',
-            u.criado_em, u.atualizado_em || u.criado_em
-          ]
-        );
-      }
+      for (const u of state.usuarios || []) await execUpsertRow(client, 'usuarios', u);
+      for (const s of state.secretarias || []) await execUpsertRow(client, 'secretarias', s);
+      for (const u of state.unidades || []) await execUpsertRow(client, 'unidades', u);
+      for (const d of state.despesas || []) await execUpsertRow(client, 'despesas', d);
+      for (const it of state.itens_despesas || []) await execUpsertRow(client, 'itens_despesas', it);
+      for (const l of state.lancamentos || []) await execUpsertRow(client, 'lancamentos', l);
+      for (const pRow of state.pessoas || []) await execUpsertRow(client, 'pessoas', pRow);
+      for (const c of state.contatos_email || []) await execUpsertRow(client, 'contatos_email', c);
+      for (const lg of state.logs_erros || []) await execUpsertRow(client, 'logs_erros', lg);
+      for (const a of state.auditoria_registros || []) await execUpsertRow(client, 'auditoria_registros', a);
+      for (const doc of state.documentos_processados || []) await execUpsertRow(client, 'documentos_processados', doc);
+      for (const u of state.cadastro_mestre_ucs || []) await execUpsertRow(client, 'cadastro_mestre_ucs', u);
 
       await client.query('COMMIT');
     } catch (e) {
@@ -454,6 +465,24 @@ export async function saveAllStateToPostgres(state: any): Promise<void> {
     // silenciar aqui era o que fazia o servidor responder "sucesso" para o cliente mesmo
     // quando a escrita real no Postgres tinha falhado.
     throw err;
+  }
+}
+
+// Upsert pontual de 1 linha, sem percorrer as demais tabelas. Usado pelos endpoints que só
+// criam/alteram algumas poucas linhas por chamada (ex: salvar uma fatura) — antes disso, esses
+// endpoints chamavam saveAllStateToPostgres, que reconstrói TODAS as linhas de TODAS as tabelas
+// a cada chamada. Com centenas de lançamentos/documentos já cadastrados, salvar um lote de
+// faturas disparava um full-sync por fatura, deixando o processo cada vez mais lento conforme
+// o banco cresce.
+export async function upsertRowToPostgres(tableName: string, row: any): Promise<void> {
+  const p = getPool();
+  if (!p || !row) return;
+
+  const client = await connectWithRetry(p);
+  try {
+    await execUpsertRow(client, tableName, row);
+  } finally {
+    client.release();
   }
 }
 

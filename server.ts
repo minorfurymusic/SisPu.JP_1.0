@@ -10,7 +10,7 @@ import {
   DocumentoProcessado, CadastroMestreUC
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
-import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres } from "./src/db/postgres";
+import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowToPostgres } from "./src/db/postgres";
 
 dotenv.config();
 
@@ -141,6 +141,45 @@ async function saveDBCritical(state: DatabaseState): Promise<void> {
     console.warn("[DB] Falha na 1ª tentativa de gravar no Postgres, tentando novamente em 2s:", err);
     await delay(2000);
     await saveAllStateToPostgres(state);
+  }
+}
+
+// Grava só as linhas de fato tocadas por uma operação (ex: 1 fatura homologada = documento +
+// item de despesa + lançamento, no máximo 3-4 linhas), em vez de saveDBCritical/saveAllStateToPostgres
+// que reconstrói TODAS as linhas de TODAS as tabelas a cada chamada. Endpoints de alto volume
+// (salvar fatura, homologar) usam esta função — o custo por chamada não cresce com o tamanho do
+// banco, só com o número de linhas realmente alteradas naquela operação. Mesma semântica de
+// confirmação da saveDBCritical: espera a hidratação do boot, lança erro se o Postgres estiver
+// configurado mas indisponível, e tenta de novo uma vez após 2s antes de desistir.
+async function saveDBTargeted(state: DatabaseState, rows: { table: string; row: any }[]): Promise<void> {
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error saving DB file:", err);
+  }
+  if (!postgresHydrated) {
+    await hydrationPromise;
+  }
+  if (!postgresHydrated) {
+    if (getDbUrl()) {
+      throw new Error("PostgreSQL configurado mas ainda não confirmado/disponível.");
+    }
+    console.warn("[DB] Sincronização com o PostgreSQL adiada: DATABASE_URL não configurada.");
+    return;
+  }
+
+  const runOnce = async () => {
+    for (const { table, row } of rows) {
+      await upsertRowToPostgres(table, row);
+    }
+  };
+
+  try {
+    await runOnce();
+  } catch (err) {
+    console.warn("[DB] Falha na 1ª tentativa de gravar registro(s) no Postgres, tentando novamente em 2s:", err);
+    await delay(2000);
+    await runOnce();
   }
 }
 
@@ -1772,13 +1811,14 @@ app.get("/api/documentos", (req, res) => {
 app.post("/api/documentos", async (req, res) => {
   const { nome_arquivo, layout, tamanho, origem_conteudo, dados_extraidos } = req.body;
 
+  let linked: { unidade: any; item: any } | null = null;
   if (dados_extraidos?.codigo_numero) {
     const isCasan = Boolean(
       (layout && layout.includes("CASAN")) ||
       (nome_arquivo && /casan|catarinense/i.test(nome_arquivo)) ||
       (dados_extraidos.unidade_nome && /casan/i.test(dados_extraidos.unidade_nome))
     );
-    ensureUnidadeAndContract({
+    linked = ensureUnidadeAndContract({
       codigo_numero: dados_extraidos.codigo_numero,
       concessionaria: isCasan ? 'CASAN' : 'CELESC',
       unidade_nome: dados_extraidos.unidade_nome,
@@ -1826,8 +1866,12 @@ app.post("/api/documentos", async (req, res) => {
 
   db.documentos_processados.unshift(doc);
 
+  const rowsToSave: { table: string; row: any }[] = [{ table: "documentos_processados", row: doc }];
+  if (linked?.unidade) rowsToSave.push({ table: "unidades", row: linked.unidade });
+  if (linked?.item) rowsToSave.push({ table: "itens_despesas", row: linked.item });
+
   try {
-    await saveDBCritical(db);
+    await saveDBTargeted(db, rowsToSave);
   } catch (err: any) {
     console.error("[POST documentos] Falha ao confirmar gravação no Postgres:", err.message || err);
     return res.status(503).json({
@@ -1907,7 +1951,7 @@ app.put("/api/documentos/:id", async (req, res) => {
   db.documentos_processados[index] = doc;
 
   try {
-    await saveDBCritical(db);
+    await saveDBTargeted(db, [{ table: "documentos_processados", row: doc }]);
   } catch (err: any) {
     console.error("[PUT documentos] Falha ao confirmar gravação no Postgres:", err.message || err);
     return res.status(503).json({
@@ -2007,8 +2051,13 @@ app.post("/api/documentos/:id/homologar", async (req, res) => {
   db.lancamentos.push(newLanc);
   if (doc) doc.status = 'HOMOLOGADO';
 
+  const rowsToSave: { table: string; row: any }[] = [{ table: "lancamentos", row: newLanc }];
+  if (result?.unidade) rowsToSave.push({ table: "unidades", row: result.unidade });
+  if (item) rowsToSave.push({ table: "itens_despesas", row: item });
+  if (doc) rowsToSave.push({ table: "documentos_processados", row: doc });
+
   try {
-    await saveDBCritical(db);
+    await saveDBTargeted(db, rowsToSave);
   } catch (err: any) {
     console.error("[homologar] Falha ao confirmar gravação no Postgres:", err.message || err);
     return res.status(503).json({
