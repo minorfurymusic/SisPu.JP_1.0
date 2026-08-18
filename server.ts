@@ -10,7 +10,7 @@ import {
   DocumentoProcessado, CadastroMestreUC
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
-import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowToPostgres } from "./src/db/postgres";
+import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres } from "./src/db/postgres";
 
 dotenv.config();
 
@@ -168,18 +168,12 @@ async function saveDBTargeted(state: DatabaseState, rows: { table: string; row: 
     return;
   }
 
-  const runOnce = async () => {
-    for (const { table, row } of rows) {
-      await upsertRowToPostgres(table, row);
-    }
-  };
-
   try {
-    await runOnce();
+    await upsertRowsToPostgres(rows);
   } catch (err) {
     console.warn("[DB] Falha na 1ª tentativa de gravar registro(s) no Postgres, tentando novamente em 2s:", err);
     await delay(2000);
-    await runOnce();
+    await upsertRowsToPostgres(rows);
   }
 }
 
@@ -1806,6 +1800,170 @@ app.post("/api/logs_erros", (req, res) => {
 
 app.get("/api/documentos", (req, res) => {
   res.json(db.documentos_processados);
+});
+
+// Cria e homologa uma fatura em memória (mesma lógica de POST /api/documentos +
+// POST /api/documentos/:id/homologar, unificada em uma função) sem persistir nada sozinha —
+// quem chama decide como/quando gravar as linhas retornadas em rows. Usada pelo endpoint de
+// lote (/api/documentos/homologar-lote) para processar N faturas e só então fazer UMA gravação
+// no Postgres para o lote inteiro, em vez de uma gravação por fatura.
+function criarEHomologarFatura(
+  payload: { nome_arquivo: string; layout: string; tamanho: number; origem_conteudo: string; dados_extraidos: any },
+  usuario: string
+): { ok: boolean; error?: string; doc: DocumentoProcessado; lancamento?: Lancamento; rows: { table: string; row: any }[] } {
+  const { nome_arquivo, layout, tamanho, origem_conteudo, dados_extraidos } = payload;
+
+  const isCasan = Boolean(
+    (layout && layout.includes("CASAN")) ||
+    (nome_arquivo && /casan|catarinense/i.test(nome_arquivo)) ||
+    (dados_extraidos?.unidade_nome && /casan/i.test(dados_extraidos.unidade_nome))
+  );
+
+  let linked: { unidade: any; item: any } | null = null;
+  if (dados_extraidos?.codigo_numero) {
+    linked = ensureUnidadeAndContract({
+      codigo_numero: dados_extraidos.codigo_numero,
+      concessionaria: isCasan ? 'CASAN' : 'CELESC',
+      unidade_nome: dados_extraidos.unidade_nome,
+      endereco: dados_extraidos.endereco,
+      medidor: dados_extraidos.medidor,
+      usuario
+    });
+  }
+
+  const newId = crypto.randomUUID();
+  const doc: DocumentoProcessado = {
+    id: newId,
+    nome_arquivo,
+    layout,
+    tamanho,
+    status: 'NORMALIZADO',
+    origem_conteudo,
+    dados_extraidos,
+    logs_validacao: [],
+    historico_alteracoes: [],
+    criado_em: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  } as any;
+
+  const logs: string[] = [];
+  const itemMatch = db.itens_despesas.find(it => it.codigo_numero === dados_extraidos?.codigo_numero);
+  if (!itemMatch) {
+    logs.push(`⚠️ CODNUM "${dados_extraidos?.codigo_numero}" não cadastrado no banco. Itens de despesa deverão ser vinculados durante a conferência.`);
+  }
+  if ((dados_extraidos?.consumo ?? 0) <= 0) {
+    logs.push(`⚠️ Consumo extraído de ${dados_extraidos?.consumo} é inválido ou nulo. Verifique a fatura original.`);
+  }
+  if ((dados_extraidos?.valor_total ?? 0) <= 0) {
+    logs.push(`❌ Valor total extraído de R$ ${dados_extraidos?.valor_total} é nulo ou negativo.`);
+  }
+  doc.status = logs.some(l => l.includes('❌')) ? 'NORMALIZADO' : 'VALIDADO';
+  doc.logs_validacao = logs;
+
+  db.documentos_processados.unshift(doc);
+
+  const extr = doc.dados_extraidos || ({} as any);
+  let item = linked?.item || (extr?.codigo_numero ? db.itens_despesas.find(it => it?.codigo_numero === extr.codigo_numero) : undefined);
+
+  if (!item) {
+    const depId = isCasan ? "2" : "1";
+    const defaultUnidade = (db.unidades && db.unidades.length > 0) ? db.unidades[0] : { id: "1" };
+    const newItemId = crypto.randomUUID();
+    item = {
+      id: newItemId,
+      codigo_numero: extr?.codigo_numero || `AUTO-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      despesa_id: depId,
+      unidade_id: defaultUnidade?.id || "1",
+      medidor: extr?.medidor || "N/A",
+      ativo: true,
+      criado_em: new Date().toISOString(),
+      atualizado_em: new Date().toISOString()
+    };
+    db.itens_despesas.push(item);
+    logAudit("itens_despesas", newItemId, "INSERT", usuario, null, item);
+  }
+
+  const rows: { table: string; row: any }[] = [];
+  if (linked?.unidade) rows.push({ table: "unidades", row: linked.unidade });
+  if (item) rows.push({ table: "itens_despesas", row: item });
+
+  if (!extr?.mes_ano) {
+    rows.push({ table: "documentos_processados", row: doc });
+    return { ok: false, error: "Competência de Referência não informada.", doc, rows };
+  }
+
+  // Rejeita duplicidade: mesma unidade/contrato já homologado no mesmo mês. Sem isso, salvar o
+  // mesmo lote duas vezes (ex.: distração do usuário reabrindo um rascunho já salvo) criava um
+  // segundo lançamento e dobrava silenciosamente o valor daquele mês.
+  const mesAnoPrefixo = extr.mes_ano.substring(0, 7);
+  const jaHomologado = db.lancamentos.find(l => l.item_despesa_id === item!.id && l.mes_ano?.substring(0, 7) === mesAnoPrefixo);
+  if (jaHomologado) {
+    rows.push({ table: "documentos_processados", row: doc });
+    return { ok: false, error: `Já existe um lançamento homologado para esta unidade na competência ${mesAnoPrefixo} (id ${jaHomologado.id}).`, doc, rows };
+  }
+
+  const newLancId = crypto.randomUUID();
+  const newLanc: Lancamento = {
+    id: newLancId,
+    item_despesa_id: item.id,
+    mes_ano: extr.mes_ano,
+    consumo: parseFloat(extr?.consumo as any || 0),
+    valor_total: parseFloat(extr?.valor_total as any || 0),
+    valor_imposto: parseFloat(extr?.valor_imposto as any || 0),
+    valor_celular: parseFloat(extr?.valor_celular as any || 0),
+    valor_internet: parseFloat(extr?.valor_internet as any || 0),
+    valor_diversos: parseFloat(extr?.valor_diversos as any || 0),
+    valor_linha_privada: parseFloat(extr?.valor_linha_privada as any || 0),
+    valor_credito: parseFloat(extr?.valor_credito as any || 0),
+    data_lancamento: new Date().toISOString().split('T')[0],
+    criado_em: new Date().toISOString(),
+    atualizado_em: new Date().toISOString()
+  };
+  db.lancamentos.push(newLanc);
+  doc.status = 'HOMOLOGADO';
+  rows.push({ table: "lancamentos", row: newLanc });
+  rows.push({ table: "documentos_processados", row: doc });
+
+  logAudit("lancamentos", newLancId, "INSERT", usuario, null, newLanc);
+  logAudit("documentos_processados", doc.id, "UPDATE", usuario, { status: "VALIDADO" }, { status: "HOMOLOGADO" });
+
+  return { ok: true, doc, lancamento: newLanc, rows };
+}
+
+// Salva um lote inteiro de faturas em UMA única gravação no Postgres (1 conexão reaproveitada
+// para todas as linhas do lote), em vez do fluxo POST /api/documentos + POST .../homologar
+// chamado uma vez por fatura — que fazia 2 requisições HTTP e, no mínimo, 1 nova conexão ao
+// banco por fatura. Num lote de 155 faturas isso significava até 155 conexões/idas-e-voltas
+// sequenciais à rede; aqui, o cliente pode enviar o lote em pedaços de N faturas por vez e cada
+// pedaço vira só 1 requisição / 1 conexão para até N faturas.
+app.post("/api/documentos/homologar-lote", async (req, res) => {
+  const usuario = req.headers["x-user"] as string || "admin";
+  const documentos = Array.isArray(req.body?.documentos) ? req.body.documentos : [];
+
+  if (documentos.length === 0) {
+    return res.status(400).json({ error: "Nenhum documento informado para salvar." });
+  }
+
+  const allRows: { table: string; row: any }[] = [];
+  const results: Array<{ index: number; ok: boolean; error?: string; lancamento?: Lancamento }> = [];
+
+  for (let i = 0; i < documentos.length; i++) {
+    const r = criarEHomologarFatura(documentos[i], usuario);
+    allRows.push(...r.rows);
+    results.push({ index: i, ok: r.ok, error: r.error, lancamento: r.lancamento });
+  }
+
+  try {
+    await saveDBTargeted(db, allRows);
+  } catch (err: any) {
+    console.error("[homologar-lote] Falha ao confirmar gravação no Postgres:", err.message || err);
+    return res.status(503).json({
+      error: "Não foi possível confirmar a gravação no banco de dados. O Neon pode estar acordando de um período de inatividade — aguarde alguns segundos e tente salvar de novo.",
+      results
+    });
+  }
+
+  res.json({ results });
 });
 
 app.post("/api/documentos", async (req, res) => {

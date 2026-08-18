@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { 
   FileText, Upload, CheckCircle2, AlertTriangle, Play, Save, Download,
   History, Check, RefreshCw, FileCode, Landmark, Eye, EyeOff,
@@ -1869,19 +1869,21 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     }));
   };
 
-  // Tempo máximo de espera por fatura ao salvar em lote: se uma requisição travar (ex: o
-  // Postgres acordando de inatividade), essa fatura conta como falha e volta pra fila, mas o
-  // lote inteiro segue adiante — a barra de progresso nunca fica presa esperando uma só.
-  const SAVE_ITEM_TIMEOUT_MS = 20000;
+  // Salvar em lote manda um pedaço de N faturas por requisição (endpoint /api/documentos/
+  // homologar-lote) em vez de 2 requisições por fatura (criar + homologar) como antes — isso é
+  // que reduz a quantidade de idas-e-voltas à rede/banco de centenas para poucas dezenas. O
+  // tamanho do pedaço equilibra dois lados: pedaços grandes = menos requisições = mais rápido,
+  // mas cada pedaço só conta como "progresso" quando termina inteiro, e cancelar só tem efeito
+  // a partir do próximo pedaço.
+  const SAVE_CHUNK_SIZE = 15;
+  const SAVE_CHUNK_TIMEOUT_MS = 45000;
 
-  const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: number) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      return await fetch(url, { ...options, signal: controller.signal });
-    } finally {
-      clearTimeout(timer);
-    }
+  const saveAbortControllerRef = useRef<AbortController | null>(null);
+  const saveCancelRequestedRef = useRef(false);
+
+  const cancelBatchSave = () => {
+    saveCancelRequestedRef.current = true;
+    saveAbortControllerRef.current?.abort();
   };
 
   // Final Persist to standard DB with logs_validacao, triggers, dashboard sync
@@ -1907,64 +1909,78 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
     setLoading(true);
     setSaveProgress({ current: 0, total: docsToSave.length });
+    saveCancelRequestedRef.current = false;
     let successCount = 0;
     let timeoutCount = 0;
     // Docs that fail to save/homologar go back into the queue instead of being silently
     // discarded — a duplicate-competência rejection (or any transient error) shouldn't cost
     // the user re-typing or re-importing what they already reviewed.
     const failedDocs: DocumentoProcessado[] = [];
+    let cancelledEarly = false;
 
-    // Cada fatura é isolada em seu próprio try/catch: se uma delas falhar por erro de rede (não
-    // só uma resposta não-ok, mas o fetch em si rejeitando), o loop inteiro não pode abortar no
-    // meio — do contrário as faturas já homologadas nas iterações anteriores nunca seriam
-    // removidas de sessionDocs, e continuariam aparecendo prontas para salvar de novo. Foi
-    // assim que um relatório já salvo apareceu de novo pra salvar e duplicou o valor do mês.
-    for (let i = 0; i < docsToSave.length; i++) {
-      const doc = docsToSave[i];
+    for (let start = 0; start < docsToSave.length; start += SAVE_CHUNK_SIZE) {
+      if (saveCancelRequestedRef.current) {
+        cancelledEarly = true;
+        for (let j = start; j < docsToSave.length; j++) failedDocs.push(docsToSave[j]);
+        break;
+      }
+
+      const chunk = docsToSave.slice(start, start + SAVE_CHUNK_SIZE);
+      const controller = new AbortController();
+      saveAbortControllerRef.current = controller;
+      const timer = setTimeout(() => controller.abort(), SAVE_CHUNK_TIMEOUT_MS);
+
       try {
-        // Enviar os dados de cada fatura do lote para homologar no backend de forma transparente
-        const res = await fetchWithTimeout("/api/documentos", {
+        const res = await fetch("/api/documentos/homologar-lote", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "x-user": currentUser },
           body: JSON.stringify({
-            nome_arquivo: doc.nome_arquivo,
-            layout: doc.layout,
-            tamanho: doc.tamanho,
-            origem_conteudo: doc.origem_conteudo,
-            dados_extraidos: doc.dados_extraidos
-          })
-        }, SAVE_ITEM_TIMEOUT_MS);
+            documentos: chunk.map(d => ({
+              nome_arquivo: d.nome_arquivo,
+              layout: d.layout,
+              tamanho: d.tamanho,
+              origem_conteudo: d.origem_conteudo,
+              dados_extraidos: d.dados_extraidos
+            }))
+          }),
+          signal: controller.signal
+        });
 
         if (res.ok) {
-          const dbDoc = await res.json();
-          if (dbDoc && dbDoc.id) {
-            // Homologar imediatamente para lançar na tabela central de lançamentos e gerar auditoria
-            const homolRes = await fetchWithTimeout(`/api/documentos/${dbDoc.id}/homologar`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "x-user": currentUser
-              }
-            }, SAVE_ITEM_TIMEOUT_MS);
-            if (homolRes.ok) {
+          const data = await res.json();
+          const results: Array<{ index: number; ok: boolean }> = data?.results || [];
+          chunk.forEach((doc, idx) => {
+            if (results[idx]?.ok) {
               successCount++;
             } else {
               failedDocs.push(doc);
             }
-          } else {
-            failedDocs.push(doc);
-          }
+          });
         } else {
-          failedDocs.push(doc);
+          // Falha no nível da requisição/gravação (ex: 503 do Postgres): o lote inteiro do
+          // pedaço não foi confirmado (a gravação é transacional), então todas as faturas
+          // desse pedaço voltam pra fila para tentar de novo.
+          chunk.forEach(doc => failedDocs.push(doc));
         }
-      } catch (itemErr: any) {
-        if (itemErr?.name === "AbortError") {
-          timeoutCount++;
+      } catch (chunkErr: any) {
+        if (chunkErr?.name === "AbortError" && saveCancelRequestedRef.current) {
+          cancelledEarly = true;
+          for (let j = start; j < docsToSave.length; j++) failedDocs.push(docsToSave[j]);
+          clearTimeout(timer);
+          break;
         }
-        failedDocs.push(doc);
+        if (chunkErr?.name === "AbortError") {
+          timeoutCount += chunk.length;
+        }
+        chunk.forEach(doc => failedDocs.push(doc));
+      } finally {
+        clearTimeout(timer);
       }
-      setSaveProgress({ current: i + 1, total: docsToSave.length });
+
+      setSaveProgress({ current: Math.min(start + chunk.length, docsToSave.length), total: docsToSave.length });
     }
+
+    saveAbortControllerRef.current = null;
 
     // Mantém na fila os que falharam e os que já estavam marcados como IGNORADA (esses nunca
     // foram enviados); só remove os que realmente foram homologados.
@@ -1975,7 +1991,12 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
     if (onDocumentProcessed) onDocumentProcessed();
 
-    if (failedDocs.length === 0) {
+    if (cancelledEarly) {
+      setMessage({
+        type: 'warning',
+        text: `Salvamento cancelado. ${successCount} lançamento(s) já haviam sido confirmados antes do cancelamento; os demais permanecem na fila.`
+      });
+    } else if (failedDocs.length === 0) {
       setMessage({
         type: 'success',
         text: `Sucesso! Todos os ${successCount} lançamentos do lote foram homologados na tabela central com auditoria e atualizados no painel geral.`
@@ -3708,6 +3729,15 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                 />
               </div>
               <span className="text-[11px] text-gray-500">Não feche ou atualize a página.</span>
+            </div>
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={cancelBatchSave}
+                className="px-4 py-2 rounded-xl border border-white/10 text-gray-300 hover:bg-white/5 hover:border-rose-500/40 hover:text-rose-300 transition text-sm font-medium"
+              >
+                Cancelar
+              </button>
             </div>
           </div>
         </div>

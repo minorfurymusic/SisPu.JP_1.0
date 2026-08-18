@@ -468,19 +468,29 @@ export async function saveAllStateToPostgres(state: any): Promise<void> {
   }
 }
 
-// Upsert pontual de 1 linha, sem percorrer as demais tabelas. Usado pelos endpoints que só
-// criam/alteram algumas poucas linhas por chamada (ex: salvar uma fatura) — antes disso, esses
-// endpoints chamavam saveAllStateToPostgres, que reconstrói TODAS as linhas de TODAS as tabelas
-// a cada chamada. Com centenas de lançamentos/documentos já cadastrados, salvar um lote de
-// faturas disparava um full-sync por fatura, deixando o processo cada vez mais lento conforme
-// o banco cresce.
-export async function upsertRowToPostgres(tableName: string, row: any): Promise<void> {
+// Upsert pontual de um pequeno conjunto de linhas (1 fatura = doc + unidade + item + lançamento,
+// ou um lote inteiro de faturas de uma vez), sem percorrer as demais linhas das tabelas. Usado
+// pelos endpoints que só criam/alteram algumas linhas por chamada — antes disso, esses endpoints
+// chamavam saveAllStateToPostgres, que reconstrói TODAS as linhas de TODAS as tabelas a cada
+// chamada. Com centenas de lançamentos/documentos já cadastrados, salvar um lote de faturas
+// disparava um full-sync por fatura, deixando o processo cada vez mais lento conforme o banco
+// cresce. Todas as linhas passadas usam a MESMA conexão (1 client.connect() por chamada, não 1
+// por linha) — abrir uma conexão nova por linha é o que fazia até um lote pequeno demorar muito
+// mais do que deveria, sobretudo quando o Neon precisa "acordar" de um período de inatividade.
+export async function upsertRowsToPostgres(rows: { table: string; row: any }[]): Promise<void> {
   const p = getPool();
-  if (!p || !row) return;
+  if (!p || rows.length === 0) return;
 
   const client = await connectWithRetry(p);
   try {
-    await execUpsertRow(client, tableName, row);
+    await client.query('BEGIN');
+    for (const { table, row } of rows) {
+      await execUpsertRow(client, table, row);
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
   } finally {
     client.release();
   }
