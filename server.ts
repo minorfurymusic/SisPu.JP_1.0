@@ -262,6 +262,22 @@ async function initDatabasePersistence() {
 
 
 // Simulated PostgreSQL Trigger-based Auditor
+// Só grava no arquivo local, nunca dispara sincronização com o Postgres. logAudit() é chamado
+// várias vezes por uma única ação do usuário (uma vez por unidade/item/lançamento/documento
+// tocado) — se cada chamada disparasse saveDB() (que sincroniza TODAS as tabelas, não só o
+// registro do log), uma única fatura salva podia disparar de 3 a 5 sincronizações completas
+// redundantes. Com o banco crescendo (centenas de lançamentos e documentos), isso foi o que
+// fez salvar/excluir ficar cada vez mais lento. O registro de auditoria em si ainda chega no
+// Postgres — só não imediatamente a cada chamada, e sim já embutido na próxima sincronização
+// real que uma operação de negócio (saveDB/saveDBCritical) disparar de qualquer forma.
+function saveLocalOnly(state: DatabaseState) {
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error saving DB file:", err);
+  }
+}
+
 function logAudit(tabela: string, pk: string, acao: 'INSERT' | 'UPDATE' | 'DELETE', usuario: string, antigo: any, novo: any) {
   const auditRow: AuditoriaRegistro = {
     id: crypto.randomUUID(),
@@ -274,7 +290,7 @@ function logAudit(tabela: string, pk: string, acao: 'INSERT' | 'UPDATE' | 'DELET
     criado_em: new Date().toISOString()
   };
   db.auditoria_registros.unshift(auditRow); // Newest first
-  saveDB(db);
+  saveLocalOnly(db);
 }
 
 // Error Logger Utility
@@ -289,7 +305,7 @@ function logTechnicalError(origem: string, mensagem: string, arquivo: string, li
     criado_em: new Date().toISOString()
   };
   db.logs_erros.unshift(logRow);
-  saveDB(db);
+  saveLocalOnly(db);
 }
 
 // Helper function to guarantee Unidade Gestora and Contrato CODNUM creation and linking
