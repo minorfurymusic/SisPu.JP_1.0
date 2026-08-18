@@ -789,7 +789,11 @@ app.delete("/api/secretarias/:id", async (req, res) => {
 
   const oldVal = { ...db.secretarias[index] };
   db.secretarias.splice(index, 1);
-  saveDB(db);
+  // A remoção no Postgres já é feita explicitamente e sob confirmação logo abaixo
+  // (deleteRowFromPostgres) — chamar saveDB(db) aqui disparava uma sincronização completa de
+  // todas as tabelas em paralelo com essa exclusão, competindo pela mesma conexão e deixando
+  // exclusões em lote (centenas de itens) extremamente lentas.
+  saveLocalOnly(db);
   try {
     await deleteRowFromPostgres("secretarias", id);
   } catch (err: any) {
@@ -894,7 +898,10 @@ app.delete("/api/cadastro-mestre-ucs/:id", async (req, res) => {
 
   const oldVal = { ...db.cadastro_mestre_ucs[index] };
   db.cadastro_mestre_ucs.splice(index, 1);
-  saveDB(db);
+  // Ver comentário equivalente em /api/secretarias/:id: a exclusão real já é
+  // confirmada abaixo via deleteRowFromPostgres; saveDB(db) aqui só disparava
+  // uma sincronização completa redundante e concorrente.
+  saveLocalOnly(db);
   try {
     await deleteRowFromPostgres("cadastro_mestre_ucs", id);
   } catch (err: any) {
@@ -1107,7 +1114,7 @@ app.delete("/api/unidades/:id", async (req, res) => {
 
   const oldVal = { ...db.unidades[index] };
   db.unidades.splice(index, 1);
-  saveDB(db);
+  saveLocalOnly(db);
   try {
     await deleteRowFromPostgres("unidades", id);
   } catch (err: any) {
@@ -1217,7 +1224,7 @@ app.delete("/api/despesas/:id", async (req, res) => {
 
   const oldVal = { ...db.despesas[index] };
   db.despesas.splice(index, 1);
-  saveDB(db);
+  saveLocalOnly(db);
   try {
     await deleteRowFromPostgres("despesas", id);
   } catch (err: any) {
@@ -1348,7 +1355,7 @@ app.delete("/api/itens_despesas/:id", async (req, res) => {
 
   const oldVal = { ...db.itens_despesas[index] };
   db.itens_despesas.splice(index, 1);
-  saveDB(db);
+  saveLocalOnly(db);
   try {
     await deleteRowFromPostgres("itens_despesas", id);
   } catch (err: any) {
@@ -1664,7 +1671,7 @@ app.delete("/api/lancamentos/:id", async (req, res) => {
     return res.status(404).json({ error: "Lançamento não encontrado." });
   }
 
-  saveDB(db);
+  saveLocalOnly(db);
 
   if (pgFailed) {
     return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O Neon pode estar acordando de um período de inatividade — tente de novo em alguns segundos." });
@@ -1686,7 +1693,7 @@ app.delete("/api/documentos/:id", async (req, res) => {
 
   const oldVal = { ...db.documentos_processados[index] };
   db.documentos_processados.splice(index, 1);
-  saveDB(db);
+  saveLocalOnly(db);
   try {
     await deleteRowFromPostgres("documentos_processados", id);
   } catch (err: any) {
