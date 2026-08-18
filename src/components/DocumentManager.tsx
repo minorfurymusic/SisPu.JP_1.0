@@ -335,7 +335,8 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   const [customText, setCustomText] = useState("");
   const [fileName, setFileName] = useState("");
   const [loading, setLoading] = useState(false);
-  
+  const [saveProgress, setSaveProgress] = useState<{ current: number; total: number } | null>(null);
+
   // Pipeline-queue states for asynchronously processing multi-document/large reports
   const [processingQueue, setProcessingQueue] = useState<boolean>(false);
   const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0, phase: "" });
@@ -1868,6 +1869,21 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     }));
   };
 
+  // Tempo máximo de espera por fatura ao salvar em lote: se uma requisição travar (ex: o
+  // Postgres acordando de inatividade), essa fatura conta como falha e volta pra fila, mas o
+  // lote inteiro segue adiante — a barra de progresso nunca fica presa esperando uma só.
+  const SAVE_ITEM_TIMEOUT_MS = 20000;
+
+  const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: number) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   // Final Persist to standard DB with logs_validacao, triggers, dashboard sync
   const handleFinalSave = async () => {
     const docsToSave = sessionDocs.filter(d => d && d.status !== 'IGNORADA');
@@ -1890,7 +1906,9 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     }
 
     setLoading(true);
+    setSaveProgress({ current: 0, total: docsToSave.length });
     let successCount = 0;
+    let timeoutCount = 0;
     // Docs that fail to save/homologar go back into the queue instead of being silently
     // discarded — a duplicate-competência rejection (or any transient error) shouldn't cost
     // the user re-typing or re-importing what they already reviewed.
@@ -1901,10 +1919,11 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     // meio — do contrário as faturas já homologadas nas iterações anteriores nunca seriam
     // removidas de sessionDocs, e continuariam aparecendo prontas para salvar de novo. Foi
     // assim que um relatório já salvo apareceu de novo pra salvar e duplicou o valor do mês.
-    for (const doc of docsToSave) {
+    for (let i = 0; i < docsToSave.length; i++) {
+      const doc = docsToSave[i];
       try {
         // Enviar os dados de cada fatura do lote para homologar no backend de forma transparente
-        const res = await fetch("/api/documentos", {
+        const res = await fetchWithTimeout("/api/documentos", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1914,19 +1933,19 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
             origem_conteudo: doc.origem_conteudo,
             dados_extraidos: doc.dados_extraidos
           })
-        });
+        }, SAVE_ITEM_TIMEOUT_MS);
 
         if (res.ok) {
           const dbDoc = await res.json();
           if (dbDoc && dbDoc.id) {
             // Homologar imediatamente para lançar na tabela central de lançamentos e gerar auditoria
-            const homolRes = await fetch(`/api/documentos/${dbDoc.id}/homologar`, {
+            const homolRes = await fetchWithTimeout(`/api/documentos/${dbDoc.id}/homologar`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
                 "x-user": currentUser
               }
-            });
+            }, SAVE_ITEM_TIMEOUT_MS);
             if (homolRes.ok) {
               successCount++;
             } else {
@@ -1938,9 +1957,13 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
         } else {
           failedDocs.push(doc);
         }
-      } catch {
+      } catch (itemErr: any) {
+        if (itemErr?.name === "AbortError") {
+          timeoutCount++;
+        }
         failedDocs.push(doc);
       }
+      setSaveProgress({ current: i + 1, total: docsToSave.length });
     }
 
     // Mantém na fila os que falharam e os que já estavam marcados como IGNORADA (esses nunca
@@ -1958,13 +1981,17 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
         text: `Sucesso! Todos os ${successCount} lançamentos do lote foram homologados na tabela central com auditoria e atualizados no painel geral.`
       });
     } else {
+      const motivoTimeout = timeoutCount > 0
+        ? ` ${timeoutCount} deles demoraram demais para responder (banco de dados lento) — tente salvar de novo em alguns instantes.`
+        : "";
       setMessage({
         type: 'warning',
-        text: `Lançamentos processados: ${successCount} com sucesso. ${failedDocs.length} permanecem na fila (falha ao salvar, ex: duplicidade de competência) — revise e tente salvar novamente.`
+        text: `Lançamentos processados: ${successCount} com sucesso. ${failedDocs.length} permanecem na fila (falha ao salvar, ex: duplicidade de competência).${motivoTimeout} Revise e tente salvar novamente.`
       });
     }
 
     setLoading(false);
+    setSaveProgress(null);
   };
 
   return (
@@ -3658,6 +3685,32 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
             setSelectedDocForUnidade(null);
           }}
         />
+      )}
+
+      {/* SAVE PROGRESS OVERLAY: mesma lógica visual da exclusão em lote, para o usuário nunca
+          ficar sem saber se o salvamento travou ou está realmente em andamento. */}
+      {saveProgress && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="bg-[#18181b] border border-white/10 text-white rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3 text-indigo-400 font-bold text-lg">
+              <Save className="h-6 w-6 shrink-0" />
+              <h3>Salvando Lançamentos</h3>
+            </div>
+            <div className="flex flex-col items-center gap-3 py-4 border-t border-white/10">
+              <RefreshCw className="h-6 w-6 text-indigo-400 animate-spin" />
+              <span className="text-sm font-semibold text-gray-200">
+                {`Salvando ${saveProgress.current} de ${saveProgress.total}...`}
+              </span>
+              <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-indigo-500 transition-all duration-150"
+                  style={{ width: `${(saveProgress.current / Math.max(saveProgress.total, 1)) * 100}%` }}
+                />
+              </div>
+              <span className="text-[11px] text-gray-500">Não feche ou atualize a página.</span>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>
