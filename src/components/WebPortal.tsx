@@ -3,7 +3,7 @@ import {
   Building2, Receipt, Lightbulb, Droplets, History,
   TrendingUp, BarChart3, ShieldAlert, Search, Edit2, Trash2,
   Layers, Plus, Trash, Calendar, FolderCheck, CheckCircle2, X,
-  ClipboardList, Settings, Check, HelpCircle, Filter, FolderTree, Table, Eye
+  ClipboardList, Settings, Check, HelpCircle, Filter, FolderTree, Table, Eye, RefreshCw
 } from "lucide-react";
 import { Secretaria, Unidade, Despesa, ItemDespesa, Lancamento, AuditoriaRegistro } from "../types";
 import DocumentManager from "./DocumentManager";
@@ -173,8 +173,14 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     isOpen: boolean;
     title: string;
     description: string;
-    onConfirm: () => void;
+    onConfirm: () => void | Promise<void>;
   } | null>(null);
+  // Exclusões em lote (mês/concessionária) percorrem cada fatura uma a uma no servidor — pode
+  // levar dezenas de segundos com centenas de itens, e sem retorno visual o botão parecia não
+  // ter feito nada, levando a cliques repetidos que disparavam a mesma exclusão em paralelo
+  // várias vezes.
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteProgress, setDeleteProgress] = useState<{ current: number; total: number } | null>(null);
 
   useEffect(() => {
     loadAllData();
@@ -653,13 +659,18 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   };
 
   const executeDeleteBatch = async (items: any[], successLabel: string) => {
+    setDeleteProgress({ current: 0, total: items.length });
     try {
       let successCount = 0;
       let failCount = 0;
 
-      for (const item of items) {
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
         const targetId = item.id || item.doc_id;
-        if (!targetId) continue;
+        if (!targetId) {
+          setDeleteProgress({ current: i + 1, total: items.length });
+          continue;
+        }
 
         let res = await fetch(`/api/lancamentos/${targetId}`, {
           method: "DELETE",
@@ -678,6 +689,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         } else {
           failCount++;
         }
+        setDeleteProgress({ current: i + 1, total: items.length });
       }
 
       if (successCount > 0) {
@@ -690,6 +702,8 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
       }
     } catch (err: any) {
       showError("Erro de conexão ao processar exclusão.");
+    } finally {
+      setDeleteProgress(null);
     }
   };
 
@@ -2006,6 +2020,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       onDelete={handleDeleteLancamento}
                       onDeleteMonth={handleDeleteMonth}
                       onDeleteGroup={handleDeleteGroup}
+                      isDeleting={isDeleting}
                     />
                   ) : (
                     <div className="bg-[#0f0f0f] border border-white/10 p-6 rounded-xl shadow-sm space-y-4 text-gray-300">
@@ -2134,26 +2149,52 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               <p className="text-sm text-gray-300 leading-relaxed">
                 {deleteModal.description}
               </p>
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-white/10">
-                <button
-                  type="button"
-                  onClick={() => setDeleteModal(null)}
-                  className="px-4 py-2 rounded-xl border border-white/10 text-gray-300 hover:bg-white/5 transition text-sm font-medium"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const action = deleteModal.onConfirm;
-                    setDeleteModal(null);
-                    action();
-                  }}
-                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold transition text-sm shadow-lg shadow-rose-900/30"
-                >
-                  Excluir Definitivamente
-                </button>
-              </div>
+
+              {isDeleting ? (
+                <div className="flex flex-col items-center gap-3 py-4 border-t border-white/10">
+                  <RefreshCw className="h-6 w-6 text-rose-400 animate-spin" />
+                  <span className="text-sm font-semibold text-gray-200">
+                    {deleteProgress
+                      ? `Excluindo ${deleteProgress.current} de ${deleteProgress.total}...`
+                      : "Excluindo..."}
+                  </span>
+                  {deleteProgress && (
+                    <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-rose-500 transition-all duration-150"
+                        style={{ width: `${(deleteProgress.current / Math.max(deleteProgress.total, 1)) * 100}%` }}
+                      />
+                    </div>
+                  )}
+                  <span className="text-[11px] text-gray-500">Não feche ou atualize a página.</span>
+                </div>
+              ) : (
+                <div className="flex items-center justify-end gap-3 pt-3 border-t border-white/10">
+                  <button
+                    type="button"
+                    onClick={() => setDeleteModal(null)}
+                    className="px-4 py-2 rounded-xl border border-white/10 text-gray-300 hover:bg-white/5 transition text-sm font-medium"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const action = deleteModal.onConfirm;
+                      setIsDeleting(true);
+                      try {
+                        await action();
+                      } finally {
+                        setIsDeleting(false);
+                        setDeleteModal(null);
+                      }
+                    }}
+                    className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold transition text-sm shadow-lg shadow-rose-900/30"
+                  >
+                    Excluir Definitivamente
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}

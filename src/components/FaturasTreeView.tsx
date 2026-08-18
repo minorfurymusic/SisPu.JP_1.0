@@ -37,6 +37,7 @@ export interface FaturasTreeViewProps {
   onDeleteMonth?: (monthKey: string, items: any[], monthLabel: string) => void;
   onDeleteGroup?: (monthKey: string, items: any[], groupLabel: string) => void;
   onRefreshData?: () => void;
+  isDeleting?: boolean;
 }
 
 export function getInvoiceType(item: any): 'CELESC' | 'CASAN' {
@@ -107,7 +108,8 @@ export default function FaturasTreeView({
   onDelete,
   onDeleteMonth,
   onDeleteGroup,
-  onRefreshData
+  onRefreshData,
+  isDeleting = false
 }: FaturasTreeViewProps) {
   // Filter States
   const [selectedType, setSelectedType] = useState<'ALL' | 'CELESC' | 'CASAN'>('ALL');
@@ -602,6 +604,7 @@ export default function FaturasTreeView({
                       {Boolean(unlockedMonths[monthGroup.monthKey]) && (
                         <button
                           type="button"
+                          disabled={isDeleting}
                           onClick={(e) => {
                             e.stopPropagation();
                             if (onDeleteMonth) {
@@ -615,7 +618,7 @@ export default function FaturasTreeView({
                               }
                             }
                           }}
-                          className="px-3 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 bg-rose-600/20 text-rose-300 border border-rose-500/40 hover:bg-rose-600 hover:text-white shadow-md shadow-rose-950/40"
+                          className="px-3 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 bg-rose-600/20 text-rose-300 border border-rose-500/40 hover:bg-rose-600 hover:text-white shadow-md shadow-rose-950/40 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-600/20 disabled:hover:text-rose-300"
                           title={`Excluir todos os ${monthGroup.items.length} lançamentos do mês de ${monthGroup.label}`}
                         >
                           <Trash2 className="h-3.5 w-3.5 text-rose-400 group-hover:text-white" />
@@ -682,11 +685,12 @@ export default function FaturasTreeView({
                             {onDeleteGroup && Boolean(unlockedMonths[monthGroup.monthKey]) && (
                               <button
                                 type="button"
+                                disabled={isDeleting}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   onDeleteGroup(monthGroup.monthKey, monthGroup.celescItems, `CELESC de ${monthGroup.label}`);
                                 }}
-                                className="px-2 py-1 rounded text-[10px] font-bold flex items-center gap-1 bg-rose-600/20 text-rose-300 border border-rose-500/40 hover:bg-rose-600 hover:text-white transition"
+                                className="px-2 py-1 rounded text-[10px] font-bold flex items-center gap-1 bg-rose-600/20 text-rose-300 border border-rose-500/40 hover:bg-rose-600 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-600/20 disabled:hover:text-rose-300"
                                 title={`Excluir todas as ${monthGroup.celescItems.length} faturas CELESC deste mês`}
                               >
                                 <Trash2 className="h-3 w-3" /> Excluir CELESC
@@ -830,11 +834,12 @@ export default function FaturasTreeView({
                             {onDeleteGroup && Boolean(unlockedMonths[monthGroup.monthKey]) && (
                               <button
                                 type="button"
+                                disabled={isDeleting}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   onDeleteGroup(monthGroup.monthKey, monthGroup.casanItems, `CASAN de ${monthGroup.label}`);
                                 }}
-                                className="px-2 py-1 rounded text-[10px] font-bold flex items-center gap-1 bg-rose-600/20 text-rose-300 border border-rose-500/40 hover:bg-rose-600 hover:text-white transition"
+                                className="px-2 py-1 rounded text-[10px] font-bold flex items-center gap-1 bg-rose-600/20 text-rose-300 border border-rose-500/40 hover:bg-rose-600 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-600/20 disabled:hover:text-rose-300"
                                 title={`Excluir todas as ${monthGroup.casanItems.length} faturas CASAN deste mês`}
                               >
                                 <Trash2 className="h-3 w-3" /> Excluir CASAN
