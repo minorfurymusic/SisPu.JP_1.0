@@ -658,11 +658,28 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     });
   };
 
+  // Tempo máximo de espera por item: se uma exclusão individual travar (ex: o
+  // Postgres acordando de inatividade), não deixamos o lote inteiro parado
+  // indefinidamente — esse item conta como falha e o lote segue para o próximo,
+  // mantendo a barra de progresso sempre avançando de forma visível.
+  const DELETE_ITEM_TIMEOUT_MS = 20000;
+
+  const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: number) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   const executeDeleteBatch = async (items: any[], successLabel: string) => {
     setDeleteProgress({ current: 0, total: items.length });
     try {
       let successCount = 0;
       let failCount = 0;
+      let timeoutCount = 0;
 
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
@@ -672,22 +689,30 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
           continue;
         }
 
-        let res = await fetch(`/api/lancamentos/${targetId}`, {
-          method: "DELETE",
-          headers: { "x-user": "gestor_web" }
-        });
-
-        if (!res.ok && res.status === 404) {
-          res = await fetch(`/api/documentos/${targetId}`, {
+        try {
+          let res = await fetchWithTimeout(`/api/lancamentos/${targetId}`, {
             method: "DELETE",
             headers: { "x-user": "gestor_web" }
-          });
-        }
+          }, DELETE_ITEM_TIMEOUT_MS);
 
-        if (res.ok) {
-          successCount++;
-        } else {
-          failCount++;
+          if (!res.ok && res.status === 404) {
+            res = await fetchWithTimeout(`/api/documentos/${targetId}`, {
+              method: "DELETE",
+              headers: { "x-user": "gestor_web" }
+            }, DELETE_ITEM_TIMEOUT_MS);
+          }
+
+          if (res.ok) {
+            successCount++;
+          } else {
+            failCount++;
+          }
+        } catch (itemErr: any) {
+          if (itemErr?.name === "AbortError") {
+            timeoutCount++;
+          } else {
+            failCount++;
+          }
         }
         setDeleteProgress({ current: i + 1, total: items.length });
       }
@@ -699,6 +724,9 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
       }
       if (failCount > 0) {
         showError(`Não foi possível excluir ${failCount} lançamento(s).`);
+      }
+      if (timeoutCount > 0) {
+        showError(`${timeoutCount} lançamento(s) demoraram demais para responder (banco de dados lento) e não foram excluídos. Tente excluí-los novamente em alguns instantes.`);
       }
     } catch (err: any) {
       showError("Erro de conexão ao processar exclusão.");
