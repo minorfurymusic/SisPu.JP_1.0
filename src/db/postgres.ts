@@ -283,151 +283,131 @@ export async function loadStateFromPostgres(): Promise<any | null> {
   }
 }
 
-// Upsert (ou insert-only, para tabelas de log) de uma única linha, usada tanto pela
-// sincronização completa (saveAllStateToPostgres, abaixo) quanto pelo upsert pontual
-// (upsertRowToPostgres) chamado pelos endpoints que só tocam 1-4 linhas por operação.
-async function execUpsertRow(client: pg.PoolClient, tableName: string, row: any): Promise<void> {
-  switch (tableName) {
-    case 'usuarios':
-      await client.query(
-        `INSERT INTO usuarios (id, login, nome, ativo, criado_em)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id) DO UPDATE SET
-           login = EXCLUDED.login, nome = EXCLUDED.nome, ativo = EXCLUDED.ativo`,
-        [row.id, row.login, row.nome, row.ativo !== false, row.criado_em]
-      );
-      return;
+// Descreve, por tabela, como montar o INSERT ... ON CONFLICT: as colunas (na ordem dos
+// placeholders), como extrair os valores de uma linha do estado em memória, e o SET do upsert
+// (ou null para tabelas de log, que são só insert-once / DO NOTHING). Fonte única usada tanto
+// pelo upsert de 1 linha quanto pelo upsert em lote (várias linhas num só INSERT multi-VALUES)
+// logo abaixo — evita ter a lista de colunas/valores duplicada em dois lugares.
+type TableUpsertSpec = {
+  columns: string[];
+  toValues: (row: any) => any[];
+  updateSet: string | null; // null = ON CONFLICT DO NOTHING
+};
 
-    case 'secretarias':
-      await client.query(
-        `INSERT INTO secretarias (id, codigo_legado, nome, ativo, criado_em, atualizado_em)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO UPDATE SET
-           codigo_legado = EXCLUDED.codigo_legado, nome = EXCLUDED.nome, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em`,
-        [row.id, row.codigo_legado || null, row.nome, row.ativo !== false, row.criado_em, row.atualizado_em]
-      );
-      return;
-
-    case 'unidades':
-      await client.query(
-        `INSERT INTO unidades (id, codigo_legado, secretaria_id, nome, endereco, ativo, criado_em, atualizado_em)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (id) DO UPDATE SET
-           codigo_legado = EXCLUDED.codigo_legado, secretaria_id = EXCLUDED.secretaria_id, nome = EXCLUDED.nome, endereco = EXCLUDED.endereco, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em`,
-        [row.id, row.codigo_legado || null, row.secretaria_id, row.nome, row.endereco || '', row.ativo !== false, row.criado_em, row.atualizado_em]
-      );
-      return;
-
-    case 'despesas':
-      await client.query(
-        `INSERT INTO despesas (id, codigo_legado, descricao, ativo, criado_em, atualizado_em)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO UPDATE SET
-           codigo_legado = EXCLUDED.codigo_legado, descricao = EXCLUDED.descricao, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em`,
-        [row.id, row.codigo_legado || null, row.descricao, row.ativo !== false, row.criado_em, row.atualizado_em]
-      );
-      return;
-
-    case 'itens_despesas':
-      await client.query(
-        `INSERT INTO itens_despesas (id, codigo_numero, despesa_id, unidade_id, tipo_fone, medidor, ativo, criado_em, atualizado_em)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         ON CONFLICT (id) DO UPDATE SET
-           codigo_numero = EXCLUDED.codigo_numero, despesa_id = EXCLUDED.despesa_id, unidade_id = EXCLUDED.unidade_id, tipo_fone = EXCLUDED.tipo_fone, medidor = EXCLUDED.medidor, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em`,
-        [row.id, row.codigo_numero, row.despesa_id, row.unidade_id, row.tipo_fone || null, row.medidor || null, row.ativo !== false, row.criado_em, row.atualizado_em]
-      );
-      return;
-
-    case 'lancamentos':
-      await client.query(
-        `INSERT INTO lancamentos (id, item_despesa_id, mes_ano, consumo, valor_total, valor_imposto, valor_celular, valor_internet, valor_diversos, valor_linha_privada, valor_credito, data_lancamento, codigo_legado_numero, mes_ano_legado, criado_em, atualizado_em)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-         ON CONFLICT (id) DO UPDATE SET
-           item_despesa_id = EXCLUDED.item_despesa_id, mes_ano = EXCLUDED.mes_ano, consumo = EXCLUDED.consumo, valor_total = EXCLUDED.valor_total, valor_imposto = EXCLUDED.valor_imposto, valor_celular = EXCLUDED.valor_celular, valor_internet = EXCLUDED.valor_internet, valor_diversos = EXCLUDED.valor_diversos, valor_linha_privada = EXCLUDED.valor_linha_privada, valor_credito = EXCLUDED.valor_credito, data_lancamento = EXCLUDED.data_lancamento, codigo_legado_numero = EXCLUDED.codigo_legado_numero, mes_ano_legado = EXCLUDED.mes_ano_legado, atualizado_em = EXCLUDED.atualizado_em`,
-        [row.id, row.item_despesa_id, row.mes_ano, row.consumo || 0, row.valor_total || 0, row.valor_imposto || 0, row.valor_celular || 0, row.valor_internet || 0, row.valor_diversos || 0, row.valor_linha_privada || 0, row.valor_credito || 0, row.data_lancamento || null, row.codigo_legado_numero || null, row.mes_ano_legado || null, row.criado_em, row.atualizado_em]
-      );
-      return;
-
-    case 'pessoas':
-      await client.query(
-        `INSERT INTO pessoas (id, codigo_legado, nome, tipo_pessoa, cpf_cnpj, telefone_residencial, telefone_comercial, telefone_celular, criado_em, atualizado_em)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         ON CONFLICT (id) DO UPDATE SET
-           codigo_legado = EXCLUDED.codigo_legado, nome = EXCLUDED.nome, tipo_pessoa = EXCLUDED.tipo_pessoa, cpf_cnpj = EXCLUDED.cpf_cnpj, telefone_residencial = EXCLUDED.telefone_residencial, telefone_comercial = EXCLUDED.telefone_comercial, telefone_celular = EXCLUDED.telefone_celular, atualizado_em = EXCLUDED.atualizado_em`,
-        [row.id, row.codigo_legado || null, row.nome, row.tipo_pessoa || null, row.cpf_cnpj || null, row.telefone_residencial || null, row.telefone_comercial || null, row.telefone_celular || null, row.criado_em, row.atualizado_em]
-      );
-      return;
-
-    case 'contatos_email':
-      await client.query(
-        `INSERT INTO contatos_email (id, descricao, email, criado_em)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (id) DO UPDATE SET
-           descricao = EXCLUDED.descricao, email = EXCLUDED.email`,
-        [row.id, row.descricao, row.email, row.criado_em]
-      );
-      return;
-
-    case 'logs_erros':
-      await client.query(
-        `INSERT INTO logs_erros (id, origem, mensagem, ocorrido_em, arquivo_origem, linha_original, criado_em)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (id) DO NOTHING`,
-        [row.id, row.origem || null, row.mensagem, row.ocorrido_em || null, row.arquivo_origem || null, row.linha_original || null, row.criado_em]
-      );
-      return;
-
-    case 'auditoria_registros':
-      await client.query(
-        `INSERT INTO auditoria_registros (id, tabela, registro_pk, acao, usuario, valor_antigo, valor_novo, criado_em)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (id) DO NOTHING`,
-        [row.id, row.tabela, row.registro_pk || null, row.acao, row.usuario, row.valor_antigo ? JSON.stringify(row.valor_antigo) : null, row.valor_novo ? JSON.stringify(row.valor_novo) : null, row.criado_em]
-      );
-      return;
-
-    case 'documentos_processados':
-      await client.query(
-        `INSERT INTO documentos_processados (id, nome_arquivo, layout, tamanho, status, origem_conteudo, dados_extraidos, logs_validacao, historico_alteracoes, observacoes, score, score_logs, criado_em, atualizado_em)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-         ON CONFLICT (id) DO UPDATE SET
-           nome_arquivo = EXCLUDED.nome_arquivo, layout = EXCLUDED.layout, tamanho = EXCLUDED.tamanho, status = EXCLUDED.status, origem_conteudo = EXCLUDED.origem_conteudo, dados_extraidos = EXCLUDED.dados_extraidos, logs_validacao = EXCLUDED.logs_validacao, historico_alteracoes = EXCLUDED.historico_alteracoes, observacoes = EXCLUDED.observacoes, score = EXCLUDED.score, score_logs = EXCLUDED.score_logs, atualizado_em = EXCLUDED.atualizado_em`,
-        [
-          row.id,
-          row.nome_arquivo,
-          row.layout,
-          row.tamanho || null,
-          row.status,
-          row.origem_conteudo || null,
-          row.dados_extraidos ? JSON.stringify(row.dados_extraidos) : null,
-          row.logs_validacao ? JSON.stringify(row.logs_validacao) : null,
-          row.historico_alteracoes ? JSON.stringify(row.historico_alteracoes) : null,
-          row.observacoes || null,
-          row.score !== undefined ? row.score : null,
-          row.score_logs ? JSON.stringify(row.score_logs) : null,
-          row.criado_em,
-          row.updated_at || row.atualizado_em || row.criado_em
-        ]
-      );
-      return;
-
-    case 'cadastro_mestre_ucs':
-      await client.query(
-        `INSERT INTO cadastro_mestre_ucs (id, uc, codnum, concessionaria, secretaria, unidade_administrativa, endereco, classe, grupo_tarifario, situacao, criado_em, atualizado_em)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-         ON CONFLICT (id) DO UPDATE SET
-           uc = EXCLUDED.uc, codnum = EXCLUDED.codnum, concessionaria = EXCLUDED.concessionaria, secretaria = EXCLUDED.secretaria, unidade_administrativa = EXCLUDED.unidade_administrativa, endereco = EXCLUDED.endereco, classe = EXCLUDED.classe, grupo_tarifario = EXCLUDED.grupo_tarifario, situacao = EXCLUDED.situacao, atualizado_em = EXCLUDED.atualizado_em`,
-        [
-          row.id, row.uc, row.codnum, row.concessionaria, row.secretaria || null, row.unidade_administrativa || null,
-          row.endereco || null, row.classe || null, row.grupo_tarifario || null, row.situacao || 'Ativa',
-          row.criado_em, row.atualizado_em || row.criado_em
-        ]
-      );
-      return;
-
-    default:
-      throw new Error(`Tabela não suportada para upsert: ${tableName}`);
+const TABLE_UPSERT_SPECS: Record<string, TableUpsertSpec> = {
+  usuarios: {
+    columns: ['id', 'login', 'nome', 'ativo', 'criado_em'],
+    toValues: (row) => [row.id, row.login, row.nome, row.ativo !== false, row.criado_em],
+    updateSet: 'login = EXCLUDED.login, nome = EXCLUDED.nome, ativo = EXCLUDED.ativo'
+  },
+  secretarias: {
+    columns: ['id', 'codigo_legado', 'nome', 'ativo', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [row.id, row.codigo_legado || null, row.nome, row.ativo !== false, row.criado_em, row.atualizado_em],
+    updateSet: 'codigo_legado = EXCLUDED.codigo_legado, nome = EXCLUDED.nome, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
+  },
+  unidades: {
+    columns: ['id', 'codigo_legado', 'secretaria_id', 'nome', 'endereco', 'ativo', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [row.id, row.codigo_legado || null, row.secretaria_id, row.nome, row.endereco || '', row.ativo !== false, row.criado_em, row.atualizado_em],
+    updateSet: 'codigo_legado = EXCLUDED.codigo_legado, secretaria_id = EXCLUDED.secretaria_id, nome = EXCLUDED.nome, endereco = EXCLUDED.endereco, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
+  },
+  despesas: {
+    columns: ['id', 'codigo_legado', 'descricao', 'ativo', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [row.id, row.codigo_legado || null, row.descricao, row.ativo !== false, row.criado_em, row.atualizado_em],
+    updateSet: 'codigo_legado = EXCLUDED.codigo_legado, descricao = EXCLUDED.descricao, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
+  },
+  itens_despesas: {
+    columns: ['id', 'codigo_numero', 'despesa_id', 'unidade_id', 'tipo_fone', 'medidor', 'ativo', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [row.id, row.codigo_numero, row.despesa_id, row.unidade_id, row.tipo_fone || null, row.medidor || null, row.ativo !== false, row.criado_em, row.atualizado_em],
+    updateSet: 'codigo_numero = EXCLUDED.codigo_numero, despesa_id = EXCLUDED.despesa_id, unidade_id = EXCLUDED.unidade_id, tipo_fone = EXCLUDED.tipo_fone, medidor = EXCLUDED.medidor, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
+  },
+  lancamentos: {
+    columns: ['id', 'item_despesa_id', 'mes_ano', 'consumo', 'valor_total', 'valor_imposto', 'valor_celular', 'valor_internet', 'valor_diversos', 'valor_linha_privada', 'valor_credito', 'data_lancamento', 'codigo_legado_numero', 'mes_ano_legado', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [row.id, row.item_despesa_id, row.mes_ano, row.consumo || 0, row.valor_total || 0, row.valor_imposto || 0, row.valor_celular || 0, row.valor_internet || 0, row.valor_diversos || 0, row.valor_linha_privada || 0, row.valor_credito || 0, row.data_lancamento || null, row.codigo_legado_numero || null, row.mes_ano_legado || null, row.criado_em, row.atualizado_em],
+    updateSet: 'item_despesa_id = EXCLUDED.item_despesa_id, mes_ano = EXCLUDED.mes_ano, consumo = EXCLUDED.consumo, valor_total = EXCLUDED.valor_total, valor_imposto = EXCLUDED.valor_imposto, valor_celular = EXCLUDED.valor_celular, valor_internet = EXCLUDED.valor_internet, valor_diversos = EXCLUDED.valor_diversos, valor_linha_privada = EXCLUDED.valor_linha_privada, valor_credito = EXCLUDED.valor_credito, data_lancamento = EXCLUDED.data_lancamento, codigo_legado_numero = EXCLUDED.codigo_legado_numero, mes_ano_legado = EXCLUDED.mes_ano_legado, atualizado_em = EXCLUDED.atualizado_em'
+  },
+  pessoas: {
+    columns: ['id', 'codigo_legado', 'nome', 'tipo_pessoa', 'cpf_cnpj', 'telefone_residencial', 'telefone_comercial', 'telefone_celular', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [row.id, row.codigo_legado || null, row.nome, row.tipo_pessoa || null, row.cpf_cnpj || null, row.telefone_residencial || null, row.telefone_comercial || null, row.telefone_celular || null, row.criado_em, row.atualizado_em],
+    updateSet: 'codigo_legado = EXCLUDED.codigo_legado, nome = EXCLUDED.nome, tipo_pessoa = EXCLUDED.tipo_pessoa, cpf_cnpj = EXCLUDED.cpf_cnpj, telefone_residencial = EXCLUDED.telefone_residencial, telefone_comercial = EXCLUDED.telefone_comercial, telefone_celular = EXCLUDED.telefone_celular, atualizado_em = EXCLUDED.atualizado_em'
+  },
+  contatos_email: {
+    columns: ['id', 'descricao', 'email', 'criado_em'],
+    toValues: (row) => [row.id, row.descricao, row.email, row.criado_em],
+    updateSet: 'descricao = EXCLUDED.descricao, email = EXCLUDED.email'
+  },
+  logs_erros: {
+    columns: ['id', 'origem', 'mensagem', 'ocorrido_em', 'arquivo_origem', 'linha_original', 'criado_em'],
+    toValues: (row) => [row.id, row.origem || null, row.mensagem, row.ocorrido_em || null, row.arquivo_origem || null, row.linha_original || null, row.criado_em],
+    updateSet: null
+  },
+  auditoria_registros: {
+    columns: ['id', 'tabela', 'registro_pk', 'acao', 'usuario', 'valor_antigo', 'valor_novo', 'criado_em'],
+    toValues: (row) => [row.id, row.tabela, row.registro_pk || null, row.acao, row.usuario, row.valor_antigo ? JSON.stringify(row.valor_antigo) : null, row.valor_novo ? JSON.stringify(row.valor_novo) : null, row.criado_em],
+    updateSet: null
+  },
+  documentos_processados: {
+    columns: ['id', 'nome_arquivo', 'layout', 'tamanho', 'status', 'origem_conteudo', 'dados_extraidos', 'logs_validacao', 'historico_alteracoes', 'observacoes', 'score', 'score_logs', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [
+      row.id,
+      row.nome_arquivo,
+      row.layout,
+      row.tamanho || null,
+      row.status,
+      row.origem_conteudo || null,
+      row.dados_extraidos ? JSON.stringify(row.dados_extraidos) : null,
+      row.logs_validacao ? JSON.stringify(row.logs_validacao) : null,
+      row.historico_alteracoes ? JSON.stringify(row.historico_alteracoes) : null,
+      row.observacoes || null,
+      row.score !== undefined ? row.score : null,
+      row.score_logs ? JSON.stringify(row.score_logs) : null,
+      row.criado_em,
+      row.updated_at || row.atualizado_em || row.criado_em
+    ],
+    updateSet: 'nome_arquivo = EXCLUDED.nome_arquivo, layout = EXCLUDED.layout, tamanho = EXCLUDED.tamanho, status = EXCLUDED.status, origem_conteudo = EXCLUDED.origem_conteudo, dados_extraidos = EXCLUDED.dados_extraidos, logs_validacao = EXCLUDED.logs_validacao, historico_alteracoes = EXCLUDED.historico_alteracoes, observacoes = EXCLUDED.observacoes, score = EXCLUDED.score, score_logs = EXCLUDED.score_logs, atualizado_em = EXCLUDED.atualizado_em'
+  },
+  cadastro_mestre_ucs: {
+    columns: ['id', 'uc', 'codnum', 'concessionaria', 'secretaria', 'unidade_administrativa', 'endereco', 'classe', 'grupo_tarifario', 'situacao', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [
+      row.id, row.uc, row.codnum, row.concessionaria, row.secretaria || null, row.unidade_administrativa || null,
+      row.endereco || null, row.classe || null, row.grupo_tarifario || null, row.situacao || 'Ativa',
+      row.criado_em, row.atualizado_em || row.criado_em
+    ],
+    updateSet: 'uc = EXCLUDED.uc, codnum = EXCLUDED.codnum, concessionaria = EXCLUDED.concessionaria, secretaria = EXCLUDED.secretaria, unidade_administrativa = EXCLUDED.unidade_administrativa, endereco = EXCLUDED.endereco, classe = EXCLUDED.classe, grupo_tarifario = EXCLUDED.grupo_tarifario, situacao = EXCLUDED.situacao, atualizado_em = EXCLUDED.atualizado_em'
   }
+};
+
+// Monta 1 INSERT multi-linha (VALUES (...), (...), ...) para N linhas da mesma tabela — usado
+// pelo upsert em lote para virar 1 comando SQL por tabela em vez de 1 por linha. Cada ida-e-volta
+// ao banco carrega o custo total da latência de rede até o Neon; reduzir a QUANTIDADE de
+// comandos importa mais do que o tamanho de cada um.
+function buildMultiRowUpsertQuery(tableName: string, rows: any[]): { text: string; values: any[] } {
+  const spec = TABLE_UPSERT_SPECS[tableName];
+  if (!spec) throw new Error(`Tabela não suportada para upsert: ${tableName}`);
+
+  const values: any[] = [];
+  const valueGroups: string[] = [];
+  let paramIdx = 1;
+  for (const row of rows) {
+    const rowValues = spec.toValues(row);
+    valueGroups.push(`(${rowValues.map(() => `$${paramIdx++}`).join(', ')})`);
+    values.push(...rowValues);
+  }
+
+  const conflictClause = spec.updateSet
+    ? `ON CONFLICT (id) DO UPDATE SET ${spec.updateSet}`
+    : `ON CONFLICT (id) DO NOTHING`;
+
+  return {
+    text: `INSERT INTO ${tableName} (${spec.columns.join(', ')}) VALUES ${valueGroups.join(', ')} ${conflictClause}`,
+    values
+  };
+}
+
+// Upsert (ou insert-only, para tabelas de log) de uma única linha, usada pela sincronização
+// completa (saveAllStateToPostgres, abaixo). É o caso de 1 linha só do upsert em lote acima.
+async function execUpsertRow(client: pg.PoolClient, tableName: string, row: any): Promise<void> {
+  const { text, values } = buildMultiRowUpsertQuery(tableName, [row]);
+  await client.query(text, values);
 }
 
 export async function saveAllStateToPostgres(state: any): Promise<void> {
@@ -468,24 +448,47 @@ export async function saveAllStateToPostgres(state: any): Promise<void> {
   }
 }
 
+// Máximo de linhas por comando multi-VALUES — puramente uma trava de segurança contra o limite
+// de parâmetros do Postgres (65535). Nos tamanhos de lote reais do sistema (dezenas de linhas
+// por tabela) isso nunca chega perto de ser atingido; existe só para não quebrar se algum dia
+// alguém passar um volume bem maior de uma vez.
+const MAX_ROWS_PER_UPSERT_STATEMENT = 300;
+
 // Upsert pontual de um pequeno conjunto de linhas (1 fatura = doc + unidade + item + lançamento,
 // ou um lote inteiro de faturas de uma vez), sem percorrer as demais linhas das tabelas. Usado
 // pelos endpoints que só criam/alteram algumas linhas por chamada — antes disso, esses endpoints
 // chamavam saveAllStateToPostgres, que reconstrói TODAS as linhas de TODAS as tabelas a cada
 // chamada. Com centenas de lançamentos/documentos já cadastrados, salvar um lote de faturas
 // disparava um full-sync por fatura, deixando o processo cada vez mais lento conforme o banco
-// cresce. Todas as linhas passadas usam a MESMA conexão (1 client.connect() por chamada, não 1
-// por linha) — abrir uma conexão nova por linha é o que fazia até um lote pequeno demorar muito
-// mais do que deveria, sobretudo quando o Neon precisa "acordar" de um período de inatividade.
+// cresce.
+//
+// Duas otimizações em cima disso: (1) todas as linhas passadas usam a MESMA conexão — abrir uma
+// conexão nova por linha é o que fazia até um lote pequeno demorar muito mais do que deveria,
+// sobretudo quando o Neon precisa "acordar" de um período de inatividade; e (2) as linhas são
+// agrupadas por tabela e cada tabela vira 1 único INSERT multi-linha, em vez de 1 INSERT por
+// linha — um lote de 15 faturas (~45-60 linhas em até 4 tabelas) virava até 60 comandos SQL
+// sequenciais; agora vira só 1 comando por tabela tocada (no máximo 4). Cada ida-e-volta ao
+// banco carrega o custo total da latência de rede até o Neon, então reduzir a QUANTIDADE de
+// comandos importa mais do que reduzir o tamanho de cada um.
 export async function upsertRowsToPostgres(rows: { table: string; row: any }[]): Promise<void> {
   const p = getPool();
   if (!p || rows.length === 0) return;
 
+  const byTable = new Map<string, any[]>();
+  for (const { table, row } of rows) {
+    if (!byTable.has(table)) byTable.set(table, []);
+    byTable.get(table)!.push(row);
+  }
+
   const client = await connectWithRetry(p);
   try {
     await client.query('BEGIN');
-    for (const { table, row } of rows) {
-      await execUpsertRow(client, table, row);
+    for (const [table, tableRows] of byTable) {
+      for (let i = 0; i < tableRows.length; i += MAX_ROWS_PER_UPSERT_STATEMENT) {
+        const slice = tableRows.slice(i, i + MAX_ROWS_PER_UPSERT_STATEMENT);
+        const { text, values } = buildMultiRowUpsertQuery(table, slice);
+        await client.query(text, values);
+      }
     }
     await client.query('COMMIT');
   } catch (e) {
