@@ -698,7 +698,13 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   // por item" pra "1 conexão por pedaço de 50" é o que tira o gargalo real (latência de rede até
   // o Neon, paga uma vez por pedaço em vez de uma vez por item).
   const DELETE_CHUNK_SIZE = 50;
-  const DELETE_CHUNK_TIMEOUT_MS = 45000;
+  // O Neon pode legitimamente levar dezenas de segundos pra "acordar" de um período de
+  // inatividade (já observamos casos onde uma única tentativa de conexão levou até 30s, e o
+  // código do servidor tenta reconectar até 3 vezes antes de desistir). 45s era curto demais:
+  // um lote de só 10 itens já bateu nesse limite mesmo tendo sido concluído no Postgres depois
+  // que a tela desistiu de esperar — daí o "Fechar" e recarregar (notifyChange) sempre, e não só
+  // quando o cliente acha que teve sucesso.
+  const DELETE_CHUNK_TIMEOUT_MS = 90000;
 
   const deleteAbortControllerRef = useRef<AbortController | null>(null);
   const deleteCancelRequestedRef = useRef(false);
@@ -770,7 +776,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
             break;
           }
           if (chunkErr?.name === "AbortError") {
-            chunk.forEach(item => failedItems.push({ label: itemDeleteLabel(item), reason: "Tempo de espera excedido (banco de dados lento)" }));
+            chunk.forEach(item => failedItems.push({ label: itemDeleteLabel(item), reason: "Sem resposta a tempo — pode ter sido excluído mesmo assim, a lista foi atualizada" }));
           } else {
             chunk.forEach(item => failedItems.push({ label: itemDeleteLabel(item), reason: "Erro de conexão" }));
           }
@@ -783,10 +789,13 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
       deleteAbortControllerRef.current = null;
 
-      if (successCount > 0) {
-        loadAllData();
-        notifyChange();
-      }
+      // Sempre recarrega, mesmo quando nada foi reportado como sucesso: um timeout no cliente
+      // não significa que o servidor também desistiu — a exclusão pode ter sido concluída no
+      // Postgres depois que a tela já tinha desistido de esperar a resposta (o Neon acordando de
+      // inatividade pode legitimamente levar mais que o tempo limite daqui). Sem isso, a tela
+      // ficava mostrando itens já excluídos como se ainda estivessem lá até o usuário forçar uma
+      // atualização de verdade (ex: publicar de novo).
+      notifyChange();
     } catch (err: any) {
       failedItems.push({ label: "(operação inteira)", reason: "Erro de conexão ao processar exclusão" });
     } finally {

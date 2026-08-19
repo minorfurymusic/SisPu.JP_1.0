@@ -1891,7 +1891,12 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   // fatura toca no máximo 4 tabelas, então um pedaço de 50 fica no máximo em ~200 linhas por
   // tabela, bem abaixo do limite de segurança do upsert em lote (300 linhas por comando).
   const SAVE_CHUNK_SIZE = 50;
-  const SAVE_CHUNK_TIMEOUT_MS = 60000;
+  // O Neon pode legitimamente levar dezenas de segundos pra "acordar" de um período de
+  // inatividade — já vimos um lote de exclusão de só 10 itens bater num timeout de 45s mesmo
+  // tendo sido concluído no Postgres logo depois. 90s dá mais margem antes de desistir e marcar
+  // como falha (o que, no salvamento, joga o item de volta pra fila mesmo que já tenha sido
+  // salvo — melhor evitar isso quando dá).
+  const SAVE_CHUNK_TIMEOUT_MS = 90000;
 
   const saveAbortControllerRef = useRef<AbortController | null>(null);
   const saveCancelRequestedRef = useRef(false);
@@ -2004,7 +2009,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
           clearTimeout(timer);
           break;
         }
-        const reason = chunkErr?.name === "AbortError" ? "Tempo de espera excedido (banco de dados lento)" : "Erro de conexão";
+        const reason = chunkErr?.name === "AbortError" ? "Sem resposta a tempo — pode ter sido salvo mesmo assim, reenviar detecta e pula automaticamente" : "Erro de conexão";
         chunk.forEach(doc => {
           failedDocs.push(doc);
           failedItems.push({ label: docLabel(doc), reason });
