@@ -94,6 +94,9 @@ export async function initPostgresSchema(): Promise<boolean> {
           secretaria_id TEXT NOT NULL,
           nome TEXT NOT NULL,
           endereco TEXT,
+          uc TEXT,
+          codnum TEXT,
+          concessionaria TEXT,
           ativo BOOLEAN DEFAULT true,
           criado_em TEXT,
           atualizado_em TEXT
@@ -212,6 +215,23 @@ export async function initPostgresSchema(): Promise<boolean> {
           atualizado_em TEXT
         );
       `);
+
+      // Retrofita bancos já existentes: CREATE TABLE IF NOT EXISTS não adiciona colunas novas a
+      // uma tabela que já existe. Sem isso, `unidades.uc`/`unidades.codnum`/`unidades.
+      // concessionaria` nunca eram persistidos no Postgres — a cada reinício do servidor (toda
+      // publicação), essas três colunas voltavam em branco pra TODAS as unidades, e a busca por
+      // UC/CODNUM em ensureUnidadeAndContract (que depende exatamente delas) nunca encontrava a
+      // unidade já cadastrada. O sistema então criava uma unidade nova "UNIDADE {código}" toda
+      // vez que um documento era reprocessado depois de um reinício — a causa raiz por trás de
+      // centenas de unidades duplicadas/órfãs acumuladas (a "unidade 1244" e várias outras
+      // reportadas), e também da concessionária de uma unidade parecendo "esquecer" o que já
+      // tinha sido definido e ser recalculada do zero a cada reinício.
+      await client.query(`
+        ALTER TABLE unidades ADD COLUMN IF NOT EXISTS uc TEXT;
+        ALTER TABLE unidades ADD COLUMN IF NOT EXISTS codnum TEXT;
+        ALTER TABLE unidades ADD COLUMN IF NOT EXISTS concessionaria TEXT;
+      `);
+
       console.log("[DB] Schema do PostgreSQL verificado e inicializado com sucesso.");
       return true;
     } finally {
@@ -306,9 +326,9 @@ const TABLE_UPSERT_SPECS: Record<string, TableUpsertSpec> = {
     updateSet: 'codigo_legado = EXCLUDED.codigo_legado, nome = EXCLUDED.nome, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
   },
   unidades: {
-    columns: ['id', 'codigo_legado', 'secretaria_id', 'nome', 'endereco', 'ativo', 'criado_em', 'atualizado_em'],
-    toValues: (row) => [row.id, row.codigo_legado || null, row.secretaria_id, row.nome, row.endereco || '', row.ativo !== false, row.criado_em, row.atualizado_em],
-    updateSet: 'codigo_legado = EXCLUDED.codigo_legado, secretaria_id = EXCLUDED.secretaria_id, nome = EXCLUDED.nome, endereco = EXCLUDED.endereco, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
+    columns: ['id', 'codigo_legado', 'secretaria_id', 'nome', 'endereco', 'uc', 'codnum', 'concessionaria', 'ativo', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [row.id, row.codigo_legado || null, row.secretaria_id, row.nome, row.endereco || '', row.uc || null, row.codnum || null, row.concessionaria || null, row.ativo !== false, row.criado_em, row.atualizado_em],
+    updateSet: 'codigo_legado = EXCLUDED.codigo_legado, secretaria_id = EXCLUDED.secretaria_id, nome = EXCLUDED.nome, endereco = EXCLUDED.endereco, uc = EXCLUDED.uc, codnum = EXCLUDED.codnum, concessionaria = EXCLUDED.concessionaria, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
   },
   despesas: {
     columns: ['id', 'codigo_legado', 'descricao', 'ativo', 'criado_em', 'atualizado_em'],
