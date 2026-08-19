@@ -1874,9 +1874,11 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   // que reduz a quantidade de idas-e-voltas à rede/banco de centenas para poucas dezenas. O
   // tamanho do pedaço equilibra dois lados: pedaços grandes = menos requisições = mais rápido,
   // mas cada pedaço só conta como "progresso" quando termina inteiro, e cancelar só tem efeito
-  // a partir do próximo pedaço.
-  const SAVE_CHUNK_SIZE = 15;
-  const SAVE_CHUNK_TIMEOUT_MS = 45000;
+  // a partir do próximo pedaço. Igualado ao tamanho já validado na exclusão em lote (50) — cada
+  // fatura toca no máximo 4 tabelas, então um pedaço de 50 fica no máximo em ~200 linhas por
+  // tabela, bem abaixo do limite de segurança do upsert em lote (300 linhas por comando).
+  const SAVE_CHUNK_SIZE = 50;
+  const SAVE_CHUNK_TIMEOUT_MS = 60000;
 
   const saveAbortControllerRef = useRef<AbortController | null>(null);
   const saveCancelRequestedRef = useRef(false);
