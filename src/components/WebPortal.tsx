@@ -186,7 +186,16 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     loadAllData();
   }, [onRefreshTrigger]);
 
+  // Excluir e salvar em lote rodam de forma independente e cada um chama loadAllData() quando
+  // termina — se as duas chamadas saírem quase juntas, a resposta que chega DEPOIS vence e
+  // sobrescreve a tela, mesmo que tenha partido antes e carregue dados mais desatualizados
+  // (respostas de rede não chegam garantidamente na mesma ordem em que as requisições saíram).
+  // Esse contador marca qual é a chamada mais recente; uma resposta de uma chamada mais antiga
+  // é descartada em vez de sobrescrever o estado com dados desatualizados.
+  const loadGenerationRef = useRef(0);
+
   const loadAllData = async () => {
+    const myGeneration = ++loadGenerationRef.current;
     setLoading(true);
     try {
       const [secRes, uniRes, desRes, itemRes, lancRes, audRes] = await Promise.all([
@@ -198,16 +207,31 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         fetch("/api/auditoria")
       ]);
 
-      if (secRes.ok) setSecretarias(await secRes.json());
-      if (uniRes.ok) setUnidades(await uniRes.json());
-      if (desRes.ok) setDespesas(await desRes.json());
-      if (itemRes.ok) setItens(await itemRes.json());
-      if (lancRes.ok) setLancamentos(await lancRes.json());
-      if (audRes.ok) setAuditorias(await audRes.json());
+      const [secData, uniData, desData, itemData, lancData, audData] = await Promise.all([
+        secRes.ok ? secRes.json() : null,
+        uniRes.ok ? uniRes.json() : null,
+        desRes.ok ? desRes.json() : null,
+        itemRes.ok ? itemRes.json() : null,
+        lancRes.ok ? lancRes.json() : null,
+        audRes.ok ? audRes.json() : null
+      ]);
+
+      if (myGeneration !== loadGenerationRef.current) {
+        // Uma chamada mais nova de loadAllData() já começou desde que esta foi disparada —
+        // esta resposta é velha, não sobrescreve o estado.
+        return;
+      }
+
+      if (secData) setSecretarias(secData);
+      if (uniData) setUnidades(uniData);
+      if (desData) setDespesas(desData);
+      if (itemData) setItens(itemData);
+      if (lancData) setLancamentos(lancData);
+      if (audData) setAuditorias(audData);
     } catch (err) {
       console.error("Error loading web portal data:", err);
     } finally {
-      setLoading(false);
+      if (myGeneration === loadGenerationRef.current) setLoading(false);
     }
   };
 
@@ -1929,12 +1953,22 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
             {lancamentoSubView === "new" ? (
               <div className="space-y-4">
-                <DocumentManager 
-                  currentUser="gestor_web" 
-                  onDocumentProcessed={() => {
+                <DocumentManager
+                  currentUser="gestor_web"
+                  onDocumentProcessed={(result) => {
+                    // O DocumentManager é desmontado ao trocar de aba abaixo, então o aviso
+                    // dele (setMessage interno) nunca chegaria a aparecer — mostramos aqui, no
+                    // aviso global do WebPortal, que sobrevive à troca de tela.
+                    if (result) {
+                      // "warning" (parcialmente salvo, cancelado, etc.) também vai pro aviso de
+                      // erro/atenção — colocar isso no banner verde de sucesso é exatamente o
+                      // tipo de "parece que deu tudo certo" que causou a confusão original.
+                      if (result.type === "success") showSuccess(result.text);
+                      else showError(result.text);
+                    }
                     notifyChange();
                     setLancamentoSubView("list");
-                  }} 
+                  }}
                 />
               </div>
             ) : (

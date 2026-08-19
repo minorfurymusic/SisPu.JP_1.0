@@ -1865,7 +1865,7 @@ app.get("/api/documentos", (req, res) => {
 function criarEHomologarFatura(
   payload: { nome_arquivo: string; layout: string; tamanho: number; origem_conteudo: string; dados_extraidos: any },
   usuario: string
-): { ok: boolean; error?: string; doc: DocumentoProcessado; lancamento?: Lancamento; rows: { table: string; row: any }[] } {
+): { ok: boolean; skipped?: boolean; error?: string; doc: DocumentoProcessado; lancamento?: Lancamento; rows: { table: string; row: any }[] } {
   const { nome_arquivo, layout, tamanho, origem_conteudo, dados_extraidos } = payload;
 
   const isCasan = Boolean(
@@ -1950,11 +1950,17 @@ function criarEHomologarFatura(
   // Rejeita duplicidade: mesma unidade/contrato já homologado no mesmo mês. Sem isso, salvar o
   // mesmo lote duas vezes (ex.: distração do usuário reabrindo um rascunho já salvo) criava um
   // segundo lançamento e dobrava silenciosamente o valor daquele mês.
+  //
+  // skipped:true (em vez de só ok:false) marca esse caso como "já estava feito", não como uma
+  // falha de verdade — permite reenviar o MESMO lote inteiro de novo (ex: depois que uma parte
+  // ficou sem confirmar por lentidão/timeout) sem que as faturas já homologadas sejam tratadas
+  // como erro e fiquem tentando de novo pra sempre; o cliente sabe distinguir "já estava pronto"
+  // de "precisa tentar de novo" usando essa flag.
   const mesAnoPrefixo = extr.mes_ano.substring(0, 7);
   const jaHomologado = db.lancamentos.find(l => l.item_despesa_id === item!.id && l.mes_ano?.substring(0, 7) === mesAnoPrefixo);
   if (jaHomologado) {
     rows.push({ table: "documentos_processados", row: doc });
-    return { ok: false, error: `Já existe um lançamento homologado para esta unidade na competência ${mesAnoPrefixo} (id ${jaHomologado.id}).`, doc, rows };
+    return { ok: false, skipped: true, error: `Já existe um lançamento homologado para esta unidade na competência ${mesAnoPrefixo} (id ${jaHomologado.id}).`, doc, rows };
   }
 
   const newLancId = crypto.randomUUID();
@@ -2000,12 +2006,12 @@ app.post("/api/documentos/homologar-lote", async (req, res) => {
   }
 
   const allRows: { table: string; row: any }[] = [];
-  const results: Array<{ index: number; ok: boolean; error?: string; lancamento?: Lancamento }> = [];
+  const results: Array<{ index: number; ok: boolean; skipped?: boolean; error?: string; lancamento?: Lancamento }> = [];
 
   for (let i = 0; i < documentos.length; i++) {
     const r = criarEHomologarFatura(documentos[i], usuario);
     allRows.push(...r.rows);
-    results.push({ index: i, ok: r.ok, error: r.error, lancamento: r.lancamento });
+    results.push({ index: i, ok: r.ok, skipped: r.skipped, error: r.error, lancamento: r.lancamento });
   }
 
   try {

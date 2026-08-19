@@ -324,7 +324,10 @@ function evalConsistencias(doc: DocumentoProcessado): string[] {
 }
 
 interface DocumentManagerProps {
-  onDocumentProcessed?: () => void;
+  // O resultado (quando informado) é repassado para quem hospeda este componente exibir num
+  // aviso que sobrevive à troca de tela — ver comentário em handleFinalSave sobre por que a
+  // mensagem local (setMessage) não é suficiente aqui.
+  onDocumentProcessed?: (result?: { type: 'success' | 'warning' | 'error'; text: string }) => void;
   currentUser?: string;
   initialMode?: "PDF" | "IMAGE" | "REPORT" | "MANUAL";
 }
@@ -680,15 +683,15 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
           });
 
           if (homolRes.ok) {
-            setMessage({
-              type: "success",
-              text: `Lançamento manual para UC "${manualUc}" competência ${manualCompetencia} salvo e classificado por mês com sucesso!`
-            });
+            const successText = `Lançamento manual para UC "${manualUc}" competência ${manualCompetencia} salvo e classificado por mês com sucesso!`;
+            setMessage({ type: "success", text: successText });
             setManualUc("");
             setManualConsumo("");
             setManualValorTotal("");
             setManualImposto("");
-            if (onDocumentProcessed) onDocumentProcessed();
+            // onDocumentProcessed troca a tela pra "list" logo em seguida — passamos o texto pra
+            // ele mostrar num aviso que sobrevive a essa troca (ver handleFinalSave abaixo).
+            if (onDocumentProcessed) onDocumentProcessed({ type: "success", text: successText });
           } else {
             const err = await homolRes.json();
             setMessage({ type: "error", text: `Erro ao homologar lançamento: ${err.error || err.message}` });
@@ -1913,10 +1916,14 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     setSaveProgress({ current: 0, total: docsToSave.length });
     saveCancelRequestedRef.current = false;
     let successCount = 0;
+    let skippedCount = 0;
     let timeoutCount = 0;
     // Docs that fail to save/homologar go back into the queue instead of being silently
-    // discarded — a duplicate-competência rejection (or any transient error) shouldn't cost
-    // the user re-typing or re-importing what they already reviewed.
+    // discarded — a transient error (ex: timeout) shouldn't cost the user re-typing or
+    // re-importing what they already reviewed. Duplicatas (fatura já homologada antes) NÃO
+    // entram aqui: reenviar o mesmo relatório de novo pra "continuar de onde parou" é um fluxo
+    // válido (ver skippedCount acima), e colocar duplicatas na fila de novo faria elas falharem
+    // pra sempre, do mesmo jeito, a cada nova tentativa.
     const failedDocs: DocumentoProcessado[] = [];
     let cancelledEarly = false;
 
@@ -1950,10 +1957,14 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
         if (res.ok) {
           const data = await res.json();
-          const results: Array<{ index: number; ok: boolean }> = data?.results || [];
+          const results: Array<{ index: number; ok: boolean; skipped?: boolean }> = data?.results || [];
           chunk.forEach((doc, idx) => {
             if (results[idx]?.ok) {
               successCount++;
+            } else if (results[idx]?.skipped) {
+              // Já homologada antes (mesma unidade + mesmo mês) — reenviar o mesmo relatório
+              // não deve empilhar isso como falha nem ficar tentando de novo pra sempre.
+              skippedCount++;
             } else {
               failedDocs.push(doc);
             }
@@ -1984,37 +1995,50 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
     saveAbortControllerRef.current = null;
 
-    // Mantém na fila os que falharam e os que já estavam marcados como IGNORADA (esses nunca
-    // foram enviados); só remove os que realmente foram homologados.
-    const ignoradas = sessionDocs.filter(d => d && d.status === 'IGNORADA');
-    setSessionDocs([...failedDocs, ...ignoradas]);
+    // Atualização funcional (a partir do estado mais recente, não de uma cópia capturada no
+    // início desta função): se um relatório novo foi carregado enquanto este salvamento ainda
+    // estava em andamento, `sessionDocs` já mudou nesse meio-tempo — ler a variável antiga
+    // apagaria silenciosamente o que o relatório novo colocou na fila. Assim, sempre juntamos ao
+    // que estiver lá agora, não ao que estava lá quando começamos a salvar.
+    setSessionDocs(prev => {
+      const ignoradas = prev.filter(d => d && d.status === 'IGNORADA');
+      return [...failedDocs, ...ignoradas];
+    });
     setCustomText("");
     setFileName("");
 
-    if (onDocumentProcessed) onDocumentProcessed();
+    let resultType: 'success' | 'warning' | 'error' = 'success';
+    let resultText = '';
+    const infoSkipped = skippedCount > 0
+      ? ` ${skippedCount} já estavam salvos anteriormente e foram ignorados (não é necessário reenviar).`
+      : "";
 
     if (cancelledEarly) {
-      setMessage({
-        type: 'warning',
-        text: `Salvamento cancelado. ${successCount} lançamento(s) já haviam sido confirmados antes do cancelamento; os demais permanecem na fila.`
-      });
+      resultType = 'warning';
+      resultText = `Salvamento cancelado. ${successCount} lançamento(s) já haviam sido confirmados antes do cancelamento; os demais permanecem na fila.${infoSkipped}`;
     } else if (failedDocs.length === 0) {
-      setMessage({
-        type: 'success',
-        text: `Sucesso! Todos os ${successCount} lançamentos do lote foram homologados na tabela central com auditoria e atualizados no painel geral.`
-      });
+      resultType = 'success';
+      resultText = skippedCount > 0
+        ? `Concluído: ${successCount} lançamento(s) novo(s) salvo(s) com sucesso.${infoSkipped}`
+        : `Sucesso! Todos os ${successCount} lançamentos do lote foram homologados na tabela central com auditoria e atualizados no painel geral.`;
     } else {
+      resultType = 'warning';
       const motivoTimeout = timeoutCount > 0
         ? ` ${timeoutCount} deles demoraram demais para responder (banco de dados lento) — tente salvar de novo em alguns instantes.`
         : "";
-      setMessage({
-        type: 'warning',
-        text: `Lançamentos processados: ${successCount} com sucesso. ${failedDocs.length} permanecem na fila (falha ao salvar, ex: duplicidade de competência).${motivoTimeout} Revise e tente salvar novamente.`
-      });
+      resultText = `Lançamentos processados: ${successCount} com sucesso.${infoSkipped} ${failedDocs.length} permanecem na fila (falha ao salvar).${motivoTimeout} Revise e tente salvar novamente.`;
     }
 
+    setMessage({ type: resultType, text: resultText });
     setLoading(false);
     setSaveProgress(null);
+
+    // Chamado por último: quem hospeda este componente (WebPortal) troca de tela logo em
+    // seguida, o que desmonta este componente — se chamássemos isso antes de calcular a
+    // mensagem acima, o aviso de resultado nunca chegaria a ser visto (a troca de tela
+    // acontece antes do setMessage ter qualquer chance de renderizar). Por isso passamos o
+    // texto pronto pra quem hospeda mostrar num aviso próprio, que sobrevive à troca de tela.
+    if (onDocumentProcessed) onDocumentProcessed({ type: resultType, text: resultText });
   };
 
   return (
