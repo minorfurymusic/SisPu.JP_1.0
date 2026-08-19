@@ -10,7 +10,7 @@ import {
   DocumentoProcessado, CadastroMestreUC
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
-import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres } from "./src/db/postgres";
+import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres, deleteLancamentosLote } from "./src/db/postgres";
 
 dotenv.config();
 
@@ -1647,6 +1647,61 @@ app.put("/api/lancamentos/:id", async (req, res) => {
   logAudit("lancamentos", id, "UPDATE", usuario, oldVal, db.lancamentos[index]);
 
   res.json(db.lancamentos[index]);
+});
+
+// Exclui vários lançamentos (ou documentos ainda não homologados) de uma vez, usando 1 conexão
+// para o pedaço inteiro em vez de 1 conexão por item — mesma lógica de ganho já aplicada ao
+// salvamento em lote. O front-end manda os ids em pedaços (ex: 50 por vez); esta rota processa
+// exatamente os ids recebidos, sem exigir um tamanho fixo.
+app.post("/api/lancamentos/excluir-lote", async (req, res) => {
+  const usuario = req.headers["x-user"] as string || "admin";
+  const ids: string[] = Array.isArray(req.body?.ids)
+    ? req.body.ids.filter((x: any) => typeof x === "string" && x)
+    : [];
+
+  if (ids.length === 0) {
+    return res.status(400).json({ error: "Nenhum id informado para excluir." });
+  }
+
+  let result;
+  try {
+    result = await deleteLancamentosLote(ids);
+  } catch (err: any) {
+    console.error("[excluir-lote] Falha ao excluir no Postgres:", err.message || err);
+    return res.status(503).json({
+      error: "Não foi possível confirmar a exclusão no banco de dados. O Neon pode estar acordando de um período de inatividade — aguarde alguns segundos e tente de novo."
+    });
+  }
+
+  const { deletedLancamentos, deletedDocumentosVinculados, deletedDocumentosFallback } = result;
+
+  for (const id of deletedLancamentos) {
+    const idx = db.lancamentos.findIndex(l => String(l.id) === String(id));
+    if (idx !== -1) {
+      const oldVal = { ...db.lancamentos[idx] };
+      db.lancamentos.splice(idx, 1);
+      logAudit("lancamentos", id, "DELETE", usuario, oldVal, null);
+    }
+  }
+  for (const id of deletedDocumentosVinculados) {
+    const idx = db.documentos_processados.findIndex(d => String(d.id) === String(id));
+    if (idx !== -1) db.documentos_processados.splice(idx, 1);
+  }
+  for (const id of deletedDocumentosFallback) {
+    const idx = db.documentos_processados.findIndex(d => String(d.id) === String(id));
+    if (idx !== -1) {
+      const oldVal = db.documentos_processados[idx];
+      db.documentos_processados.splice(idx, 1);
+      logAudit("documentos_processados", id, "DELETE", usuario, oldVal, null);
+    }
+  }
+
+  saveLocalOnly(db);
+
+  const deletedIds = new Set([...deletedLancamentos, ...deletedDocumentosFallback]);
+  const notFound = ids.filter(id => !deletedIds.has(id));
+
+  res.json({ deletedCount: deletedIds.size, notFound });
 });
 
 app.delete("/api/lancamentos/:id", async (req, res) => {

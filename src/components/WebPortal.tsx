@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { 
   Building2, Receipt, Lightbulb, Droplets, History,
   TrendingUp, BarChart3, ShieldAlert, Search, Edit2, Trash2,
@@ -658,69 +658,92 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     });
   };
 
-  // Tempo máximo de espera por item: se uma exclusão individual travar (ex: o
-  // Postgres acordando de inatividade), não deixamos o lote inteiro parado
-  // indefinidamente — esse item conta como falha e o lote segue para o próximo,
-  // mantendo a barra de progresso sempre avançando de forma visível.
-  const DELETE_ITEM_TIMEOUT_MS = 20000;
+  // Exclusão em lote manda um pedaço de N ids por requisição (endpoint /api/lancamentos/
+  // excluir-lote) em vez de 1 requisição por item — mesma receita já aplicada ao salvamento em
+  // lote. Cada pedaço usa 1 única conexão com o banco no servidor, então reduzir de "1 conexão
+  // por item" pra "1 conexão por pedaço de 50" é o que tira o gargalo real (latência de rede até
+  // o Neon, paga uma vez por pedaço em vez de uma vez por item).
+  const DELETE_CHUNK_SIZE = 50;
+  const DELETE_CHUNK_TIMEOUT_MS = 45000;
 
-  const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: number) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      return await fetch(url, { ...options, signal: controller.signal });
-    } finally {
-      clearTimeout(timer);
-    }
+  const deleteAbortControllerRef = useRef<AbortController | null>(null);
+  const deleteCancelRequestedRef = useRef(false);
+
+  const cancelBatchDelete = () => {
+    deleteCancelRequestedRef.current = true;
+    deleteAbortControllerRef.current?.abort();
   };
 
   const executeDeleteBatch = async (items: any[], successLabel: string) => {
     setDeleteProgress({ current: 0, total: items.length });
-    try {
-      let successCount = 0;
-      let failCount = 0;
-      let timeoutCount = 0;
+    deleteCancelRequestedRef.current = false;
+    let successCount = 0;
+    let failCount = 0;
+    let timeoutCount = 0;
+    let cancelledEarly = false;
 
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        const targetId = item.id || item.doc_id;
-        if (!targetId) {
-          setDeleteProgress({ current: i + 1, total: items.length });
+    try {
+      for (let start = 0; start < items.length; start += DELETE_CHUNK_SIZE) {
+        if (deleteCancelRequestedRef.current) {
+          cancelledEarly = true;
+          break;
+        }
+
+        const chunk = items.slice(start, start + DELETE_CHUNK_SIZE);
+        const ids = chunk.map(item => item.id || item.doc_id).filter(Boolean);
+
+        if (ids.length === 0) {
+          setDeleteProgress({ current: Math.min(start + chunk.length, items.length), total: items.length });
           continue;
         }
 
-        try {
-          let res = await fetchWithTimeout(`/api/lancamentos/${targetId}`, {
-            method: "DELETE",
-            headers: { "x-user": "gestor_web" }
-          }, DELETE_ITEM_TIMEOUT_MS);
+        const controller = new AbortController();
+        deleteAbortControllerRef.current = controller;
+        const timer = setTimeout(() => controller.abort(), DELETE_CHUNK_TIMEOUT_MS);
 
-          if (!res.ok && res.status === 404) {
-            res = await fetchWithTimeout(`/api/documentos/${targetId}`, {
-              method: "DELETE",
-              headers: { "x-user": "gestor_web" }
-            }, DELETE_ITEM_TIMEOUT_MS);
-          }
+        try {
+          const res = await fetch("/api/lancamentos/excluir-lote", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-user": "gestor_web" },
+            body: JSON.stringify({ ids }),
+            signal: controller.signal
+          });
 
           if (res.ok) {
-            successCount++;
+            const data = await res.json();
+            const notFound: string[] = data?.notFound || [];
+            successCount += ids.length - notFound.length;
+            failCount += notFound.length;
           } else {
-            failCount++;
+            failCount += ids.length;
           }
-        } catch (itemErr: any) {
-          if (itemErr?.name === "AbortError") {
-            timeoutCount++;
+        } catch (chunkErr: any) {
+          if (chunkErr?.name === "AbortError" && deleteCancelRequestedRef.current) {
+            cancelledEarly = true;
+            clearTimeout(timer);
+            break;
+          }
+          if (chunkErr?.name === "AbortError") {
+            timeoutCount += ids.length;
           } else {
-            failCount++;
+            failCount += ids.length;
           }
+        } finally {
+          clearTimeout(timer);
         }
-        setDeleteProgress({ current: i + 1, total: items.length });
+
+        setDeleteProgress({ current: Math.min(start + chunk.length, items.length), total: items.length });
       }
+
+      deleteAbortControllerRef.current = null;
 
       if (successCount > 0) {
         showSuccess(`${successCount} lançamento(s) de ${successLabel} foram excluídos com sucesso.`);
         loadAllData();
         notifyChange();
+      }
+      if (cancelledEarly) {
+        showError("Exclusão cancelada. O que já havia sido confirmado antes do cancelamento foi excluído; o restante permanece no sistema.");
       }
       if (failCount > 0) {
         showError(`Não foi possível excluir ${failCount} lançamento(s).`);
@@ -2195,6 +2218,15 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     </div>
                   )}
                   <span className="text-[11px] text-gray-500">Não feche ou atualize a página.</span>
+                  <div className="flex justify-end pt-1 w-full">
+                    <button
+                      type="button"
+                      onClick={cancelBatchDelete}
+                      className="px-4 py-2 rounded-xl border border-white/10 text-gray-300 hover:bg-white/5 hover:border-rose-500/40 hover:text-rose-300 transition text-sm font-medium"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div className="flex items-center justify-end gap-3 pt-3 border-t border-white/10">

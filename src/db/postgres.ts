@@ -528,10 +528,51 @@ export async function deleteRowFromPostgres(tableName: string, id: string): Prom
   }
   const p = getPool();
   if (!p || !id) return;
-  
+
   const client = await connectWithRetry(p);
   try {
     await client.query(`DELETE FROM ${tableName} WHERE id = $1`, [id]);
+  } finally {
+    client.release();
+  }
+}
+
+// Exclui um pedaço de lançamentos (e os documentos_processados vinculados/alternativos) numa
+// única conexão, em vez de 1 conexão por item — mesmo motivo da grade de upsert em lote: cada
+// ida-e-volta ao banco carrega o custo total da latência até o Neon, então excluir 50 itens de
+// uma vez em 2-3 comandos é muito mais rápido que 50 conexões/comandos separados. Espelha
+// exatamente a lógica do DELETE /api/lancamentos/:id de 1 item: tenta achar cada id em
+// `lancamentos` primeiro (e limpa o documento vinculado de mesmo id, se existir); os ids que não
+// eram um lançamento são tentados como `documentos_processados` diretamente.
+export async function deleteLancamentosLote(ids: string[]): Promise<{
+  deletedLancamentos: string[];
+  deletedDocumentosVinculados: string[];
+  deletedDocumentosFallback: string[];
+}> {
+  const p = getPool();
+  if (!p || ids.length === 0) {
+    return { deletedLancamentos: [], deletedDocumentosVinculados: [], deletedDocumentosFallback: [] };
+  }
+
+  const client = await connectWithRetry(p);
+  try {
+    const resLanc = await client.query(`DELETE FROM lancamentos WHERE id = ANY($1) RETURNING id`, [ids]);
+    const deletedLancamentos: string[] = resLanc.rows.map(r => r.id);
+
+    let deletedDocumentosVinculados: string[] = [];
+    if (deletedLancamentos.length > 0) {
+      const resDocVinc = await client.query(`DELETE FROM documentos_processados WHERE id = ANY($1) RETURNING id`, [deletedLancamentos]);
+      deletedDocumentosVinculados = resDocVinc.rows.map(r => r.id);
+    }
+
+    const remaining = ids.filter(id => !deletedLancamentos.includes(id));
+    let deletedDocumentosFallback: string[] = [];
+    if (remaining.length > 0) {
+      const resDocFallback = await client.query(`DELETE FROM documentos_processados WHERE id = ANY($1) RETURNING id`, [remaining]);
+      deletedDocumentosFallback = resDocFallback.rows.map(r => r.id);
+    }
+
+    return { deletedLancamentos, deletedDocumentosVinculados, deletedDocumentosFallback };
   } finally {
     client.release();
   }
