@@ -428,7 +428,15 @@ function ensureUnidadeAndContract(params: {
       unidade.nome = cleanNomeUnidade;
       updated = true;
     }
-    if (!unidade.concessionaria || unidade.concessionaria !== concessionaria) {
+    // Só define a concessionária quando a unidade ainda não tem uma — nunca sobrescreve uma já
+    // classificada. Antes, qualquer fatura processada podia "corrigir" a concessionária de novo
+    // com base só nela mesma; se duas faturas da mesma unidade eram detectadas com
+    // concessionárias diferentes (ex: heurística ambígua, ou o mesmo código de UC reaproveitado
+    // entre um cadastro antigo e um novo — ver mudança de formato de UC da CELESC), toda
+    // varredura alternava o valor de um lado pro outro, gerando um registro de auditoria a cada
+    // vez e nunca estabilizando. Uma reclassificação de verdade agora precisa ser uma edição
+    // manual da unidade, não um efeito colateral automático de reprocessar documentos.
+    if (!unidade.concessionaria) {
       unidade.concessionaria = concessionaria;
       updated = true;
     }
@@ -1461,7 +1469,11 @@ app.post("/api/vincular-unidade", (req, res) => {
 
 // --- LANÇAMENTOS ---
 app.get("/api/lancamentos", (req, res) => {
-  autoSyncOrphanRecords();
+  // autoSyncOrphanRecords() já roda uma vez na inicialização do servidor (suficiente pra
+  // autocorreção). Chamá-la aqui de novo, a cada carregamento de tela, fazia o servidor
+  // reprocessar TODOS os documentos a cada leitura simples — caro, e também gerava uma nova
+  // leva de registros de auditoria "sistema/unidades/UPDATE" toda vez que alguém só olhava a
+  // tela, inundando o Controle de Auditoria e enterrando ações reais.
 
   const { item_despesa_id, mes_ano } = req.query;
   let list = db.lancamentos;
