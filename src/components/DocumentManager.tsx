@@ -339,6 +339,16 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   const [fileName, setFileName] = useState("");
   const [loading, setLoading] = useState(false);
   const [saveProgress, setSaveProgress] = useState<{ current: number; total: number } | null>(null);
+  // Resultado final do salvamento, mostrado ANTES de trocar de tela — a troca de tela
+  // (onDocumentProcessed, chamado pelo WebPortal) desmontava este componente antes da mensagem
+  // de resultado ter qualquer chance de aparecer. Agora a troca de tela só acontece quando o
+  // usuário clica em "Fechar" aqui, então não tem mais como o resultado passar despercebido.
+  const [saveResult, setSaveResult] = useState<{
+    successCount: number;
+    skippedCount: number;
+    failedItems: { label: string; reason: string }[];
+    cancelledEarly: boolean;
+  } | null>(null);
 
   // Pipeline-queue states for asynchronously processing multi-document/large reports
   const [processingQueue, setProcessingQueue] = useState<boolean>(false);
@@ -1917,7 +1927,6 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     saveCancelRequestedRef.current = false;
     let successCount = 0;
     let skippedCount = 0;
-    let timeoutCount = 0;
     // Docs that fail to save/homologar go back into the queue instead of being silently
     // discarded — a transient error (ex: timeout) shouldn't cost the user re-typing or
     // re-importing what they already reviewed. Duplicatas (fatura já homologada antes) NÃO
@@ -1925,12 +1934,18 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     // válido (ver skippedCount acima), e colocar duplicatas na fila de novo faria elas falharem
     // pra sempre, do mesmo jeito, a cada nova tentativa.
     const failedDocs: DocumentoProcessado[] = [];
+    const failedItems: { label: string; reason: string }[] = [];
     let cancelledEarly = false;
+
+    const docLabel = (d: DocumentoProcessado) => d.nome_arquivo || d.dados_extraidos?.codigo_numero || "documento sem nome";
 
     for (let start = 0; start < docsToSave.length; start += SAVE_CHUNK_SIZE) {
       if (saveCancelRequestedRef.current) {
         cancelledEarly = true;
-        for (let j = start; j < docsToSave.length; j++) failedDocs.push(docsToSave[j]);
+        for (let j = start; j < docsToSave.length; j++) {
+          failedDocs.push(docsToSave[j]);
+          failedItems.push({ label: docLabel(docsToSave[j]), reason: "Cancelado antes de ser processado" });
+        }
         break;
       }
 
@@ -1957,7 +1972,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
         if (res.ok) {
           const data = await res.json();
-          const results: Array<{ index: number; ok: boolean; skipped?: boolean }> = data?.results || [];
+          const results: Array<{ index: number; ok: boolean; skipped?: boolean; error?: string }> = data?.results || [];
           chunk.forEach((doc, idx) => {
             if (results[idx]?.ok) {
               successCount++;
@@ -1967,25 +1982,33 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
               skippedCount++;
             } else {
               failedDocs.push(doc);
+              failedItems.push({ label: docLabel(doc), reason: results[idx]?.error || "Falha ao salvar" });
             }
           });
         } else {
           // Falha no nível da requisição/gravação (ex: 503 do Postgres): o lote inteiro do
           // pedaço não foi confirmado (a gravação é transacional), então todas as faturas
           // desse pedaço voltam pra fila para tentar de novo.
-          chunk.forEach(doc => failedDocs.push(doc));
+          chunk.forEach(doc => {
+            failedDocs.push(doc);
+            failedItems.push({ label: docLabel(doc), reason: `Falha no servidor (HTTP ${res.status})` });
+          });
         }
       } catch (chunkErr: any) {
         if (chunkErr?.name === "AbortError" && saveCancelRequestedRef.current) {
           cancelledEarly = true;
-          for (let j = start; j < docsToSave.length; j++) failedDocs.push(docsToSave[j]);
+          for (let j = start; j < docsToSave.length; j++) {
+            failedDocs.push(docsToSave[j]);
+            failedItems.push({ label: docLabel(docsToSave[j]), reason: "Cancelado antes de ser processado" });
+          }
           clearTimeout(timer);
           break;
         }
-        if (chunkErr?.name === "AbortError") {
-          timeoutCount += chunk.length;
-        }
-        chunk.forEach(doc => failedDocs.push(doc));
+        const reason = chunkErr?.name === "AbortError" ? "Tempo de espera excedido (banco de dados lento)" : "Erro de conexão";
+        chunk.forEach(doc => {
+          failedDocs.push(doc);
+          failedItems.push({ label: docLabel(doc), reason });
+        });
       } finally {
         clearTimeout(timer);
       }
@@ -2006,39 +2029,11 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     });
     setCustomText("");
     setFileName("");
-
-    let resultType: 'success' | 'warning' | 'error' = 'success';
-    let resultText = '';
-    const infoSkipped = skippedCount > 0
-      ? ` ${skippedCount} já estavam salvos anteriormente e foram ignorados (não é necessário reenviar).`
-      : "";
-
-    if (cancelledEarly) {
-      resultType = 'warning';
-      resultText = `Salvamento cancelado. ${successCount} lançamento(s) já haviam sido confirmados antes do cancelamento; os demais permanecem na fila.${infoSkipped}`;
-    } else if (failedDocs.length === 0) {
-      resultType = 'success';
-      resultText = skippedCount > 0
-        ? `Concluído: ${successCount} lançamento(s) novo(s) salvo(s) com sucesso.${infoSkipped}`
-        : `Sucesso! Todos os ${successCount} lançamentos do lote foram homologados na tabela central com auditoria e atualizados no painel geral.`;
-    } else {
-      resultType = 'warning';
-      const motivoTimeout = timeoutCount > 0
-        ? ` ${timeoutCount} deles demoraram demais para responder (banco de dados lento) — tente salvar de novo em alguns instantes.`
-        : "";
-      resultText = `Lançamentos processados: ${successCount} com sucesso.${infoSkipped} ${failedDocs.length} permanecem na fila (falha ao salvar).${motivoTimeout} Revise e tente salvar novamente.`;
-    }
-
-    setMessage({ type: resultType, text: resultText });
     setLoading(false);
     setSaveProgress(null);
-
-    // Chamado por último: quem hospeda este componente (WebPortal) troca de tela logo em
-    // seguida, o que desmonta este componente — se chamássemos isso antes de calcular a
-    // mensagem acima, o aviso de resultado nunca chegaria a ser visto (a troca de tela
-    // acontece antes do setMessage ter qualquer chance de renderizar). Por isso passamos o
-    // texto pronto pra quem hospeda mostrar num aviso próprio, que sobrevive à troca de tela.
-    if (onDocumentProcessed) onDocumentProcessed({ type: resultType, text: resultText });
+    // Mostra o resultado final ANTES de trocar de tela — ver comentário na declaração de
+    // saveResult. onDocumentProcessed só é chamado quando o usuário fechar essa tela.
+    setSaveResult({ successCount, skippedCount, failedItems, cancelledEarly });
   };
 
   return (
@@ -3735,36 +3730,88 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
       )}
 
       {/* SAVE PROGRESS OVERLAY: mesma lógica visual da exclusão em lote, para o usuário nunca
-          ficar sem saber se o salvamento travou ou está realmente em andamento. */}
-      {saveProgress && (
+          ficar sem saber se o salvamento travou ou está realmente em andamento. Depois que
+          termina, vira uma tela de RESULTADO (saveResult) que só fecha quando o usuário clicar —
+          antes disso a tela trocava sozinha assim que o lote acabava, sem mostrar o que
+          realmente aconteceu. */}
+      {(saveProgress || saveResult) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
           <div className="bg-[#18181b] border border-white/10 text-white rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center gap-3 text-indigo-400 font-bold text-lg">
               <Save className="h-6 w-6 shrink-0" />
-              <h3>Salvando Lançamentos</h3>
+              <h3>{saveResult ? "Resultado do Salvamento" : "Salvando Lançamentos"}</h3>
             </div>
-            <div className="flex flex-col items-center gap-3 py-4 border-t border-white/10">
-              <RefreshCw className="h-6 w-6 text-indigo-400 animate-spin" />
-              <span className="text-sm font-semibold text-gray-200">
-                {`Salvando ${saveProgress.current} de ${saveProgress.total}...`}
-              </span>
-              <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-indigo-500 transition-all duration-150"
-                  style={{ width: `${(saveProgress.current / Math.max(saveProgress.total, 1)) * 100}%` }}
-                />
+
+            {saveResult ? (
+              <div className="space-y-3 pt-2 border-t border-white/10">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-3 text-center">
+                    <div className="text-2xl font-bold text-emerald-400">{saveResult.successCount}</div>
+                    <div className="text-[10px] text-emerald-300/80 font-semibold uppercase tracking-wide">Salvos</div>
+                  </div>
+                  <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-center">
+                    <div className="text-2xl font-bold text-gray-300">{saveResult.skippedCount}</div>
+                    <div className="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">Já existiam</div>
+                  </div>
+                  <div className="bg-rose-500/10 border border-rose-500/20 rounded-lg p-3 text-center">
+                    <div className="text-2xl font-bold text-rose-400">{saveResult.failedItems.length}</div>
+                    <div className="text-[10px] text-rose-300/80 font-semibold uppercase tracking-wide">Falharam</div>
+                  </div>
+                </div>
+                {saveResult.cancelledEarly && (
+                  <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
+                    Cancelado antes de terminar — o restante do lote não foi processado e continua na fila.
+                  </p>
+                )}
+                {saveResult.failedItems.length > 0 && (
+                  <div className="max-h-48 overflow-y-auto space-y-1 bg-black/30 border border-white/10 rounded-lg p-2">
+                    {saveResult.failedItems.map((it, idx) => (
+                      <div key={idx} className="text-xs flex justify-between gap-2 py-1 border-b border-white/5 last:border-0">
+                        <span className="text-gray-300 truncate">{it.label}</span>
+                        <span className="text-rose-400 shrink-0">{it.reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSaveResult(null);
+                      if (onDocumentProcessed) onDocumentProcessed();
+                    }}
+                    className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition text-sm shadow-lg shadow-indigo-900/30"
+                  >
+                    Fechar
+                  </button>
+                </div>
               </div>
-              <span className="text-[11px] text-gray-500">Não feche ou atualize a página.</span>
-            </div>
-            <div className="flex justify-end pt-1">
-              <button
-                type="button"
-                onClick={cancelBatchSave}
-                className="px-4 py-2 rounded-xl border border-white/10 text-gray-300 hover:bg-white/5 hover:border-rose-500/40 hover:text-rose-300 transition text-sm font-medium"
-              >
-                Cancelar
-              </button>
-            </div>
+            ) : (
+              <>
+                <div className="flex flex-col items-center gap-3 py-4 border-t border-white/10">
+                  <RefreshCw className="h-6 w-6 text-indigo-400 animate-spin" />
+                  <span className="text-sm font-semibold text-gray-200">
+                    {saveProgress && `Salvando ${saveProgress.current} de ${saveProgress.total}...`}
+                  </span>
+                  <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-indigo-500 transition-all duration-150"
+                      style={{ width: `${saveProgress ? (saveProgress.current / Math.max(saveProgress.total, 1)) * 100 : 0}%` }}
+                    />
+                  </div>
+                  <span className="text-[11px] text-gray-500">Não feche ou atualize a página.</span>
+                </div>
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    onClick={cancelBatchSave}
+                    className="px-4 py-2 rounded-xl border border-white/10 text-gray-300 hover:bg-white/5 hover:border-rose-500/40 hover:text-rose-300 transition text-sm font-medium"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

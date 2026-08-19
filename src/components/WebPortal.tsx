@@ -181,6 +181,16 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   // várias vezes.
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteProgress, setDeleteProgress] = useState<{ current: number; total: number } | null>(null);
+  // Resultado final da exclusão, mostrado ANTES de fechar a tela — antes disso, a tela fechava
+  // sozinha assim que o lote terminava (sucesso, falha ou timeout, tanto faz), sem o usuário
+  // conseguir ver o que realmente aconteceu, o que fazia parecer que "fechou sozinho e não sei
+  // se excluiu". Agora fica um resumo com números e a lista dos itens que não foram excluídos
+  // (com o motivo), e só fecha quando o usuário clicar em "Fechar".
+  const [deleteResult, setDeleteResult] = useState<{
+    successCount: number;
+    failedItems: { label: string; reason: string }[];
+    cancelledEarly: boolean;
+  } | null>(null);
 
   useEffect(() => {
     loadAllData();
@@ -698,13 +708,18 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     deleteAbortControllerRef.current?.abort();
   };
 
+  const itemDeleteLabel = (item: any): string => {
+    const codigo = item?.codigo_numero || item?.nome_arquivo || "item sem código";
+    const mes = item?.mes_ano ? String(item.mes_ano).substring(0, 7) : "";
+    return mes ? `${codigo} (${mes})` : codigo;
+  };
+
   const executeDeleteBatch = async (items: any[], successLabel: string) => {
     setDeleteProgress({ current: 0, total: items.length });
     deleteCancelRequestedRef.current = false;
     let successCount = 0;
-    let failCount = 0;
-    let timeoutCount = 0;
     let cancelledEarly = false;
+    const failedItems: { label: string; reason: string }[] = [];
 
     try {
       for (let start = 0; start < items.length; start += DELETE_CHUNK_SIZE) {
@@ -736,10 +751,17 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
           if (res.ok) {
             const data = await res.json();
             const notFound: string[] = data?.notFound || [];
-            successCount += ids.length - notFound.length;
-            failCount += notFound.length;
+            const notFoundSet = new Set(notFound);
+            chunk.forEach(item => {
+              const itemId = item.id || item.doc_id;
+              if (notFoundSet.has(itemId)) {
+                failedItems.push({ label: itemDeleteLabel(item), reason: "Não encontrado (já pode ter sido excluído antes)" });
+              } else {
+                successCount++;
+              }
+            });
           } else {
-            failCount += ids.length;
+            chunk.forEach(item => failedItems.push({ label: itemDeleteLabel(item), reason: `Falha no servidor (HTTP ${res.status})` }));
           }
         } catch (chunkErr: any) {
           if (chunkErr?.name === "AbortError" && deleteCancelRequestedRef.current) {
@@ -748,9 +770,9 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
             break;
           }
           if (chunkErr?.name === "AbortError") {
-            timeoutCount += ids.length;
+            chunk.forEach(item => failedItems.push({ label: itemDeleteLabel(item), reason: "Tempo de espera excedido (banco de dados lento)" }));
           } else {
-            failCount += ids.length;
+            chunk.forEach(item => failedItems.push({ label: itemDeleteLabel(item), reason: "Erro de conexão" }));
           }
         } finally {
           clearTimeout(timer);
@@ -762,23 +784,16 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
       deleteAbortControllerRef.current = null;
 
       if (successCount > 0) {
-        showSuccess(`${successCount} lançamento(s) de ${successLabel} foram excluídos com sucesso.`);
         loadAllData();
         notifyChange();
       }
-      if (cancelledEarly) {
-        showError("Exclusão cancelada. O que já havia sido confirmado antes do cancelamento foi excluído; o restante permanece no sistema.");
-      }
-      if (failCount > 0) {
-        showError(`Não foi possível excluir ${failCount} lançamento(s).`);
-      }
-      if (timeoutCount > 0) {
-        showError(`${timeoutCount} lançamento(s) demoraram demais para responder (banco de dados lento) e não foram excluídos. Tente excluí-los novamente em alguns instantes.`);
-      }
     } catch (err: any) {
-      showError("Erro de conexão ao processar exclusão.");
+      failedItems.push({ label: "(operação inteira)", reason: "Erro de conexão ao processar exclusão" });
     } finally {
       setDeleteProgress(null);
+      // Mostra o resultado final ANTES de fechar a tela — ver comentário na declaração de
+      // deleteResult sobre por que isso importa.
+      setDeleteResult({ successCount, failedItems, cancelledEarly });
     }
   };
 
@@ -2235,7 +2250,44 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                 {deleteModal.description}
               </p>
 
-              {isDeleting ? (
+              {deleteResult ? (
+                <div className="space-y-3 pt-3 border-t border-white/10">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-3 text-center">
+                      <div className="text-2xl font-bold text-emerald-400">{deleteResult.successCount}</div>
+                      <div className="text-[11px] text-emerald-300/80 font-semibold uppercase tracking-wide">Excluídos</div>
+                    </div>
+                    <div className="bg-rose-500/10 border border-rose-500/20 rounded-lg p-3 text-center">
+                      <div className="text-2xl font-bold text-rose-400">{deleteResult.failedItems.length}</div>
+                      <div className="text-[11px] text-rose-300/80 font-semibold uppercase tracking-wide">Não excluídos</div>
+                    </div>
+                  </div>
+                  {deleteResult.cancelledEarly && (
+                    <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
+                      Cancelado antes de terminar — o restante do lote não foi processado.
+                    </p>
+                  )}
+                  {deleteResult.failedItems.length > 0 && (
+                    <div className="max-h-48 overflow-y-auto space-y-1 bg-black/30 border border-white/10 rounded-lg p-2">
+                      {deleteResult.failedItems.map((it, idx) => (
+                        <div key={idx} className="text-xs flex justify-between gap-2 py-1 border-b border-white/5 last:border-0">
+                          <span className="text-gray-300 font-mono truncate">{it.label}</span>
+                          <span className="text-rose-400 shrink-0">{it.reason}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="button"
+                      onClick={() => { setDeleteResult(null); setDeleteModal(null); }}
+                      className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white font-semibold transition text-sm"
+                    >
+                      Fechar
+                    </button>
+                  </div>
+                </div>
+              ) : isDeleting ? (
                 <div className="flex flex-col items-center gap-3 py-4 border-t border-white/10">
                   <RefreshCw className="h-6 w-6 text-rose-400 animate-spin" />
                   <span className="text-sm font-semibold text-gray-200">
@@ -2279,8 +2331,10 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       try {
                         await action();
                       } finally {
+                        // Não fecha o modal aqui — executeDeleteBatch já preencheu deleteResult,
+                        // e é ele quem controla a tela de resultado agora; o modal só fecha
+                        // quando o usuário clicar em "Fechar" ali.
                         setIsDeleting(false);
-                        setDeleteModal(null);
                       }
                     }}
                     className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold transition text-sm shadow-lg shadow-rose-900/30"
