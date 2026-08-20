@@ -382,6 +382,70 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     }
   }, [sessionDocs]);
 
+  // Sugestões de vínculo de recodificação de UC (ex.: CELESC trocando o formato do CODNUM):
+  // para cada doc.id, null = sem sugestão / ainda não verificado, objeto = existe um contrato já
+  // cadastrado no mesmo endereço com CODNUM diferente. linkConfirmed guarda se o usuário aceitou
+  // (pré-marcado como true quando a sugestão chega) ou desmarcou a sugestão daquela linha.
+  const [linkSuggestions, setLinkSuggestions] = useState<Record<string, {
+    item_despesa_id: string; codigo_numero_existente: string; unidade_nome: string; confianca: string;
+  } | null>>({});
+  const [linkConfirmed, setLinkConfirmed] = useState<Record<string, boolean>>({});
+  const linkSuggestionsCheckedRef = useRef<Set<string>>(new Set());
+
+  // Busca sugestões de vínculo pra qualquer doc do lote que ainda não foi checado, assim que o
+  // lote para de mudar (evita perguntar ao servidor a cada tecla digitada enquanto o usuário
+  // ainda está editando um campo na conferência). Roda em lote — uma única requisição pro lote
+  // inteiro (até 155+ faturas de uma vez), nunca uma por linha.
+  useEffect(() => {
+    if (processingQueue) return;
+    const pendentes = sessionDocs.filter(d =>
+      d && d.status !== 'IGNORADA' && d.dados_extraidos?.codigo_numero &&
+      !linkSuggestionsCheckedRef.current.has(d.id)
+    );
+    if (pendentes.length === 0) return;
+
+    const timer = setTimeout(async () => {
+      pendentes.forEach(d => linkSuggestionsCheckedRef.current.add(d.id));
+      try {
+        const res = await fetch("/api/itens_despesas/sugestoes-vinculo", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-user": currentUser },
+          body: JSON.stringify({
+            itens: pendentes.map(d => ({
+              codigo_numero: d.dados_extraidos?.codigo_numero,
+              endereco: d.dados_extraidos?.endereco,
+              concessionaria: d.layout?.includes("CASAN") ? "CASAN" : "CELESC"
+            }))
+          })
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const resultados: Array<{ index: number; sugestao: any }> = data?.resultados || [];
+        setLinkSuggestions(prev => {
+          const next = { ...prev };
+          resultados.forEach(r => {
+            const doc = pendentes[r.index];
+            if (!doc) return;
+            next[doc.id] = r.sugestao || null;
+          });
+          return next;
+        });
+        setLinkConfirmed(prev => {
+          const next = { ...prev };
+          resultados.forEach(r => {
+            const doc = pendentes[r.index];
+            if (doc && r.sugestao && !(doc.id in next)) next[doc.id] = true; // pré-marcado
+          });
+          return next;
+        });
+      } catch (err) {
+        console.error("Não foi possível buscar sugestões de vínculo de UC:", err);
+      }
+    }, 800);
+
+    return () => clearTimeout(timer);
+  }, [sessionDocs, processingQueue, currentUser]);
+
   // One-time notice when a draft is recovered after a reload/remount, so the user knows it
   // wasn't lost and can review before clicking "Salvar Lançamentos".
   useEffect(() => {
@@ -1964,13 +2028,19 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
           method: "POST",
           headers: { "Content-Type": "application/json", "x-user": currentUser },
           body: JSON.stringify({
-            documentos: chunk.map(d => ({
-              nome_arquivo: d.nome_arquivo,
-              layout: d.layout,
-              tamanho: d.tamanho,
-              origem_conteudo: d.origem_conteudo,
-              dados_extraidos: d.dados_extraidos
-            }))
+            documentos: chunk.map(d => {
+              const sugestao = linkSuggestions[d.id];
+              const vincular = sugestao && linkConfirmed[d.id];
+              return {
+                nome_arquivo: d.nome_arquivo,
+                layout: d.layout,
+                tamanho: d.tamanho,
+                origem_conteudo: d.origem_conteudo,
+                dados_extraidos: vincular
+                  ? { ...d.dados_extraidos, vincular_a_item_despesa_id: sugestao!.item_despesa_id }
+                  : d.dados_extraidos
+              };
+            })
           }),
           signal: controller.signal
         });
@@ -2959,7 +3029,26 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                             {doc.layout.includes("CELESC") ? "CELESC" : "CASAN"}
                           </span>
                         </td>
-                        <td className="px-4 py-3 font-mono font-bold">{doc.dados_extraidos.codigo_numero}</td>
+                        <td className="px-4 py-3 font-mono font-bold align-top">
+                          {doc.dados_extraidos.codigo_numero}
+                          {linkSuggestions[doc.id] && (
+                            <label
+                              className="mt-1.5 flex items-start gap-1.5 text-[10px] font-sans font-normal normal-case bg-indigo-500/10 border border-indigo-500/20 rounded px-1.5 py-1 cursor-pointer max-w-[220px]"
+                              onClick={(e) => e.stopPropagation()}
+                              title="Sugestão: este CODNUM pode ser uma recodificação de um contrato já existente no mesmo endereço"
+                            >
+                              <input
+                                type="checkbox"
+                                className="mt-0.5 shrink-0"
+                                checked={!!linkConfirmed[doc.id]}
+                                onChange={(e) => setLinkConfirmed(prev => ({ ...prev, [doc.id]: e.target.checked }))}
+                              />
+                              <span className="text-indigo-300 leading-tight">
+                                🔗 Vincular ao contrato existente <b>{linkSuggestions[doc.id]!.codigo_numero_existente}</b> ({linkSuggestions[doc.id]!.unidade_nome})
+                              </span>
+                            </label>
+                          )}
+                        </td>
                         <td className="px-4 py-3">
                           <button
                             type="button"

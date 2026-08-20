@@ -50,6 +50,10 @@ export interface ItemDespesa {
   unidade_id: string;
   tipo_fone?: string;
   medidor?: string; // MEDITM
+  // CODNUMs antigos que a concessionária já usou pra este mesmo contrato (ex.: recodificação de
+  // UC da CELESC) — continuam reconhecidos na hora de casar uma fatura nova com este item, pra
+  // não fragmentar o histórico de lançamentos em dois contratos diferentes.
+  codigos_numero_anteriores?: string[];
   ativo: boolean;
   criado_em: string;
   atualizado_em: string;

@@ -349,6 +349,11 @@ function ensureUnidadeAndContract(params: {
   endereco?: string;
   medidor?: string;
   usuario?: string;
+  // Quando informado (confirmado pelo usuário na grade de conferência do lote), este CODNUM não
+  // deve virar um contrato novo: ele é uma recodificação de um contrato já existente
+  // (itens_despesas.id === vincularAItemDespesaId). O código antigo desse item vai para
+  // codigos_numero_anteriores e o novo código passa a ser o codigo_numero atual.
+  vincularAItemDespesaId?: string;
 }) {
   const cleanCodnum = (params.codigo_numero || "").trim().toUpperCase();
   if (!cleanCodnum || cleanCodnum === "DESCONHECIDO" || cleanCodnum === "NÃO LOCALIZADO" || cleanCodnum.startsWith("AUTO-")) {
@@ -473,11 +478,32 @@ function ensureUnidadeAndContract(params: {
   // Sem medidor (formatos de relatório que não trazem essa informação), cai no comportamento
   // antigo de casar só pelo CODNUM.
   const cleanMedidor = (params.medidor && params.medidor !== "N/A") ? params.medidor.trim() : null;
+  const codnumMatches = (it: ItemDespesa) =>
+    (it.codigo_numero && it.codigo_numero.trim().toUpperCase() === cleanCodnum) ||
+    (it.codigos_numero_anteriores || []).some(c => c && c.trim().toUpperCase() === cleanCodnum);
   let item = cleanMedidor
     ? db.itens_despesas.find(it =>
-        it.codigo_numero && it.codigo_numero.trim().toUpperCase() === cleanCodnum &&
+        codnumMatches(it) &&
         it.medidor && it.medidor.trim().toUpperCase() === cleanMedidor.toUpperCase())
-    : db.itens_despesas.find(it => it.codigo_numero && it.codigo_numero.trim().toUpperCase() === cleanCodnum);
+    : db.itens_despesas.find(it => codnumMatches(it));
+
+  // Vínculo de recodificação confirmado na conferência do lote: o CODNUM recebido é novo pro
+  // sistema, mas o usuário confirmou que é o mesmo contrato de um item já existente. Em vez de
+  // criar um item novo (o que fragmentaria o histórico), o código antigo desse item vira um
+  // "codigo_numero_anterior" e o novo código passa a ser o atual — daí em diante, tanto o código
+  // antigo quanto o novo continuam casando com este mesmo item (ver codnumMatches acima).
+  if (!item && params.vincularAItemDespesaId) {
+    const alvo = db.itens_despesas.find(it => it.id === params.vincularAItemDespesaId);
+    if (alvo && alvo.codigo_numero.trim().toUpperCase() !== cleanCodnum) {
+      const anteriores = new Set(alvo.codigos_numero_anteriores || []);
+      anteriores.add(alvo.codigo_numero);
+      alvo.codigos_numero_anteriores = Array.from(anteriores);
+      alvo.codigo_numero = cleanCodnum;
+      alvo.atualizado_em = new Date().toISOString();
+      logAudit("itens_despesas", alvo.id, "UPDATE", usuario, null, alvo);
+    }
+    item = alvo || item;
+  }
 
   if (item) {
     let updated = false;
@@ -1409,6 +1435,93 @@ app.delete("/api/itens_despesas/:id", async (req, res) => {
   res.json({ message: "Item excluído com sucesso." });
 });
 
+function normalizarEndereco(s?: string): string {
+  return (s || "")
+    .toUpperCase()
+    .normalize("NFD").replace(/\p{Diacritic}/gu, "") // remove acentos
+    .replace(/[^A-Z0-9]+/g, " ")
+    .trim();
+}
+
+// Para cada fatura de um lote ainda não salvo, sugere um contrato (itens_despesas) já existente
+// para vincular quando o CODNUM recebido é desconhecido mas o endereço bate com o de um contrato
+// já cadastrado — o caso típico é a CELESC recodificando o formato da UC. Isso NUNCA vincula
+// nada sozinho: é usado pela grade de conferência do lote pra pré-marcar uma sugestão que o
+// usuário ainda precisa confirmar (ou desmarcar) antes de salvar.
+app.post("/api/itens_despesas/sugestoes-vinculo", (req, res) => {
+  const itens: Array<{ codigo_numero?: string; endereco?: string; concessionaria?: string }> =
+    Array.isArray(req.body?.itens) ? req.body.itens : [];
+
+  const resultados = itens.map((it, index) => {
+    const cleanCodnum = (it.codigo_numero || "").trim().toUpperCase();
+    if (!cleanCodnum) return { index, sugestao: null };
+
+    const jaReconhecido = db.itens_despesas.some(id =>
+      id.codigo_numero.trim().toUpperCase() === cleanCodnum ||
+      (id.codigos_numero_anteriores || []).some(c => c.trim().toUpperCase() === cleanCodnum)
+    );
+    if (jaReconhecido) return { index, sugestao: null }; // já é reconhecido — nada a sugerir
+
+    const enderecoNorm = normalizarEndereco(it.endereco);
+    if (!enderecoNorm) return { index, sugestao: null };
+
+    const candidatos = db.itens_despesas.filter(id => {
+      if (id.codigo_numero.trim().toUpperCase() === cleanCodnum) return false;
+      const unidade = db.unidades.find(u => u.id === id.unidade_id);
+      if (!unidade || !unidade.endereco) return false;
+      if (it.concessionaria && unidade.concessionaria && unidade.concessionaria !== it.concessionaria) return false;
+      return normalizarEndereco(unidade.endereco) === enderecoNorm;
+    });
+
+    // Mais de um candidato no mesmo endereço é ambíguo (prédio com várias UCs) — melhor não
+    // sugerir do que sugerir errado; o usuário vincula manualmente se for o caso.
+    if (candidatos.length !== 1) return { index, sugestao: null };
+
+    const candidato = candidatos[0];
+    const unidade = db.unidades.find(u => u.id === candidato.unidade_id);
+    return {
+      index,
+      sugestao: {
+        item_despesa_id: candidato.id,
+        codigo_numero_existente: candidato.codigo_numero,
+        unidade_nome: unidade?.nome || "",
+        confianca: "alta" as const
+      }
+    };
+  });
+
+  res.json({ resultados });
+});
+
+// Remove um CODNUM antigo da lista de aliases de um contrato (desfaz um vínculo de recodificação
+// confirmado antes). Não mexe em lançamentos já homologados — eles continuam apontando pro mesmo
+// item_despesa_id de sempre; isso só afeta o casamento de FUTURAS faturas com esse código antigo.
+app.delete("/api/itens_despesas/:id/codigos-anteriores/:codigo", (req, res) => {
+  const { id, codigo } = req.params;
+  const usuario = req.headers["x-user"] as string || "admin";
+
+  const item = db.itens_despesas.find(it => it.id === id);
+  if (!item) {
+    return res.status(404).json({ error: "Item de despesa não encontrado." });
+  }
+
+  const codigoAlvo = decodeURIComponent(codigo).trim().toUpperCase();
+  const antes = item.codigos_numero_anteriores || [];
+  const depois = antes.filter(c => c.trim().toUpperCase() !== codigoAlvo);
+  if (depois.length === antes.length) {
+    return res.status(404).json({ error: "Este código não está vinculado como um CODNUM antigo deste contrato." });
+  }
+
+  const oldVal = { ...item };
+  item.codigos_numero_anteriores = depois;
+  item.atualizado_em = new Date().toISOString();
+  saveDB(db);
+
+  logAudit("itens_despesas", item.id, "UPDATE", usuario, oldVal, item);
+
+  res.json(item);
+});
+
 // Endpoint para vincular Unidade Gestora a um CODNUM / Contrato existente ou novo
 app.post("/api/vincular-unidade", (req, res) => {
   const { codigo_numero, item_despesa_id, unidade_id } = req.body;
@@ -1894,7 +2007,11 @@ function criarEHomologarFatura(
       unidade_nome: dados_extraidos.unidade_nome,
       endereco: dados_extraidos.endereco,
       medidor: dados_extraidos.medidor,
-      usuario
+      usuario,
+      // Preenchido pelo front-end quando o usuário confirma, na grade de conferência do lote,
+      // que este CODNUM é uma recodificação de um contrato já existente (ver
+      // /api/itens_despesas/sugestoes-vinculo) — não deve virar um item novo.
+      vincularAItemDespesaId: dados_extraidos?.vincular_a_item_despesa_id || undefined
     });
   }
 
@@ -1914,8 +2031,7 @@ function criarEHomologarFatura(
   } as any;
 
   const logs: string[] = [];
-  const itemMatch = db.itens_despesas.find(it => it.codigo_numero === dados_extraidos?.codigo_numero);
-  if (!itemMatch) {
+  if (!linked?.item) {
     logs.push(`⚠️ CODNUM "${dados_extraidos?.codigo_numero}" não cadastrado no banco. Itens de despesa deverão ser vinculados durante a conferência.`);
   }
   if ((dados_extraidos?.consumo ?? 0) <= 0) {

@@ -118,6 +118,7 @@ export async function initPostgresSchema(): Promise<boolean> {
           unidade_id TEXT NOT NULL,
           tipo_fone TEXT,
           medidor TEXT,
+          codigos_numero_anteriores JSONB,
           ativo BOOLEAN DEFAULT true,
           criado_em TEXT,
           atualizado_em TEXT
@@ -232,6 +233,14 @@ export async function initPostgresSchema(): Promise<boolean> {
         ALTER TABLE unidades ADD COLUMN IF NOT EXISTS concessionaria TEXT;
       `);
 
+      // Idem para itens_despesas.codigos_numero_anteriores: guarda os CODNUMs antigos de um
+      // contrato que a concessionária recodificou (ex.: CELESC trocando "0012341210" por
+      // "1.004.748.011-07"), para que o item continue reconhecendo os dois códigos como o mesmo
+      // contrato em vez de virar um "novo" item desconectado do histórico.
+      await client.query(`
+        ALTER TABLE itens_despesas ADD COLUMN IF NOT EXISTS codigos_numero_anteriores JSONB;
+      `);
+
       console.log("[DB] Schema do PostgreSQL verificado e inicializado com sucesso.");
       return true;
     } finally {
@@ -336,9 +345,9 @@ const TABLE_UPSERT_SPECS: Record<string, TableUpsertSpec> = {
     updateSet: 'codigo_legado = EXCLUDED.codigo_legado, descricao = EXCLUDED.descricao, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
   },
   itens_despesas: {
-    columns: ['id', 'codigo_numero', 'despesa_id', 'unidade_id', 'tipo_fone', 'medidor', 'ativo', 'criado_em', 'atualizado_em'],
-    toValues: (row) => [row.id, row.codigo_numero, row.despesa_id, row.unidade_id, row.tipo_fone || null, row.medidor || null, row.ativo !== false, row.criado_em, row.atualizado_em],
-    updateSet: 'codigo_numero = EXCLUDED.codigo_numero, despesa_id = EXCLUDED.despesa_id, unidade_id = EXCLUDED.unidade_id, tipo_fone = EXCLUDED.tipo_fone, medidor = EXCLUDED.medidor, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
+    columns: ['id', 'codigo_numero', 'despesa_id', 'unidade_id', 'tipo_fone', 'medidor', 'codigos_numero_anteriores', 'ativo', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [row.id, row.codigo_numero, row.despesa_id, row.unidade_id, row.tipo_fone || null, row.medidor || null, JSON.stringify(row.codigos_numero_anteriores || []), row.ativo !== false, row.criado_em, row.atualizado_em],
+    updateSet: 'codigo_numero = EXCLUDED.codigo_numero, despesa_id = EXCLUDED.despesa_id, unidade_id = EXCLUDED.unidade_id, tipo_fone = EXCLUDED.tipo_fone, medidor = EXCLUDED.medidor, codigos_numero_anteriores = EXCLUDED.codigos_numero_anteriores, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
   },
   lancamentos: {
     columns: ['id', 'item_despesa_id', 'mes_ano', 'consumo', 'valor_total', 'valor_imposto', 'valor_celular', 'valor_internet', 'valor_diversos', 'valor_linha_privada', 'valor_credito', 'data_lancamento', 'codigo_legado_numero', 'mes_ano_legado', 'criado_em', 'atualizado_em'],
