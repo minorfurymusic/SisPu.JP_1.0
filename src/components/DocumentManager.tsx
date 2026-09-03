@@ -330,15 +330,20 @@ interface DocumentManagerProps {
   onDocumentProcessed?: (result?: { type: 'success' | 'warning' | 'error'; text: string }) => void;
   currentUser?: string;
   initialMode?: "PDF" | "IMAGE" | "REPORT" | "MANUAL";
+  // Testa (e espera, com retentativas) se o Neon está acordado antes de mandar dados de verdade
+  // — ver comentário longo em WebPortal.tsx sobre por que isso precisa acontecer ANTES do
+  // primeiro lote real, não durante. Fallback no-op caso este componente seja usado sem o
+  // WebPortal como pai (nunca deveria bloquear o salvamento por falta dessa prop).
+  ensureNeonAwake?: (onProgress?: (msg: string) => void) => Promise<boolean>;
 }
 
-export default function DocumentManager({ onDocumentProcessed, currentUser = "admin", initialMode = "PDF" }: DocumentManagerProps) {
+export default function DocumentManager({ onDocumentProcessed, currentUser = "admin", initialMode = "PDF", ensureNeonAwake = async () => true }: DocumentManagerProps) {
   const [activeImportMode, setActiveImportMode] = useState<"PDF" | "IMAGE" | "REPORT" | "MANUAL" | "CADASTRO">(initialMode as any);
   const [dragActive, setDragActive] = useState(false);
   const [customText, setCustomText] = useState("");
   const [fileName, setFileName] = useState("");
   const [loading, setLoading] = useState(false);
-  const [saveProgress, setSaveProgress] = useState<{ current: number; total: number } | null>(null);
+  const [saveProgress, setSaveProgress] = useState<{ current: number; total: number; phase?: string } | null>(null);
   // Resultado final do salvamento, mostrado ANTES de trocar de tela — a troca de tela
   // (onDocumentProcessed, chamado pelo WebPortal) desmontava este componente antes da mensagem
   // de resultado ter qualquer chance de aparecer. Agora a troca de tela só acontece quando o
@@ -1992,6 +1997,27 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     }
 
     setLoading(true);
+    setSaveProgress({ current: 0, total: docsToSave.length, phase: "Verificando conexão com o banco de dados..." });
+
+    // Testa se o Neon está acordado ANTES de enviar qualquer fatura de verdade — sem isso, o
+    // navegador desistia (timeout de 90s) antes do servidor terminar de tentar acordar o banco
+    // (que pode levar minutos), e cada lote real "falhava" mesmo quando só estava demorando.
+    // Nada é enviado enquanto essa verificação está em andamento — o rascunho continua intacto.
+    const awake = await ensureNeonAwake((msg) =>
+      setSaveProgress({ current: 0, total: docsToSave.length, phase: msg })
+    );
+    if (!awake) {
+      setSaveProgress(null);
+      setLoading(false);
+      setSaveResult({
+        successCount: 0,
+        skippedCount: 0,
+        failedItems: [{ label: `Todas as ${docsToSave.length} faturas`, reason: "Banco de dados (Neon) não respondeu — nada foi enviado. Seus dados continuam na fila; tente salvar de novo em alguns instantes." }],
+        cancelledEarly: false
+      });
+      return;
+    }
+
     setSaveProgress({ current: 0, total: docsToSave.length });
     saveCancelRequestedRef.current = false;
     let successCount = 0;
@@ -3884,8 +3910,10 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
               <>
                 <div className="flex flex-col items-center gap-3 py-4 border-t border-white/10">
                   <RefreshCw className="h-6 w-6 text-indigo-400 animate-spin" />
-                  <span className="text-sm font-semibold text-gray-200">
-                    {saveProgress && `Salvando ${saveProgress.current} de ${saveProgress.total}...`}
+                  <span className="text-sm font-semibold text-gray-200 text-center">
+                    {saveProgress?.phase
+                      ? saveProgress.phase
+                      : saveProgress && `Salvando ${saveProgress.current} de ${saveProgress.total}...`}
                   </span>
                   <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
                     <div

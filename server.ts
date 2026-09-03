@@ -644,7 +644,11 @@ function autoSyncOrphanRecords() {
 app.get("/api/db-status", async (req, res) => {
   const dbUrl = process.env.DATABASE_URL;
   if (!dbUrl) {
-    return res.json({ connected: false, message: "DATABASE_URL não configurada." });
+    // configured:false distingue "sem banco de propósito" (modo local intencional, ver
+    // initDatabasePersistence) de "banco configurado mas fora do ar" — quem chama (ex.: o gate
+    // de "acordar o Neon" antes de salvar/excluir em lote) precisa tratar os dois de forma
+    // diferente: o primeiro não é um problema a esperar/tentar de novo, o segundo é.
+    return res.json({ connected: false, configured: false, message: "DATABASE_URL não configurada." });
   }
   // Mascara a senha mas mostra o host/porta/database mesmo quando a conexão falha — sem isso,
   // um timeout persistente escondia justamente a informação necessária pra saber pra qual
@@ -660,13 +664,14 @@ app.get("/api/db-status", async (req, res) => {
 
   const pool = getPool();
   if (!pool) {
-    return res.json({ connected: false, message: "Falha ao obter pool de conexão.", db_host: dbHostInfo, db_url_masked });
+    return res.json({ connected: false, configured: true, message: "Falha ao obter pool de conexão.", db_host: dbHostInfo, db_url_masked });
   }
   try {
     const client = await pool.connect();
     client.release();
     return res.json({
       connected: true,
+      configured: true,
       message: "Conectado ao PostgreSQL!",
       db_host: dbHostInfo,
       db_url_masked
@@ -674,6 +679,7 @@ app.get("/api/db-status", async (req, res) => {
   } catch (err: any) {
     return res.json({
       connected: false,
+      configured: true,
       message: `Erro de conexão: ${err.message || err}`,
       error: err.message,
       db_host: dbHostInfo,

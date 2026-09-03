@@ -50,6 +50,68 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   const [auditorias, setAuditorias] = useState<AuditoriaRegistro[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // Indicador de conexão com o Neon: sem isso, a única forma de descobrir que o banco está
+  // hibernado era esperar o salvamento/exclusão em lote falhar depois de minutos. Testa ao
+  // carregar a tela e a cada 3 minutos em segundo plano — o usuário também pode forçar um F5
+  // pra atualizar na hora.
+  const [dbStatus, setDbStatus] = useState<'checking' | 'online' | 'offline' | 'local'>('checking');
+
+  // configured:false = sem DATABASE_URL de propósito (modo local intencional, ver
+  // initDatabasePersistence no server) — não é uma falha a esperar/tentar de novo.
+  // configured:true (guardado numa ref, não precisa re-renderizar por isso) = existe uma
+  // DATABASE_URL configurada; connected diz se ela está respondendo agora.
+  const dbConfiguredRef = useRef(true);
+
+  const pingDbStatus = async (): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/db-status");
+      if (!res.ok) {
+        setDbStatus('offline');
+        return false;
+      }
+      const data = await res.json();
+      dbConfiguredRef.current = data?.configured !== false;
+      const ok = !!data?.connected;
+      setDbStatus(ok ? 'online' : !dbConfiguredRef.current ? 'local' : 'offline');
+      return ok;
+    } catch {
+      setDbStatus('offline');
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    pingDbStatus();
+    const interval = setInterval(pingDbStatus, 3 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Tenta "acordar" o Neon ANTES de disparar um salvamento/exclusão em lote de verdade, em vez
+  // de deixar o primeiro lote real descobrir isso do jeito caro: cada tentativa de conexão pode
+  // levar até 30s, e o código de gravação tenta até 2 rodadas de 3 tentativas cada — quase 3
+  // minutos por lote — enquanto o navegador desiste em 90s. Isso fazia o navegador reportar
+  // "falhou" em quase todo lote mesmo quando o banco só estava demorando pra acordar, e o
+  // usuário só descobria isso depois de esperar o timeout inteiro, lote por lote. Aqui, até 4
+  // tentativas rápidas (só verificam a conexão, não gravam nada) com 5s de espera entre elas —
+  // dá tempo do Neon acordar antes de qualquer dado real ser enviado, e avisa na tela o que está
+  // acontecendo em vez de ficar em silêncio.
+  const ensureNeonAwake = async (onProgress?: (msg: string) => void): Promise<boolean> => {
+    const MAX_ATTEMPTS = 4;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      onProgress?.(`Verificando conexão com o banco de dados... (tentativa ${attempt}/${MAX_ATTEMPTS})`);
+      const ok = await pingDbStatus();
+      if (ok) return true;
+      // Sem DATABASE_URL configurada = modo local intencional, não um problema de conectividade
+      // a insistir — não faz sentido tentar "acordar" um banco que nem deveria existir agora.
+      if (!dbConfiguredRef.current) return true;
+      if (attempt < MAX_ATTEMPTS) {
+        onProgress?.(`Banco de dados (Neon) ainda não respondeu. Aguardando 5s para tentar de novo... (${attempt}/${MAX_ATTEMPTS})`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
+    }
+    return false;
+  };
+
   // Layout & Sections
   const [activeSection, setActiveSection] = useState<
     "dashboard" | "secretarias" | "unidades" | "despesas" | "itens" | "lancamentos" | "documentos" | "auditoria"
@@ -180,7 +242,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   // ter feito nada, levando a cliques repetidos que disparavam a mesma exclusão em paralelo
   // várias vezes.
   const [isDeleting, setIsDeleting] = useState(false);
-  const [deleteProgress, setDeleteProgress] = useState<{ current: number; total: number } | null>(null);
+  const [deleteProgress, setDeleteProgress] = useState<{ current: number; total: number; phase?: string } | null>(null);
   // Resultado final da exclusão, mostrado ANTES de fechar a tela — antes disso, a tela fechava
   // sozinha assim que o lote terminava (sucesso, falha ou timeout, tanto faz), sem o usuário
   // conseguir ver o que realmente aconteceu, o que fazia parecer que "fechou sozinho e não sei
@@ -721,11 +783,29 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   };
 
   const executeDeleteBatch = async (items: any[], successLabel: string) => {
-    setDeleteProgress({ current: 0, total: items.length });
+    setDeleteProgress({ current: 0, total: items.length, phase: "Verificando conexão com o banco de dados..." });
     deleteCancelRequestedRef.current = false;
     let successCount = 0;
     let cancelledEarly = false;
     const failedItems: { label: string; reason: string }[] = [];
+
+    // Testa se o Neon está acordado ANTES de excluir qualquer coisa de verdade — sem isso, o
+    // navegador desistia (timeout) antes do servidor terminar de tentar acordar o banco, e o
+    // usuário nunca sabia se a exclusão realmente aconteceu ou não. Nenhum dado é apagado
+    // enquanto essa verificação está em andamento.
+    const awake = await ensureNeonAwake((msg) =>
+      setDeleteProgress({ current: 0, total: items.length, phase: msg })
+    );
+    if (!awake) {
+      setDeleteProgress(null);
+      setDeleteResult({
+        successCount: 0,
+        failedItems: items.map(item => ({ label: itemDeleteLabel(item), reason: "Banco de dados (Neon) não respondeu — nada foi excluído. Tente de novo em alguns instantes." })),
+        cancelledEarly: false
+      });
+      return;
+    }
+    setDeleteProgress({ current: 0, total: items.length });
 
     try {
       for (let start = 0; start < items.length; start += DELETE_CHUNK_SIZE) {
@@ -1044,6 +1124,25 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               </span>
               <span className="text-[10px] text-gray-400 font-mono block">PORTAL INTEGRADO DO GESTOR PÚBLICO</span>
             </div>
+            <button
+              type="button"
+              onClick={pingDbStatus}
+              title={
+                dbStatus === 'online' ? "Banco de dados (Neon) conectado. Clique para testar de novo."
+                : dbStatus === 'offline' ? "Banco de dados (Neon) não respondeu. Clique para testar de novo."
+                : dbStatus === 'local' ? "Sem banco de dados configurado — operando só em memória local (modo de desenvolvimento)."
+                : "Verificando conexão com o banco de dados..."
+              }
+              className="flex items-center gap-1.5 ml-2 px-2 py-1 rounded-full border border-white/10 bg-white/5 hover:bg-white/10 transition text-[10px] font-mono font-semibold text-gray-300"
+            >
+              <span className={`h-2 w-2 rounded-full shrink-0 ${
+                dbStatus === 'online' ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
+                : dbStatus === 'offline' ? 'bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.8)]'
+                : dbStatus === 'local' ? 'bg-gray-400'
+                : 'bg-amber-400 animate-pulse'
+              }`} />
+              {dbStatus === 'online' ? "Banco conectado" : dbStatus === 'offline' ? "Banco desconectado" : dbStatus === 'local' ? "Modo local" : "Verificando..."}
+            </button>
           </div>
 
           <div className="flex flex-wrap gap-1 bg-[#0a0a0a] p-1 rounded-lg text-xs font-semibold border border-white/10">
@@ -1979,6 +2078,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               <div className="space-y-4">
                 <DocumentManager
                   currentUser="gestor_web"
+                  ensureNeonAwake={ensureNeonAwake}
                   onDocumentProcessed={(result) => {
                     // O DocumentManager é desmontado ao trocar de aba abaixo, então o aviso
                     // dele (setMessage interno) nunca chegaria a aparecer — mostramos aqui, no
@@ -2299,12 +2399,14 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               ) : isDeleting ? (
                 <div className="flex flex-col items-center gap-3 py-4 border-t border-white/10">
                   <RefreshCw className="h-6 w-6 text-rose-400 animate-spin" />
-                  <span className="text-sm font-semibold text-gray-200">
-                    {deleteProgress
-                      ? `Excluindo ${deleteProgress.current} de ${deleteProgress.total}...`
-                      : "Excluindo..."}
+                  <span className="text-sm font-semibold text-gray-200 text-center">
+                    {deleteProgress?.phase
+                      ? deleteProgress.phase
+                      : deleteProgress
+                        ? `Excluindo ${deleteProgress.current} de ${deleteProgress.total}...`
+                        : "Excluindo..."}
                   </span>
-                  {deleteProgress && (
+                  {deleteProgress && !deleteProgress.phase && (
                     <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-rose-500 transition-all duration-150"
