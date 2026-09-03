@@ -668,13 +668,28 @@ app.get("/api/db-status", async (req, res) => {
   }
   try {
     const client = await pool.connect();
-    client.release();
+    try {
+      // Não basta abrir a conexão — o proxy do Neon pode aceitar a conexão TCP/protocolo
+      // enquanto o compute em si ainda está terminando de acordar, e só a PRIMEIRA query real
+      // fica presa esperando isso. Um "connected" baseado só em pool.connect() (sem rodar nada)
+      // podia reportar sucesso um instante antes do compute estar pronto de verdade — o gate de
+      // "acordar o Neon" via essa rota passava, mas a exclusão/gravação real que vinha logo
+      // depois ainda travava. `SELECT 1` força esperar o compute responder de verdade.
+      await client.query("SELECT 1");
+    } finally {
+      client.release();
+    }
     return res.json({
       connected: true,
       configured: true,
       message: "Conectado ao PostgreSQL!",
       db_host: dbHostInfo,
-      db_url_masked
+      db_url_masked,
+      // Visibilidade real do pool (max 10) em vez de suposição — se totalCount ficar sempre
+      // perto de 10 com waitingCount > 0, é sinal de esgotamento de conexões (ex.: tentativas
+      // de gravação abandonadas pelo navegador mas que o servidor continuou tentando em segundo
+      // plano, presas segurando uma conexão cada), não de o Neon estar hibernado.
+      pool: { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount }
     });
   } catch (err: any) {
     return res.json({
@@ -683,7 +698,8 @@ app.get("/api/db-status", async (req, res) => {
       message: `Erro de conexão: ${err.message || err}`,
       error: err.message,
       db_host: dbHostInfo,
-      db_url_masked
+      db_url_masked,
+      pool: { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount }
     });
   }
 });
