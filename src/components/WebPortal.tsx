@@ -50,16 +50,15 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   const [auditorias, setAuditorias] = useState<AuditoriaRegistro[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Indicador de conexão com o Neon: sem isso, a única forma de descobrir que o banco está
-  // hibernado era esperar o salvamento/exclusão em lote falhar depois de minutos. Testa ao
-  // carregar a tela e a cada 3 minutos em segundo plano — o usuário também pode forçar um F5
-  // pra atualizar na hora.
+  // Indicador de conexão com o Firestore: testa ao carregar a tela e a cada 3 minutos em
+  // segundo plano — o usuário também pode forçar um F5 (ou clicar no indicador) pra atualizar
+  // na hora.
   const [dbStatus, setDbStatus] = useState<'checking' | 'online' | 'offline' | 'local'>('checking');
 
-  // configured:false = sem DATABASE_URL de propósito (modo local intencional, ver
-  // initDatabasePersistence no server) — não é uma falha a esperar/tentar de novo.
-  // configured:true (guardado numa ref, não precisa re-renderizar por isso) = existe uma
-  // DATABASE_URL configurada; connected diz se ela está respondendo agora.
+  // configured:false = sem projeto do Firestore configurado de propósito (modo local
+  // intencional, ver initDatabasePersistence no server) — não é uma falha a insistir.
+  // configured:true (guardado numa ref, não precisa re-renderizar por isso) = existe um projeto
+  // configurado; connected diz se ele está respondendo agora.
   const dbConfiguredRef = useRef(true);
 
   const pingDbStatus = async (): Promise<boolean> => {
@@ -86,27 +85,23 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     return () => clearInterval(interval);
   }, []);
 
-  // Tenta "acordar" o Neon ANTES de disparar um salvamento/exclusão em lote de verdade, em vez
-  // de deixar o primeiro lote real descobrir isso do jeito caro: cada tentativa de conexão pode
-  // levar até 30s, e o código de gravação tenta até 2 rodadas de 3 tentativas cada — quase 3
-  // minutos por lote — enquanto o navegador desiste em 90s. Isso fazia o navegador reportar
-  // "falhou" em quase todo lote mesmo quando o banco só estava demorando pra acordar, e o
-  // usuário só descobria isso depois de esperar o timeout inteiro, lote por lote. Aqui, até 4
-  // tentativas rápidas (só verificam a conexão, não gravam nada) com 5s de espera entre elas —
-  // dá tempo do Neon acordar antes de qualquer dado real ser enviado, e avisa na tela o que está
-  // acontecendo em vez de ficar em silêncio.
-  const ensureNeonAwake = async (onProgress?: (msg: string) => void): Promise<boolean> => {
-    const MAX_ATTEMPTS = 4;
+  // Confirma a conexão com o Firestore ANTES de disparar um salvamento/exclusão em lote de
+  // verdade — o Firestore não hiberna (diferente do antigo Postgres/Neon, que podia levar
+  // minutos pra "acordar" e estourava o timeout do navegador), então isso é só uma checagem
+  // rápida de sanidade, não uma espera longa. Duas tentativas com 2s de intervalo bastam pra
+  // absorver uma instabilidade de rede pontual sem deixar o usuário no escuro.
+  const ensureDbReachable = async (onProgress?: (msg: string) => void): Promise<boolean> => {
+    const MAX_ATTEMPTS = 2;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       onProgress?.(`Verificando conexão com o banco de dados... (tentativa ${attempt}/${MAX_ATTEMPTS})`);
       const ok = await pingDbStatus();
       if (ok) return true;
-      // Sem DATABASE_URL configurada = modo local intencional, não um problema de conectividade
-      // a insistir — não faz sentido tentar "acordar" um banco que nem deveria existir agora.
+      // Sem Firestore configurado = modo local intencional, não um problema de conectividade a
+      // insistir.
       if (!dbConfiguredRef.current) return true;
       if (attempt < MAX_ATTEMPTS) {
-        onProgress?.(`Banco de dados (Neon) ainda não respondeu. Aguardando 5s para tentar de novo... (${attempt}/${MAX_ATTEMPTS})`);
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        onProgress?.(`Banco de dados ainda não respondeu. Tentando de novo... (${attempt}/${MAX_ATTEMPTS})`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
     }
     return false;
@@ -756,16 +751,14 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
   // Exclusão em lote manda um pedaço de N ids por requisição (endpoint /api/lancamentos/
   // excluir-lote) em vez de 1 requisição por item — mesma receita já aplicada ao salvamento em
-  // lote. Cada pedaço usa 1 única conexão com o banco no servidor, então reduzir de "1 conexão
-  // por item" pra "1 conexão por pedaço de 50" é o que tira o gargalo real (latência de rede até
-  // o Neon, paga uma vez por pedaço em vez de uma vez por item).
+  // lote. Cada pedaço vira 1 único WriteBatch no Firestore, então reduzir de "1 gravação por
+  // item" pra "1 gravação por pedaço de 50" é o que tira o gargalo real (latência de rede paga
+  // uma vez por pedaço em vez de uma vez por item).
   const DELETE_CHUNK_SIZE = 50;
-  // O Neon pode legitimamente levar dezenas de segundos pra "acordar" de um período de
-  // inatividade (já observamos casos onde uma única tentativa de conexão levou até 30s, e o
-  // código do servidor tenta reconectar até 3 vezes antes de desistir). 45s era curto demais:
-  // um lote de só 10 itens já bateu nesse limite mesmo tendo sido concluído no Postgres depois
-  // que a tela desistiu de esperar — daí o "Fechar" e recarregar (notifyChange) sempre, e não só
-  // quando o cliente acha que teve sucesso.
+  // Margem de segurança generosa pra absorver uma instabilidade de rede pontual num lote grande
+  // — não é mais sobre "esperar o banco acordar" (o Firestore não hiberna), mas ainda vale
+  // recarregar sempre (notifyChange) ao final, nunca só quando o cliente acha que teve sucesso:
+  // um timeout no navegador não significa que o servidor não terminou o trabalho.
   const DELETE_CHUNK_TIMEOUT_MS = 90000;
 
   const deleteAbortControllerRef = useRef<AbortController | null>(null);
@@ -789,18 +782,16 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     let cancelledEarly = false;
     const failedItems: { label: string; reason: string }[] = [];
 
-    // Testa se o Neon está acordado ANTES de excluir qualquer coisa de verdade — sem isso, o
-    // navegador desistia (timeout) antes do servidor terminar de tentar acordar o banco, e o
-    // usuário nunca sabia se a exclusão realmente aconteceu ou não. Nenhum dado é apagado
-    // enquanto essa verificação está em andamento.
-    const awake = await ensureNeonAwake((msg) =>
+    // Confirma a conexão com o Firestore antes de excluir qualquer coisa de verdade. Nenhum
+    // dado é apagado enquanto essa verificação está em andamento.
+    const reachable = await ensureDbReachable((msg) =>
       setDeleteProgress({ current: 0, total: items.length, phase: msg })
     );
-    if (!awake) {
+    if (!reachable) {
       setDeleteProgress(null);
       setDeleteResult({
         successCount: 0,
-        failedItems: items.map(item => ({ label: itemDeleteLabel(item), reason: "Banco de dados (Neon) não respondeu — nada foi excluído. Tente de novo em alguns instantes." })),
+        failedItems: items.map(item => ({ label: itemDeleteLabel(item), reason: "Banco de dados não respondeu — nada foi excluído. Tente de novo em alguns instantes." })),
         cancelledEarly: false
       });
       return;
@@ -871,8 +862,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
       // Sempre recarrega, mesmo quando nada foi reportado como sucesso: um timeout no cliente
       // não significa que o servidor também desistiu — a exclusão pode ter sido concluída no
-      // Postgres depois que a tela já tinha desistido de esperar a resposta (o Neon acordando de
-      // inatividade pode legitimamente levar mais que o tempo limite daqui). Sem isso, a tela
+      // Firestore depois que a tela já tinha desistido de esperar a resposta. Sem isso, a tela
       // ficava mostrando itens já excluídos como se ainda estivessem lá até o usuário forçar uma
       // atualização de verdade (ex: publicar de novo).
       notifyChange();
@@ -1128,8 +1118,8 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               type="button"
               onClick={pingDbStatus}
               title={
-                dbStatus === 'online' ? "Banco de dados (Neon) conectado. Clique para testar de novo."
-                : dbStatus === 'offline' ? "Banco de dados (Neon) não respondeu. Clique para testar de novo."
+                dbStatus === 'online' ? "Banco de dados (Firestore) conectado. Clique para testar de novo."
+                : dbStatus === 'offline' ? "Banco de dados (Firestore) não respondeu. Clique para testar de novo."
                 : dbStatus === 'local' ? "Sem banco de dados configurado — operando só em memória local (modo de desenvolvimento)."
                 : "Verificando conexão com o banco de dados..."
               }
@@ -2078,7 +2068,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               <div className="space-y-4">
                 <DocumentManager
                   currentUser="gestor_web"
-                  ensureNeonAwake={ensureNeonAwake}
+                  ensureDbReachable={ensureDbReachable}
                   onDocumentProcessed={(result) => {
                     // O DocumentManager é desmontado ao trocar de aba abaixo, então o aviso
                     // dele (setMessage interno) nunca chegaria a aparecer — mostramos aqui, no
