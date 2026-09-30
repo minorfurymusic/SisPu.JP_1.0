@@ -10,7 +10,7 @@ import {
   DocumentoProcessado, CadastroMestreUC
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
-import { initFirestoreSchema, loadStateFromFirestore, saveAllStateToFirestore, resetFirestoreConnection, getFirestoreDb, getFirestoreProjectId, deleteRowFromFirestore, upsertRowsToFirestore, deleteLancamentosLote } from "./src/db/firestore";
+import { initFirestoreSchema, loadStateFromFirestore, saveAllStateToFirestore, resetFirestoreConnection, getFirestoreDb, getFirestoreProjectId, getFirestoreDatabaseId, deleteRowFromFirestore, upsertRowsToFirestore, deleteLancamentosLote } from "./src/db/firestore";
 
 dotenv.config();
 
@@ -648,22 +648,24 @@ app.get("/api/db-status", async (req, res) => {
     return res.json({ connected: false, configured: false, message: "Nenhum projeto do Firestore configurado." });
   }
 
+  const databaseId = getFirestoreDatabaseId();
   const dbRef = getFirestoreDb();
   if (!dbRef) {
-    return res.json({ connected: false, configured: true, message: "Falha ao obter cliente do Firestore.", project_id: projectId });
+    return res.json({ connected: false, configured: true, message: "Falha ao obter cliente do Firestore.", project_id: projectId, database_id: databaseId || "(default)" });
   }
   try {
     // Não basta inicializar o cliente — só uma leitura real confirma que o Firestore está
     // respondendo de verdade, mesmo raciocínio por trás do SELECT 1 que existia pro Postgres.
     await dbRef.collection('secretarias').limit(1).get();
-    return res.json({ connected: true, configured: true, message: "Conectado ao Firestore!", project_id: projectId });
+    return res.json({ connected: true, configured: true, message: "Conectado ao Firestore!", project_id: projectId, database_id: databaseId || "(default)" });
   } catch (err: any) {
     return res.json({
       connected: false,
       configured: true,
       message: `Erro de conexão: ${err.message || err}`,
       error: err.message,
-      project_id: projectId
+      project_id: projectId,
+      database_id: databaseId || "(default)"
     });
   }
 });

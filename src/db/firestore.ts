@@ -1,4 +1,5 @@
 import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -10,6 +11,16 @@ dotenv.config();
 // de memória local intencional, o mesmo comportamento que existia sem DATABASE_URL no Postgres.
 export function getFirestoreProjectId(): string | undefined {
   return process.env.FIRESTORE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
+}
+
+// O AI Studio provisiona, por padrão, um banco Firestore NOMEADO por app (ex.:
+// "ai-studio-sispujp20-b86d99a9-..."), não o banco "(default)" que o SDK busca quando nenhum ID
+// é informado — conectar sem isso falha com "5 NOT_FOUND" mesmo com o projeto certo e a
+// permissão certa, porque o banco que o SDK está procurando (o default) simplesmente não existe
+// nesse projeto. Sem FIRESTORE_DATABASE_ID definida, cai no comportamento padrão do SDK (banco
+// "(default)"), que é o caso comum fora do AI Studio.
+export function getFirestoreDatabaseId(): string | undefined {
+  return process.env.FIRESTORE_DATABASE_ID;
 }
 
 let firestoreDb: admin.firestore.Firestore | null = null;
@@ -37,7 +48,11 @@ export function getFirestoreDb(): admin.firestore.Firestore | null {
     if (!admin.apps.length) {
       admin.initializeApp({ projectId });
     }
-    firestoreDb = admin.firestore();
+    const app = admin.app();
+    const databaseId = getFirestoreDatabaseId();
+    // getFirestore(app, databaseId) (API modular) é o único jeito de apontar pra um banco
+    // nomeado — admin.firestore() sempre busca o banco "(default)".
+    firestoreDb = databaseId ? getFirestore(app, databaseId) : getFirestore(app);
     // O Firestore rejeita campos com valor undefined por padrão — os objetos em memória deste
     // app têm vários campos opcionais (tipo_fone, medidor, etc.) que ficam undefined quando não
     // preenchidos. Sem isso, gravar essas linhas direto lançaria erro.
