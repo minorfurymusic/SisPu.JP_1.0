@@ -1,26 +1,55 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
 
 dotenv.config();
+
+// firebase-applet-config.json é gerado pelo próprio AI Studio na raiz do projeto e é commitado
+// no Git (diferente do .env) — sobrevive a reinícios de container e a resoluções de conflito que
+// já apagaram FIRESTORE_PROJECT_ID/FIRESTORE_DATABASE_ID do .env mais de uma vez. Usado só como
+// fallback: variável de ambiente configurada explicitamente sempre tem prioridade. Lido uma única
+// vez e cacheado — não muda em tempo de execução.
+let appletConfigCache: { projectId?: string; firestoreDatabaseId?: string } | null | undefined;
+function readAppletConfig(): { projectId?: string; firestoreDatabaseId?: string } | null {
+  if (appletConfigCache !== undefined) return appletConfigCache;
+  try {
+    const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+    if (!fs.existsSync(configPath)) {
+      appletConfigCache = null;
+      return null;
+    }
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    appletConfigCache = { projectId: parsed?.projectId, firestoreDatabaseId: parsed?.firestoreDatabaseId };
+    return appletConfigCache;
+  } catch (err) {
+    console.warn("[DB] Não foi possível ler firebase-applet-config.json:", err);
+    appletConfigCache = null;
+    return null;
+  }
+}
 
 // O Cloud Run (onde o AI Studio publica este app) define GOOGLE_CLOUD_PROJECT automaticamente
 // no ambiente de todo serviço — não precisa configurar nada manualmente lá. Em desenvolvimento
 // local, ou pra apontar pra um projeto do Firebase diferente do padrão, dá pra definir
-// FIRESTORE_PROJECT_ID no .env. Sem nenhuma dessas, tratamos como "sem banco configurado" — modo
-// de memória local intencional, o mesmo comportamento que existia sem DATABASE_URL no Postgres.
+// FIRESTORE_PROJECT_ID no .env. Como último recurso, cai pro projectId de
+// firebase-applet-config.json (ver acima). Sem nenhuma dessas, tratamos como "sem banco
+// configurado" — modo de memória local intencional, o mesmo comportamento que existia sem
+// DATABASE_URL no Postgres.
 export function getFirestoreProjectId(): string | undefined {
-  return process.env.FIRESTORE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
+  return process.env.FIRESTORE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || readAppletConfig()?.projectId;
 }
 
 // O AI Studio provisiona, por padrão, um banco Firestore NOMEADO por app (ex.:
 // "ai-studio-sispujp20-b86d99a9-..."), não o banco "(default)" que o SDK busca quando nenhum ID
 // é informado — conectar sem isso falha com "5 NOT_FOUND" mesmo com o projeto certo e a
 // permissão certa, porque o banco que o SDK está procurando (o default) simplesmente não existe
-// nesse projeto. Sem FIRESTORE_DATABASE_ID definida, cai no comportamento padrão do SDK (banco
-// "(default)"), que é o caso comum fora do AI Studio.
+// nesse projeto. Sem FIRESTORE_DATABASE_ID definida (nem o campo equivalente em
+// firebase-applet-config.json), cai no comportamento padrão do SDK (banco "(default)"), que é o
+// caso comum fora do AI Studio.
 export function getFirestoreDatabaseId(): string | undefined {
-  return process.env.FIRESTORE_DATABASE_ID;
+  return process.env.FIRESTORE_DATABASE_ID || readAppletConfig()?.firestoreDatabaseId;
 }
 
 let firestoreDb: admin.firestore.Firestore | null = null;
