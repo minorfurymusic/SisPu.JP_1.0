@@ -10,7 +10,7 @@ import {
   DocumentoProcessado, CadastroMestreUC
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
-import { initFirestoreSchema, loadStateFromFirestore, saveAllStateToFirestore, resetFirestoreConnection, getFirestoreDb, getFirestoreProjectId, getFirestoreDatabaseId, deleteRowFromFirestore, upsertRowsToFirestore, deleteLancamentosLote } from "./src/db/firestore";
+import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres, deleteLancamentosLote } from "./src/db/postgres";
 
 dotenv.config();
 
@@ -30,7 +30,7 @@ const ai = new GoogleGenAI({
 // JSON Middleware
 app.use(express.json({ limit: '10mb' }));
 
-// In-Memory/JSON File Database State (Simulating Firestore with triggers)
+// In-Memory/JSON File Database State (Simulating PostgreSQL with triggers)
 const DB_FILE = path.join(process.cwd(), "sispu_db.json");
 
 interface DatabaseState {
@@ -66,7 +66,7 @@ const initialDBState: DatabaseState = {
   cadastro_mestre_ucs: []
 };
 
-// Database utility functions with automatic write persistence (Firestore + Local Cache)
+// Database utility functions with automatic write persistence (PostgreSQL + Local Cache)
 function loadDB(): DatabaseState {
   try {
     if (fs.existsSync(DB_FILE)) {
@@ -81,70 +81,75 @@ function loadDB(): DatabaseState {
   return initialDBState;
 }
 
-// Guards against clobbering real Firestore data on boot: saveAllStateToFirestore() only ever
-// upserts (set com merge) — nunca apaga linhas. A exclusão acontece só via
-// deleteRowFromFirestore(), chamada explicitamente pelos endpoints DELETE para a linha exata que
-// o usuário removeu, nunca como efeito colateral de outra gravação produzir um array menor. Essa
-// flag importa pro upsert em si: logo depois de um cold start, `db` ainda é o estado local/vazio
-// até as linhas reais serem lidas de volta do Firestore — um upsert que adiantasse essa leitura
-// sobrescreveria campos de linhas reais com valores do estado inicial. Só vira true quando temos
-// certeza que `db` reflete o Firestore de verdade (ou quando decidimos deliberadamente semear o
-// Firestore a partir de um estado confirmado vazio).
-let dbHydrated = false;
+// Guards against clobbering real Neon data on boot: saveAllStateToPostgres() only ever
+// upserts (INSERT ... ON CONFLICT DO UPDATE) — it never deletes rows. Deletion happens only
+// through deleteRowFromPostgres(), called explicitly from the DELETE endpoints for the exact
+// row a user removed, never as a side effect of some other save producing a smaller array.
+// This flag still matters for the upsert itself: right after a cold start, `db` is still the
+// local/empty seed state (with placeholder ids like "1") until the real rows are pulled back
+// from Postgres — an upsert that races ahead of that pull would overwrite real rows' fields
+// with seed defaults. It only turns true once we know `db` truly reflects Postgres's contents
+// (or once we've deliberately decided to seed Postgres from a confirmed-empty state).
+let postgresHydrated = false;
 // Promise da hidratação inicial do boot (atribuída em startServer()). app.listen() não espera
-// por ela — o servidor precisa responder rápido pra health checks da plataforma de hospedagem —
-// mas uma gravação crítica que chegue durante essa janela (poucos segundos) precisa esperar ela
-// terminar antes de decidir se tem Firestore pra gravar ou não. Sem isso, dbHydrated ainda
-// estaria false nesse instante e a gravação "teria sucesso" só localmente, sem nunca ter tentado
-// o Firestore de verdade.
+// por ela — o servidor precisa responder rápido pra health checks da plataforma de hospedagem
+// — mas uma gravação crítica que chegue durante essa janela (poucos segundos, mais ainda se o
+// Neon estiver "acordando" de hibernação) precisa esperar ela terminar antes de decidir se tem
+// Postgres pra gravar ou não. Sem isso, postgresHydrated ainda estaria false nesse instante e a
+// gravação "teria sucesso" só localmente, sem nunca ter tentado o Postgres de verdade.
 let hydrationPromise: Promise<void> = Promise.resolve();
 
+// Espera curta antes de tentar de novo — o plano Free do Neon hiberna o compute quando fica
+// ocioso, e a primeira conexão depois de um tempo parado pode demorar alguns segundos pra
+// acordar. Uma falha isolada nesse instante não deveria virar perda de dado.
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Só usar em rotas onde o cliente precisa saber, de verdade, se a gravação no Firestore
-// funcionou (criar/editar lançamento, documento, homologar) — aguarda a escrita real no banco em
-// vez de disparar em segundo plano, e tenta de novo uma vez antes de desistir. Sem isso, o
+// Só usar em rotas onde o cliente precisa saber, de verdade, se a gravação em Postgres
+// funcionou (criar/editar lançamento, documento, homologar) — aguarda a escrita real no banco
+// em vez de disparar em segundo plano, e tenta de novo uma vez antes de desistir. Sem isso, o
 // servidor respondia "sucesso" assim que a escrita no arquivo local terminava, sem saber (nem
-// contar pro cliente) se a gravação no Firestore tinha realmente funcionado — a fatura parecia
-// salva, só existia no arquivo local daquele container, e sumia de vez no próximo boot/republicação.
+// contar pro cliente) se a gravação no Postgres tinha realmente funcionado — se o Neon estivesse
+// "acordando" de hibernação naquele instante e a escrita falhasse, a fatura parecia salva, só
+// existia no arquivo local daquele container, e sumia de vez no próximo boot/republicação.
 async function saveDBCritical(state: DatabaseState): Promise<void> {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
   } catch (err) {
     console.error("Error saving DB file:", err);
   }
-  if (!dbHydrated) {
-    // Ainda dentro da janela de hidratação do boot? Espera ela terminar antes de decidir — só
-    // depois disso sabemos se o Firestore está configurado e pronto de verdade.
+  if (!postgresHydrated) {
+    // Ainda dentro da janela de hidratação do boot? Espera ela terminar antes de decidir —
+    // só depois disso sabemos se DATABASE_URL existe de verdade e se o Postgres está pronto.
     await hydrationPromise;
   }
-  if (!dbHydrated) {
-    if (getFirestoreProjectId()) {
-      // Firestore configurado, mas a hidratação ainda não confirmou a conexão. Não finge
-      // sucesso local: o chamador precisa saber que isso não foi confirmado, pra não achar que
-      // salvou quando na verdade só existe no arquivo local desse container.
-      throw new Error("Firestore configurado mas ainda não confirmado/disponível.");
+  if (!postgresHydrated) {
+    if (getDbUrl()) {
+      // DATABASE_URL existe, mas a hidratação ainda não confirmou o Postgres (provavelmente
+      // inacessível no momento — Neon hibernado, rede instável). Não finge sucesso local: o
+      // chamador precisa saber que isso não foi confirmado, pra não achar que salvou quando na
+      // verdade só existe no arquivo local desse container.
+      throw new Error("PostgreSQL configurado mas ainda não confirmado/disponível.");
     }
-    console.warn("[DB] Sincronização com o Firestore adiada: nenhum projeto configurado.");
+    console.warn("[DB] Sincronização com o PostgreSQL adiada: DATABASE_URL não configurada.");
     return;
   }
   try {
-    await saveAllStateToFirestore(state);
+    await saveAllStateToPostgres(state);
   } catch (err) {
-    console.warn("[DB] Falha na 1ª tentativa de gravar no Firestore, tentando novamente em 2s:", err);
+    console.warn("[DB] Falha na 1ª tentativa de gravar no Postgres, tentando novamente em 2s:", err);
     await delay(2000);
-    await saveAllStateToFirestore(state);
+    await saveAllStateToPostgres(state);
   }
 }
 
 // Grava só as linhas de fato tocadas por uma operação (ex: 1 fatura homologada = documento +
-// item de despesa + lançamento, no máximo 3-4 linhas), em vez de saveDBCritical/saveAllStateToFirestore
-// que reconstrói TODAS as linhas de TODAS as coleções a cada chamada. Endpoints de alto volume
+// item de despesa + lançamento, no máximo 3-4 linhas), em vez de saveDBCritical/saveAllStateToPostgres
+// que reconstrói TODAS as linhas de TODAS as tabelas a cada chamada. Endpoints de alto volume
 // (salvar fatura, homologar) usam esta função — o custo por chamada não cresce com o tamanho do
 // banco, só com o número de linhas realmente alteradas naquela operação. Mesma semântica de
-// confirmação da saveDBCritical: espera a hidratação do boot, lança erro se o Firestore estiver
+// confirmação da saveDBCritical: espera a hidratação do boot, lança erro se o Postgres estiver
 // configurado mas indisponível, e tenta de novo uma vez após 2s antes de desistir.
 async function saveDBTargeted(state: DatabaseState, rows: { table: string; row: any }[]): Promise<void> {
   try {
@@ -152,45 +157,45 @@ async function saveDBTargeted(state: DatabaseState, rows: { table: string; row: 
   } catch (err) {
     console.error("Error saving DB file:", err);
   }
-  if (!dbHydrated) {
+  if (!postgresHydrated) {
     await hydrationPromise;
   }
-  if (!dbHydrated) {
-    if (getFirestoreProjectId()) {
-      throw new Error("Firestore configurado mas ainda não confirmado/disponível.");
+  if (!postgresHydrated) {
+    if (getDbUrl()) {
+      throw new Error("PostgreSQL configurado mas ainda não confirmado/disponível.");
     }
-    console.warn("[DB] Sincronização com o Firestore adiada: nenhum projeto configurado.");
+    console.warn("[DB] Sincronização com o PostgreSQL adiada: DATABASE_URL não configurada.");
     return;
   }
 
   try {
-    await upsertRowsToFirestore(rows);
+    await upsertRowsToPostgres(rows);
   } catch (err) {
-    console.warn("[DB] Falha na 1ª tentativa de gravar registro(s) no Firestore, tentando novamente em 2s:", err);
+    console.warn("[DB] Falha na 1ª tentativa de gravar registro(s) no Postgres, tentando novamente em 2s:", err);
     await delay(2000);
-    await upsertRowsToFirestore(rows);
+    await upsertRowsToPostgres(rows);
   }
 }
 
-let isSavingToDb = false;
+let isSavingToPostgres = false;
 let pendingStateToSave: DatabaseState | null = null;
 
-async function processAsyncDbSync() {
-  if (isSavingToDb) return;
+async function processAsyncPostgresSync() {
+  if (isSavingToPostgres) return;
   if (!pendingStateToSave) return;
 
-  isSavingToDb = true;
+  isSavingToPostgres = true;
   while (pendingStateToSave) {
     const currentState = pendingStateToSave;
     pendingStateToSave = null;
     try {
-      await saveAllStateToFirestore(currentState);
+      await saveAllStateToPostgres(currentState);
     } catch (err: any) {
-      console.error("[DB] Falha ao persistir estado no Firestore:", err.message || err);
+      console.error("[DB] Falha ao persistir estado no PostgreSQL:", err.message || err);
       await delay(2000);
     }
   }
-  isSavingToDb = false;
+  isSavingToPostgres = false;
 }
 
 function saveDB(state: DatabaseState) {
@@ -199,30 +204,31 @@ function saveDB(state: DatabaseState) {
   } catch (err) {
     console.error("Error saving DB file:", err);
   }
-  if (!dbHydrated) {
-    console.warn("[DB] Sincronização com o Firestore adiada: estado local ainda não foi confirmado contra o banco (evitando apagar dados reais).");
+  if (!postgresHydrated) {
+    console.warn("[DB] Sincronização com o PostgreSQL adiada: estado local ainda não foi confirmado contra o banco (evitando apagar dados reais).");
     return;
   }
   pendingStateToSave = state;
-  processAsyncDbSync().catch(err => {
-    console.error("[DB] Erro no processAsyncDbSync:", err);
+  processAsyncPostgresSync().catch(err => {
+    console.error("[DB] Erro no processAsyncPostgresSync:", err);
   });
 }
 
 // Global DB instance
 let db: DatabaseState = loadDB();
 
-// Se o Firestore está configurado mas inacessível no boot (rede instável, credenciais ainda não
-// propagadas), dbHydrated fica false e as gravações críticas passam a reportar erro em vez de
-// fingir sucesso local — mas sem isso aqui, ninguém tentaria de novo até o próximo restart do
-// processo. Reagenda uma nova tentativa completa de hidratação a cada 15s até conseguir.
+// Se DATABASE_URL está configurada mas o Postgres estava inacessível no boot (Neon hibernado,
+// rede instável), postgresHydrated fica false e as gravações críticas passam a reportar erro em
+// vez de fingir sucesso local — mas sem isso aqui, ninguém tentaria o Postgres de novo até o
+// próximo restart do processo. Reagenda uma nova tentativa completa de hidratação a cada 15s até
+// conseguir.
 let hydrationRetryScheduled = false;
 function scheduleHydrationRetry() {
   if (hydrationRetryScheduled) return;
   hydrationRetryScheduled = true;
   setTimeout(() => {
     hydrationRetryScheduled = false;
-    console.log("[DB] Tentando reconectar ao Firestore em segundo plano...");
+    console.log("[DB] Tentando reconectar ao PostgreSQL em segundo plano...");
     initDatabasePersistence().catch(err => {
       console.error("[DB] Erro na nova tentativa de hidratação:", err);
     });
@@ -231,69 +237,71 @@ function scheduleHydrationRetry() {
 
 async function initDatabasePersistence() {
   try {
-    const configuredProject = getFirestoreProjectId();
-    const initialized = await initFirestoreSchema();
+    const configuredUrl = getDbUrl();
+    const initialized = await initPostgresSchema();
     if (!initialized) {
-      if (!configuredProject) {
-        // Nenhum projeto do Firestore configurado — nada a proteger, o arquivo JSON é o único
-        // armazenamento, então gravações são seguras na hora. É o modo local permanente e
-        // intencional (ex.: desenvolvimento).
-        dbHydrated = true;
+      if (!configuredUrl) {
+        // No DATABASE_URL configured at all — nothing to protect, the JSON file is the only
+        // store, so saves are safe immediately. This is the permanent, intentional local mode.
+        postgresHydrated = true;
         autoSyncOrphanRecords();
         return;
       }
-      // Projeto configurado, mas a conexão falhou no boot (rede instável, credenciais ainda não
-      // propagadas). Manter dbHydrated=false (gravações críticas respondem erro real em vez de
-      // fingir sucesso) e tentar de novo em segundo plano até conseguir.
-      console.warn("[DB] Firestore configurado mas inacessível no boot. Tentando novamente em segundo plano...");
+      // DATABASE_URL IS configured but the connection failed (e.g. Neon ainda hibernado demorou
+      // mais que o orçamento de retry do boot). Tratar isso como "sem banco" — o que o código
+      // fazia antes — deixava postgresHydrated=true pro resto da vida do processo: qualquer
+      // gravação depois disso "teria sucesso" só localmente, pra sempre, sem nunca mais tentar o
+      // Postgres de novo até o próximo restart. Em vez disso, mantém postgresHydrated=false
+      // (gravações críticas respondem erro real em vez de fingir sucesso) e tenta de novo em
+      // segundo plano até conseguir.
+      console.warn("[DB] Postgres configurado mas inacessível no boot. Tentando novamente em segundo plano...");
       scheduleHydrationRetry();
       return;
     }
-    const fsState = await loadStateFromFirestore();
-    if (fsState && (fsState.secretarias?.length > 0 || fsState.documentos_processados?.length > 0)) {
+    const pgState = await loadStateFromPostgres();
+    if (pgState && (pgState.secretarias?.length > 0 || pgState.documentos_processados?.length > 0)) {
       db = {
-        usuarios: fsState.usuarios || [],
-        secretarias: fsState.secretarias || [],
-        unidades: fsState.unidades || [],
-        despesas: fsState.despesas || [],
-        itens_despesas: fsState.itens_despesas || [],
-        lancamentos: fsState.lancamentos || [],
-        pessoas: fsState.pessoas || [],
-        contatos_email: fsState.contatos_email || [],
-        logs_erros: fsState.logs_erros || [],
-        auditoria_registros: fsState.auditoria_registros || [],
-        documentos_processados: fsState.documentos_processados || [],
-        cadastro_mestre_ucs: fsState.cadastro_mestre_ucs || [],
+        usuarios: pgState.usuarios || [],
+        secretarias: pgState.secretarias || [],
+        unidades: pgState.unidades || [],
+        despesas: pgState.despesas || [],
+        itens_despesas: pgState.itens_despesas || [],
+        lancamentos: pgState.lancamentos || [],
+        pessoas: pgState.pessoas || [],
+        contatos_email: pgState.contatos_email || [],
+        logs_erros: pgState.logs_erros || [],
+        auditoria_registros: pgState.auditoria_registros || [],
+        documentos_processados: pgState.documentos_processados || [],
+        cadastro_mestre_ucs: pgState.cadastro_mestre_ucs || [],
       };
       fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
-      console.log("[DB] Estado restaurado com sucesso diretamente do Firestore!");
-      // Só agora `db` reflete o Firestore de verdade — seguro deixar salvamentos/exclusões
-      // sincronizarem por diferença.
-      dbHydrated = true;
-    } else if (fsState) {
-      // Firestore acessível e confirmado vazio (não é falha de leitura) — seguro semear a
-      // partir do estado local uma vez, e tratá-lo como fonte da verdade daqui em diante.
-      console.log("[DB] Firestore está sem registros. Semeando dados iniciais...");
-      dbHydrated = true;
-      await saveAllStateToFirestore(db);
+      console.log("[DB] Estado restaurado com sucesso diretamente do PostgreSQL!");
+      // Only now does `db` provably match Postgres — safe to let saves sync/delete by diff.
+      postgresHydrated = true;
+    } else if (pgState) {
+      // Postgres reachable and confirmed empty (not a read failure) — safe to seed it once
+      // from the local state, then treat it as the source of truth from here on.
+      console.log("[DB] PostgreSQL está sem registros. Semeando dados iniciais...");
+      postgresHydrated = true;
+      await saveAllStateToPostgres(db);
     } else {
-      console.error("[DB] Não foi possível confirmar o estado do Firestore; mantendo sincronização em pausa até o próximo carregamento bem-sucedido.");
+      console.error("[DB] Não foi possível confirmar o estado do PostgreSQL; mantendo sincronização em pausa até o próximo carregamento bem-sucedido.");
     }
   } catch (err) {
-    console.error("[DB] Erro ao inicializar Firestore:", err);
+    console.error("[DB] Erro ao inicializar banco PostgreSQL:", err);
   }
   autoSyncOrphanRecords();
 }
 
 
-// Simulated Firestore Trigger-based Auditor
-// Só grava no arquivo local, nunca dispara sincronização com o Firestore. logAudit() é chamado
+// Simulated PostgreSQL Trigger-based Auditor
+// Só grava no arquivo local, nunca dispara sincronização com o Postgres. logAudit() é chamado
 // várias vezes por uma única ação do usuário (uma vez por unidade/item/lançamento/documento
 // tocado) — se cada chamada disparasse saveDB() (que sincroniza TODAS as tabelas, não só o
 // registro do log), uma única fatura salva podia disparar de 3 a 5 sincronizações completas
 // redundantes. Com o banco crescendo (centenas de lançamentos e documentos), isso foi o que
 // fez salvar/excluir ficar cada vez mais lento. O registro de auditoria em si ainda chega no
-// Firestore — só não imediatamente a cada chamada, e sim já embutido na próxima sincronização
+// Postgres — só não imediatamente a cada chamada, e sim já embutido na próxima sincronização
 // real que uma operação de negócio (saveDB/saveDBCritical) disparar de qualquer forma.
 function saveLocalOnly(state: DatabaseState) {
   try {
@@ -618,7 +626,7 @@ function autoSyncOrphanRecords() {
         const idx = db.unidades.findIndex(u => String(u.id) === String(dup.id));
         if (idx !== -1) {
           db.unidades.splice(idx, 1);
-          deleteRowFromFirestore("unidades", dup.id).catch(err => console.error("Erro ao excluir unidade duplicada do Firestore:", err));
+          deleteRowFromPostgres("unidades", dup.id).catch(err => console.error("Erro ao excluir unidade duplicada do Postgres:", err));
           hasChanges = true;
         }
       });
@@ -632,41 +640,112 @@ function autoSyncOrphanRecords() {
 
 // REST API DEFINITIONS - Mirroring PySide6 repositories and FastAPI routes
 
-// --- BANCO DE DADOS (STATUS DO FIRESTORE) ---
-// Não existe mais um endpoint de configuração via connection string (tipo o antigo
-// /api/db-config do Postgres/Neon): o Firestore não recebe senha digitada pelo usuário — ele usa
-// as credenciais padrão do ambiente (automáticas no Cloud Run do mesmo projeto GCP, ou
-// FIRESTORE_PROJECT_ID/GOOGLE_APPLICATION_CREDENTIALS em desenvolvimento local). Não há segredo
-// pra perder num restart do jeito que a DATABASE_URL guardada em .env conseguia sumir.
+// --- BANCO DE DADOS (POSTGRESQL NEON STATUS E CONFIGURAÇÃO) ---
 app.get("/api/db-status", async (req, res) => {
-  const projectId = getFirestoreProjectId();
-  if (!projectId) {
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) {
     // configured:false distingue "sem banco de propósito" (modo local intencional, ver
     // initDatabasePersistence) de "banco configurado mas fora do ar" — quem chama (ex.: o gate
-    // de conectividade antes de salvar/excluir em lote) precisa tratar os dois de forma
+    // de "acordar o Neon" antes de salvar/excluir em lote) precisa tratar os dois de forma
     // diferente: o primeiro não é um problema a esperar/tentar de novo, o segundo é.
-    return res.json({ connected: false, configured: false, message: "Nenhum projeto do Firestore configurado." });
+    return res.json({ connected: false, configured: false, message: "DATABASE_URL não configurada." });
   }
+  // Mascara a senha mas mostra o host/porta/database mesmo quando a conexão falha — sem isso,
+  // um timeout persistente escondia justamente a informação necessária pra saber pra qual
+  // servidor o app está tentando conectar (Neon, Cloud SQL, ou outro).
+  let dbHostInfo = "não foi possível interpretar a URL";
+  try {
+    const u = new URL(dbUrl);
+    dbHostInfo = `${u.hostname}:${u.port || "5432"}${u.pathname}`;
+  } catch {
+    // ignore parse errors, keep placeholder
+  }
+  const db_url_masked = dbUrl.replace(/:([^:@]+)@/, ":*****@");
 
-  const databaseId = getFirestoreDatabaseId();
-  const dbRef = getFirestoreDb();
-  if (!dbRef) {
-    return res.json({ connected: false, configured: true, message: "Falha ao obter cliente do Firestore.", project_id: projectId, database_id: databaseId || "(default)" });
+  const pool = getPool();
+  if (!pool) {
+    return res.json({ connected: false, configured: true, message: "Falha ao obter pool de conexão.", db_host: dbHostInfo, db_url_masked });
   }
   try {
-    // Não basta inicializar o cliente — só uma leitura real confirma que o Firestore está
-    // respondendo de verdade, mesmo raciocínio por trás do SELECT 1 que existia pro Postgres.
-    await dbRef.collection('secretarias').limit(1).get();
-    return res.json({ connected: true, configured: true, message: "Conectado ao Firestore!", project_id: projectId, database_id: databaseId || "(default)" });
+    const client = await pool.connect();
+    try {
+      // Não basta abrir a conexão — o proxy do Neon pode aceitar a conexão TCP/protocolo
+      // enquanto o compute em si ainda está terminando de acordar, e só a PRIMEIRA query real
+      // fica presa esperando isso. Um "connected" baseado só em pool.connect() (sem rodar nada)
+      // podia reportar sucesso um instante antes do compute estar pronto de verdade — o gate de
+      // "acordar o Neon" via essa rota passava, mas a exclusão/gravação real que vinha logo
+      // depois ainda travava. `SELECT 1` força esperar o compute responder de verdade.
+      await client.query("SELECT 1");
+    } finally {
+      client.release();
+    }
+    return res.json({
+      connected: true,
+      configured: true,
+      message: "Conectado ao PostgreSQL!",
+      db_host: dbHostInfo,
+      db_url_masked,
+      // Visibilidade real do pool (max 10) em vez de suposição — se totalCount ficar sempre
+      // perto de 10 com waitingCount > 0, é sinal de esgotamento de conexões (ex.: tentativas
+      // de gravação abandonadas pelo navegador mas que o servidor continuou tentando em segundo
+      // plano, presas segurando uma conexão cada), não de o Neon estar hibernado.
+      pool: { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount }
+    });
   } catch (err: any) {
     return res.json({
       connected: false,
       configured: true,
       message: `Erro de conexão: ${err.message || err}`,
       error: err.message,
-      project_id: projectId,
-      database_id: databaseId || "(default)"
+      db_host: dbHostInfo,
+      db_url_masked,
+      pool: { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount }
     });
+  }
+});
+
+app.post("/api/db-config", async (req, res) => {
+  try {
+    const { database_url } = req.body || {};
+    if (!database_url || typeof database_url !== "string") {
+      return res.status(400).json({ success: false, error: "Connection string 'database_url' é obrigatória." });
+    }
+
+    const trimmed = database_url.trim();
+    process.env.DATABASE_URL = trimmed;
+
+    // Persist to .env
+    let envContent = "";
+    if (fs.existsSync(".env")) {
+      envContent = fs.readFileSync(".env", "utf-8");
+    }
+    if (envContent.includes("DATABASE_URL=")) {
+      envContent = envContent.replace(/DATABASE_URL=.*(\r?\n|$)/, `DATABASE_URL="${trimmed}"\n`);
+    } else {
+      envContent += `\nDATABASE_URL="${trimmed}"\n`;
+    }
+    fs.writeFileSync(".env", envContent, "utf-8");
+
+    await resetPool();
+    const initialized = await initPostgresSchema();
+    if (!initialized) {
+      return res.status(400).json({
+        success: false,
+        error: "Falha ao conectar com a Connection String fornecida. Verifique a senha e tente novamente."
+      });
+    }
+
+    await initDatabasePersistence();
+
+    return res.json({
+      success: true,
+      message: "PostgreSQL conectado e sincronizado com sucesso!",
+      secretarias_count: db.secretarias.length,
+      documentos_count: db.documentos_processados.length
+    });
+  } catch (err: any) {
+    console.error("Erro em /api/db-config:", err);
+    return res.status(500).json({ success: false, error: err.message || "Erro interno ao configurar banco." });
   }
 });
 
@@ -799,15 +878,15 @@ app.delete("/api/secretarias/:id", async (req, res) => {
 
   const oldVal = { ...db.secretarias[index] };
   db.secretarias.splice(index, 1);
-  // A remoção no Firestore já é feita explicitamente e sob confirmação logo abaixo
-  // (deleteRowFromFirestore) — chamar saveDB(db) aqui disparava uma sincronização completa de
-  // todas as tabelas em paralelo com essa exclusão, deixando exclusões em lote (centenas de
-  // itens) extremamente lentas.
+  // A remoção no Postgres já é feita explicitamente e sob confirmação logo abaixo
+  // (deleteRowFromPostgres) — chamar saveDB(db) aqui disparava uma sincronização completa de
+  // todas as tabelas em paralelo com essa exclusão, competindo pela mesma conexão e deixando
+  // exclusões em lote (centenas de itens) extremamente lentas.
   saveLocalOnly(db);
   try {
-    await deleteRowFromFirestore("secretarias", id);
+    await deleteRowFromPostgres("secretarias", id);
   } catch (err: any) {
-    console.error("Erro ao excluir secretaria do Firestore:", err.message || err);
+    console.error("Erro ao excluir secretaria do Postgres:", err.message || err);
     return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — tente de novo em alguns segundos." });
   }
 
@@ -817,7 +896,7 @@ app.delete("/api/secretarias/:id", async (req, res) => {
 });
 
 // --- CADASTRO MESTRE DE UNIDADES CONSUMIDORAS (UCs) ---
-// Persistido no mesmo banco (JSON local + Firestore) que todo o resto do sistema — antes
+// Persistido no mesmo banco (JSON local + Postgres/Neon) que todo o resto do sistema — antes
 // vivia só no localStorage do navegador com uma lista fixa de UCs de exemplo como fallback, o
 // que fazia exclusões sumirem ao trocar de navegador/dispositivo e os exemplos fabricados
 // reaparecerem como se fossem cadastros reais.
@@ -909,13 +988,13 @@ app.delete("/api/cadastro-mestre-ucs/:id", async (req, res) => {
   const oldVal = { ...db.cadastro_mestre_ucs[index] };
   db.cadastro_mestre_ucs.splice(index, 1);
   // Ver comentário equivalente em /api/secretarias/:id: a exclusão real já é
-  // confirmada abaixo via deleteRowFromFirestore; saveDB(db) aqui só disparava
+  // confirmada abaixo via deleteRowFromPostgres; saveDB(db) aqui só disparava
   // uma sincronização completa redundante e concorrente.
   saveLocalOnly(db);
   try {
-    await deleteRowFromFirestore("cadastro_mestre_ucs", id);
+    await deleteRowFromPostgres("cadastro_mestre_ucs", id);
   } catch (err: any) {
-    console.error("Erro ao excluir UC do Firestore:", err.message || err);
+    console.error("Erro ao excluir UC do Postgres:", err.message || err);
     return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — tente de novo em alguns segundos." });
   }
   logAudit("cadastro_mestre_ucs", id, "DELETE", usuario, oldVal, null);
@@ -1126,9 +1205,9 @@ app.delete("/api/unidades/:id", async (req, res) => {
   db.unidades.splice(index, 1);
   saveLocalOnly(db);
   try {
-    await deleteRowFromFirestore("unidades", id);
+    await deleteRowFromPostgres("unidades", id);
   } catch (err: any) {
-    console.error("Erro ao excluir unidade do Firestore:", err.message || err);
+    console.error("Erro ao excluir unidade do Postgres:", err.message || err);
     return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — tente de novo em alguns segundos." });
   }
 
@@ -1236,9 +1315,9 @@ app.delete("/api/despesas/:id", async (req, res) => {
   db.despesas.splice(index, 1);
   saveLocalOnly(db);
   try {
-    await deleteRowFromFirestore("despesas", id);
+    await deleteRowFromPostgres("despesas", id);
   } catch (err: any) {
-    console.error("Erro ao excluir despesa do Firestore:", err.message || err);
+    console.error("Erro ao excluir despesa do Postgres:", err.message || err);
     return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — tente de novo em alguns segundos." });
   }
 
@@ -1367,9 +1446,9 @@ app.delete("/api/itens_despesas/:id", async (req, res) => {
   db.itens_despesas.splice(index, 1);
   saveLocalOnly(db);
   try {
-    await deleteRowFromFirestore("itens_despesas", id);
+    await deleteRowFromPostgres("itens_despesas", id);
   } catch (err: any) {
-    console.error("Erro ao excluir item de despesa do Firestore:", err.message || err);
+    console.error("Erro ao excluir item de despesa do Postgres:", err.message || err);
     return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — tente de novo em alguns segundos." });
   }
 
@@ -1644,7 +1723,7 @@ app.post("/api/lancamentos", async (req, res) => {
   try {
     await saveDBCritical(db);
   } catch (err: any) {
-    console.error("[POST lancamentos] Falha ao confirmar gravação no Firestore:", err.message || err);
+    console.error("[POST lancamentos] Falha ao confirmar gravação no Postgres:", err.message || err);
     return res.status(503).json({
       error: "Não foi possível confirmar a gravação no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — aguarde alguns segundos e tente salvar de novo."
     });
@@ -1706,7 +1785,7 @@ app.put("/api/lancamentos/:id", async (req, res) => {
   try {
     await saveDBCritical(db);
   } catch (err: any) {
-    console.error("[PUT lancamentos] Falha ao confirmar gravação no Firestore:", err.message || err);
+    console.error("[PUT lancamentos] Falha ao confirmar gravação no Postgres:", err.message || err);
     return res.status(503).json({
       error: "Não foi possível confirmar a gravação no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — aguarde alguns segundos e tente salvar de novo."
     });
@@ -1735,7 +1814,7 @@ app.post("/api/lancamentos/excluir-lote", async (req, res) => {
   try {
     result = await deleteLancamentosLote(ids);
   } catch (err: any) {
-    console.error("[excluir-lote] Falha ao excluir no Firestore:", err.message || err);
+    console.error("[excluir-lote] Falha ao excluir no Postgres:", err.message || err);
     return res.status(503).json({
       error: "Não foi possível confirmar a exclusão no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — aguarde alguns segundos e tente de novo."
     });
@@ -1786,9 +1865,9 @@ app.delete("/api/lancamentos/:id", async (req, res) => {
     const deletedLanc = db.lancamentos.splice(index, 1)[0];
     found = true;
     try {
-      await deleteRowFromFirestore("lancamentos", id);
+      await deleteRowFromPostgres("lancamentos", id);
     } catch (err: any) {
-      console.error("Erro ao excluir lançamento do Firestore:", err.message || err);
+      console.error("Erro ao excluir lançamento do Postgres:", err.message || err);
       pgFailed = true;
     }
 
@@ -1796,9 +1875,9 @@ app.delete("/api/lancamentos/:id", async (req, res) => {
     if (db.documentos_processados) {
       db.documentos_processados = db.documentos_processados.filter(d => String(d.id) !== String(id));
       try {
-        await deleteRowFromFirestore("documentos_processados", id);
+        await deleteRowFromPostgres("documentos_processados", id);
       } catch (err: any) {
-        console.error("Erro ao excluir documento do Firestore:", err.message || err);
+        console.error("Erro ao excluir documento do Postgres:", err.message || err);
         pgFailed = true;
       }
     }
@@ -1814,9 +1893,9 @@ app.delete("/api/lancamentos/:id", async (req, res) => {
       db.documentos_processados.splice(docIndex, 1);
       found = true;
       try {
-        await deleteRowFromFirestore("documentos_processados", id);
+        await deleteRowFromPostgres("documentos_processados", id);
       } catch (err: any) {
-        console.error("Erro ao excluir documento do Firestore:", err.message || err);
+        console.error("Erro ao excluir documento do Postgres:", err.message || err);
         pgFailed = true;
       }
       logAudit("documentos_processados", id, "DELETE", usuario, oldDoc, null);
@@ -1851,9 +1930,9 @@ app.delete("/api/documentos/:id", async (req, res) => {
   db.documentos_processados.splice(index, 1);
   saveLocalOnly(db);
   try {
-    await deleteRowFromFirestore("documentos_processados", id);
+    await deleteRowFromPostgres("documentos_processados", id);
   } catch (err: any) {
-    console.error("Erro ao excluir documento do Firestore:", err.message || err);
+    console.error("Erro ao excluir documento do Postgres:", err.message || err);
     return res.status(503).json({ error: "Não foi possível confirmar a exclusão no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — tente de novo em alguns segundos." });
   }
 
@@ -1929,7 +2008,7 @@ app.get("/api/documentos", (req, res) => {
 // POST /api/documentos/:id/homologar, unificada em uma função) sem persistir nada sozinha —
 // quem chama decide como/quando gravar as linhas retornadas em rows. Usada pelo endpoint de
 // lote (/api/documentos/homologar-lote) para processar N faturas e só então fazer UMA gravação
-// no Firestore para o lote inteiro, em vez de uma gravação por fatura.
+// no Postgres para o lote inteiro, em vez de uma gravação por fatura.
 function criarEHomologarFatura(
   payload: { nome_arquivo: string; layout: string; tamanho: number; origem_conteudo: string; dados_extraidos: any },
   usuario: string
@@ -2062,12 +2141,12 @@ function criarEHomologarFatura(
   return { ok: true, doc, lancamento: newLanc, rows };
 }
 
-// Salva um lote inteiro de faturas em UMA única gravação no Firestore (1 WriteBatch
-// reaproveitado para todas as linhas do lote), em vez do fluxo POST /api/documentos + POST
-// .../homologar chamado uma vez por fatura — que fazia 2 requisições HTTP e, no mínimo, 1 nova
-// escrita ao banco por fatura. Num lote de 155 faturas isso significava até 155 idas-e-voltas
+// Salva um lote inteiro de faturas em UMA única gravação no Postgres (1 conexão reaproveitada
+// para todas as linhas do lote), em vez do fluxo POST /api/documentos + POST .../homologar
+// chamado uma vez por fatura — que fazia 2 requisições HTTP e, no mínimo, 1 nova conexão ao
+// banco por fatura. Num lote de 155 faturas isso significava até 155 conexões/idas-e-voltas
 // sequenciais à rede; aqui, o cliente pode enviar o lote em pedaços de N faturas por vez e cada
-// pedaço vira só 1 requisição / 1 lote de gravação para até N faturas.
+// pedaço vira só 1 requisição / 1 conexão para até N faturas.
 app.post("/api/documentos/homologar-lote", async (req, res) => {
   const usuario = req.headers["x-user"] as string || "admin";
   const documentos = Array.isArray(req.body?.documentos) ? req.body.documentos : [];
@@ -2088,7 +2167,7 @@ app.post("/api/documentos/homologar-lote", async (req, res) => {
   try {
     await saveDBTargeted(db, allRows);
   } catch (err: any) {
-    console.error("[homologar-lote] Falha ao confirmar gravação no Firestore:", err.message || err);
+    console.error("[homologar-lote] Falha ao confirmar gravação no Postgres:", err.message || err);
     return res.status(503).json({
       error: "Não foi possível confirmar a gravação no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — aguarde alguns segundos e tente salvar de novo.",
       results
@@ -2163,7 +2242,7 @@ app.post("/api/documentos", async (req, res) => {
   try {
     await saveDBTargeted(db, rowsToSave);
   } catch (err: any) {
-    console.error("[POST documentos] Falha ao confirmar gravação no Firestore:", err.message || err);
+    console.error("[POST documentos] Falha ao confirmar gravação no Postgres:", err.message || err);
     return res.status(503).json({
       error: "Não foi possível confirmar a gravação no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — aguarde alguns segundos e tente salvar de novo."
     });
@@ -2243,7 +2322,7 @@ app.put("/api/documentos/:id", async (req, res) => {
   try {
     await saveDBTargeted(db, [{ table: "documentos_processados", row: doc }]);
   } catch (err: any) {
-    console.error("[PUT documentos] Falha ao confirmar gravação no Firestore:", err.message || err);
+    console.error("[PUT documentos] Falha ao confirmar gravação no Postgres:", err.message || err);
     return res.status(503).json({
       error: "Não foi possível confirmar a gravação no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — aguarde alguns segundos e tente salvar de novo."
     });
@@ -2349,7 +2428,7 @@ app.post("/api/documentos/:id/homologar", async (req, res) => {
   try {
     await saveDBTargeted(db, rowsToSave);
   } catch (err: any) {
-    console.error("[homologar] Falha ao confirmar gravação no Firestore:", err.message || err);
+    console.error("[homologar] Falha ao confirmar gravação no Postgres:", err.message || err);
     return res.status(503).json({
       error: "Não foi possível confirmar a gravação no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — aguarde alguns segundos e tente homologar de novo."
     });
@@ -2955,10 +3034,10 @@ async function startServer() {
   });
 
   // Initialize DB asynchronously so server starts listening without delay — but track the
-  // promise so saveDBCritical() can wait for it instead of assuming "no Firestore" if a write
+  // promise so saveDBCritical() can wait for it instead of assuming "no Postgres" if a write
   // request lands in this window.
   hydrationPromise = initDatabasePersistence().catch(err => {
-    console.error("[DB] Erro assíncrono na inicialização do Firestore:", err);
+    console.error("[DB] Erro assíncrono na inicialização do PostgreSQL:", err);
   });
 }
 

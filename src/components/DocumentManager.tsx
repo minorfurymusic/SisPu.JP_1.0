@@ -330,10 +330,10 @@ interface DocumentManagerProps {
   onDocumentProcessed?: (result?: { type: 'success' | 'warning' | 'error'; text: string }) => void;
   currentUser?: string;
   initialMode?: "PDF" | "IMAGE" | "REPORT" | "MANUAL";
-  // Confirma a conexão com o Firestore antes de mandar dados de verdade — ver comentário em
-  // WebPortal.tsx sobre por que isso precisa acontecer ANTES do primeiro lote real, não durante.
-  // Fallback no-op caso este componente seja usado sem o WebPortal como pai (nunca deveria
-  // bloquear o salvamento por falta dessa prop).
+  // Testa (e espera, com retentativas) se o banco de dados responde antes de mandar dados de verdade
+  // — ver comentário longo em WebPortal.tsx sobre por que isso precisa acontecer ANTES do
+  // primeiro lote real, não durante. Fallback no-op caso este componente seja usado sem o
+  // WebPortal como pai (nunca deveria bloquear o salvamento por falta dessa prop).
   ensureDbReachable?: (onProgress?: (msg: string) => void) => Promise<boolean>;
 }
 
@@ -789,7 +789,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     }
   };
 
-  // Master Registry of UCs (Etapa 1) — persistido no backend (JSON local + Firestore),
+  // Master Registry of UCs (Etapa 1) — persistido no backend (JSON local + Postgres),
   // igual a todo o resto do sistema. Antes vivia só no localStorage do navegador: qualquer
   // exclusão só valia naquele navegador/dispositivo, e sem esse localStorage os exemplos
   // fabricados (DEFAULT_MASTER_UCS) reapareciam como se fossem cadastros reais.
@@ -1960,9 +1960,11 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   // fatura toca no máximo 4 tabelas, então um pedaço de 50 fica no máximo em ~200 linhas por
   // tabela, bem abaixo do limite de segurança do upsert em lote (300 linhas por comando).
   const SAVE_CHUNK_SIZE = 50;
-  // Margem de segurança generosa pra absorver uma instabilidade de rede pontual num lote grande
-  // antes de desistir e marcar como falha (o que joga o item de volta pra fila mesmo que já
-  // tenha sido salvo — melhor evitar isso quando dá).
+  // Um banco Postgres gratuito pode legitimamente levar dezenas de segundos pra "acordar" de um período de
+  // inatividade — já vimos um lote de exclusão de só 10 itens bater num timeout de 45s mesmo
+  // tendo sido concluído no Postgres logo depois. 90s dá mais margem antes de desistir e marcar
+  // como falha (o que, no salvamento, joga o item de volta pra fila mesmo que já tenha sido
+  // salvo — melhor evitar isso quando dá).
   const SAVE_CHUNK_TIMEOUT_MS = 90000;
 
   const saveAbortControllerRef = useRef<AbortController | null>(null);
@@ -1997,12 +1999,14 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     setLoading(true);
     setSaveProgress({ current: 0, total: docsToSave.length, phase: "Verificando conexão com o banco de dados..." });
 
-    // Confirma a conexão com o Firestore antes de enviar qualquer fatura de verdade. Nada é
-    // enviado enquanto essa verificação está em andamento — o rascunho continua intacto.
-    const reachable = await ensureDbReachable((msg) =>
+    // Testa se o banco de dados responde ANTES de enviar qualquer fatura de verdade — sem isso, o
+    // navegador desistia (timeout de 90s) antes do servidor terminar de tentar acordar o banco
+    // (que pode levar minutos), e cada lote real "falhava" mesmo quando só estava demorando.
+    // Nada é enviado enquanto essa verificação está em andamento — o rascunho continua intacto.
+    const awake = await ensureDbReachable((msg) =>
       setSaveProgress({ current: 0, total: docsToSave.length, phase: msg })
     );
-    if (!reachable) {
+    if (!awake) {
       setSaveProgress(null);
       setLoading(false);
       setSaveResult({
@@ -2083,7 +2087,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
             }
           });
         } else {
-          // Falha no nível da requisição/gravação (ex: 503 do Firestore): o lote inteiro do
+          // Falha no nível da requisição/gravação (ex: 503 do Postgres): o lote inteiro do
           // pedaço não foi confirmado (a gravação é transacional), então todas as faturas
           // desse pedaço voltam pra fila para tentar de novo.
           chunk.forEach(doc => {

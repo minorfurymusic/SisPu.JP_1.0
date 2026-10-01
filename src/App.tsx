@@ -3,7 +3,7 @@ import WebPortal from "./components/WebPortal";
 
 export default function App() {
   const [refreshCounter, setRefreshCounter] = useState(0);
-  const [dbStatus, setDbStatus] = useState<{ connected: boolean; message?: string }>({ connected: false });
+  const [dbStatus, setDbStatus] = useState<{ connected: boolean; message?: string; db_url_masked?: string }>({ connected: false });
 
   const checkDbStatus = async () => {
     try {
@@ -61,9 +61,9 @@ export default function App() {
           <span>SISPU.JP 2.0 — Sistema Público de Gestão de Despesas</span>
           <span className="text-gray-400">
             {dbStatus.connected ? (
-              <span className="text-emerald-400 font-semibold">● Conectado ao Firestore</span>
+              <span className="text-emerald-400 font-semibold">● Conectado ao banco de dados (PostgreSQL)</span>
             ) : (
-              <span className="text-amber-400 font-semibold">○ Memória Local (Firestore não configurado)</span>
+              <span className="text-amber-400 font-semibold">○ Memória Local (banco de dados não configurado)</span>
             )}
           </span>
         </div>
