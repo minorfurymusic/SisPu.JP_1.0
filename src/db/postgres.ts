@@ -464,12 +464,9 @@ const FULL_SYNC_TABLE_ORDER = [
 export async function saveAllStateToPostgres(state: any): Promise<void> {
   const rows: { table: string; row: any }[] = [];
   for (const table of FULL_SYNC_TABLE_ORDER) {
-    // Um id repetido no mesmo INSERT multi-linha quebra o ON CONFLICT DO UPDATE.
-    const byId = new Map<string, any>();
     for (const row of state[table] || []) {
-      if (row && row.id != null) byId.set(String(row.id), row);
+      if (row && row.id != null) rows.push({ table, row });
     }
-    for (const row of byId.values()) rows.push({ table, row });
   }
 
   try {
@@ -509,16 +506,23 @@ export async function upsertRowsToPostgres(rows: { table: string; row: any }[]):
   const p = getPool();
   if (!p || rows.length === 0) return;
 
-  const byTable = new Map<string, any[]>();
+  // A mesma linha pode vir repetida (ex.: várias matrículas da mesma unidade num lote); um id
+  // repetido no mesmo INSERT multi-linha faz o Postgres rejeitar o comando inteiro com
+  // "ON CONFLICT DO UPDATE command cannot affect row a second time". Fica a última versão.
+  const byTable = new Map<string, Map<string, any>>();
   for (const { table, row } of rows) {
-    if (!byTable.has(table)) byTable.set(table, []);
-    byTable.get(table)!.push(row);
+    if (!byTable.has(table)) byTable.set(table, new Map());
+    const porId = byTable.get(table)!;
+    const chave = row?.id != null ? String(row.id) : `__sem_id_${porId.size}`;
+    porId.delete(chave);
+    porId.set(chave, row);
   }
 
   const client = await connectWithRetry(p);
   try {
     await client.query('BEGIN');
-    for (const [table, tableRows] of byTable) {
+    for (const [table, porId] of byTable) {
+      const tableRows = [...porId.values()];
       for (let i = 0; i < tableRows.length; i += MAX_ROWS_PER_UPSERT_STATEMENT) {
         const slice = tableRows.slice(i, i + MAX_ROWS_PER_UPSERT_STATEMENT);
         const { text, values } = buildMultiRowUpsertQuery(table, slice);

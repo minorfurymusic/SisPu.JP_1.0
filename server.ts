@@ -144,6 +144,25 @@ async function saveDBCritical(state: DatabaseState): Promise<void> {
   }
 }
 
+// Quando a gravação no Postgres falha, os registros que a requisição acabou de criar na memória
+// precisam sair dela também: senão aparecem na tela, uma nova tentativa os trata como "já
+// existiam" e eles somem no próximo reinício (o banco nunca os recebeu).
+type IdsPorTabela = Record<string, Set<string>>;
+function capturarIds(state: DatabaseState): IdsPorTabela {
+  const ids: IdsPorTabela = {};
+  for (const [tabela, linhas] of Object.entries(state)) {
+    if (Array.isArray(linhas)) ids[tabela] = new Set(linhas.map((l: any) => String(l?.id)));
+  }
+  return ids;
+}
+function desfazerNovosRegistros(state: DatabaseState, antes: IdsPorTabela) {
+  for (const [tabela, ids] of Object.entries(antes)) {
+    const linhas = (state as any)[tabela];
+    if (Array.isArray(linhas)) (state as any)[tabela] = linhas.filter((l: any) => ids.has(String(l?.id)));
+  }
+  saveLocalOnly(state);
+}
+
 // Grava só as linhas de fato tocadas por uma operação (ex: 1 fatura homologada = documento +
 // item de despesa + lançamento, no máximo 3-4 linhas), em vez de saveDBCritical/saveAllStateToPostgres
 // que reconstrói TODAS as linhas de TODAS as tabelas a cada chamada. Endpoints de alto volume
@@ -2186,6 +2205,7 @@ app.post("/api/documentos/homologar-lote", async (req, res) => {
 
   const allRows: { table: string; row: any }[] = [];
   const results: Array<{ index: number; ok: boolean; skipped?: boolean; error?: string; lancamento?: Lancamento }> = [];
+  const idsAntes = capturarIds(db);
 
   for (let i = 0; i < documentos.length; i++) {
     const r = criarEHomologarFatura(documentos[i], usuario);
@@ -2197,6 +2217,7 @@ app.post("/api/documentos/homologar-lote", async (req, res) => {
     await saveDBTargeted(db, allRows);
   } catch (err: any) {
     console.error("[homologar-lote] Falha ao confirmar gravação no Postgres:", err.message || err);
+    desfazerNovosRegistros(db, idsAntes);
     return res.status(503).json({
       error: "Não foi possível confirmar a gravação no banco de dados. O banco de dados pode estar com uma instabilidade de rede momentânea — aguarde alguns segundos e tente salvar de novo.",
       results
