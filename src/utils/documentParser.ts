@@ -6,6 +6,7 @@
 import { DocumentoPagina, convertTextToPaginas } from "./pdfExtractor";
 import { ParserCelesc } from "./ParserCelesc";
 import { ParserCasan } from "./ParserCasan";
+import { detectarLayout, lerCelescColetiva } from "./layoutReaders";
 
 export type DocumentLayoutType = 'CELESC_FATURA' | 'CELESC_RELATORIO' | 'CASAN_FATURA' | 'CASAN_RELATORIO' | 'DESCONHECIDO';
 
@@ -85,6 +86,7 @@ export interface SegmentedFatura {
   total_no_lote?: number;
   score?: number;
   scoreLogs?: string[];
+  avisos?: string[];
 }
 
 /**
@@ -409,6 +411,42 @@ export const segmentarCelescPorUCs = (text: string, ucs: string[]): { uc: string
   return segments;
 };
 
+// Conta coletiva CELESC: cada bloco "UC:" vira uma fatura, com a referência da sua própria
+// coletiva (um PDF pode trazer mais de uma) e o valor impresso no bloco — o mesmo que soma o
+// total da capa. Valores calculados a partir dos itens divergiam em faturas com cobranças
+// avulsas (ex.: "Participação Financeira").
+const segmentarCelescColetiva = (text: string, fileName: string): SegmentedFatura[] => {
+  const { blocos } = lerCelescColetiva(text);
+  return blocos.map((b, idx) => {
+    const blockText = (b.cabecalho ? b.cabecalho + "\n" : "") + b.texto;
+    const parsed = parseCelescSegment(blockText, b.referencia);
+    const valorItens = Number(parsed.valor_total) || 0;
+    parsed.codigo_numero = b.uc;
+    parsed.mes_ano = b.referencia;
+    parsed.valor_total = b.valorImpresso ?? 0;
+    const avisos: string[] = [];
+    if (b.valorImpresso === null) {
+      avisos.push(`⚠️ Campo "Valor" em branco no PDF (itens somam R$ ${valorItens.toFixed(2).replace(".", ",")}). Não entra no total da conta coletiva — confira.`);
+    }
+    return {
+      id: `DOC-SEG-CELESC_FATURA-${Date.now()}-${idx + 1}`,
+      nome_arquivo: `${fileName} (UC ${b.uc})`,
+      layout: "CELESC_FATURA",
+      tamanho: blockText.length,
+      origem_conteudo: blockText,
+      dados_extraidos: parsed,
+      numero_pagina: b.pagina,
+      posicao_na_pagina: 1,
+      total_na_pagina: 1,
+      posicao_no_lote: idx + 1,
+      total_no_lote: blocos.length,
+      score: 100,
+      scoreLogs: ["Leitor fixo CELESC (conta coletiva)"],
+      avisos,
+    };
+  });
+};
+
 /**
  * Splits a batch PDF / report text content into segmented individual invoice data structures
  * Implements page-by-page segmentation with scoring as requested in Etapas 3, 5, and 6.
@@ -416,6 +454,10 @@ export const segmentarCelescPorUCs = (text: string, ucs: string[]): { uc: string
 export const splitReportIntoFaturas = (text: string, fileName: string): SegmentedFatura[] => {
   const docType = identifyDocumentType(text, fileName);
   
+  if (detectarLayout(text) === "CELESC_COLETIVA") {
+    return segmentarCelescColetiva(text, fileName);
+  }
+
   if (docType === "CELESC_RELATORIO") {
     // New sequential architecture for CELESC reports (Etapa 2, 4, 5)
     // 1. Structural scan to find all UCs

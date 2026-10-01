@@ -15,6 +15,7 @@ import {
   extrairTodasUCsCelesc,
   segmentarCelescPorUCs
 } from "../utils/documentParser";
+import { detectarLayout, lerCasanSci8095, lerCelescColetiva, ConferenciaLeitura } from "../utils/layoutReaders";
 import { extractTextFromPdfFile, convertTextToPaginas, convertPdfToImagesAndText, fileToBase64 } from "../utils/pdfExtractor";
 
 export function computeEnergiaInjetada(itens: any[]): number {
@@ -953,6 +954,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   const [activeDoc, setActiveDoc] = useState<DocumentoProcessado | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'warning', text: string } | null>(null);
+  const [conferencia, setConferencia] = useState<ConferenciaLeitura | null>(null);
   const [copiedKey, setCopiedKey] = useState<boolean>(false);
 
   // PDF Viewer controls state
@@ -1125,6 +1127,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     setProcessingQueue(true);
     setSessionDocs([]);
     setMessage(null);
+    setConferencia(null);
     setShowSummaryScreen(false);
     setLoteSummary(null);
 
@@ -1152,6 +1155,62 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     addLog(`Concessionária inferida: ${concessionaire} | Tipo de arquivo: ${isCasanCentralized ? 'CASAN Cobrança Centralizada (Lote Fracionado por Página)' : isReport ? 'Relatório/Lote' : 'Fatura Individual'}`);
 
     // --- PAGE-BY-PAGE ARCHITECTURE FOR CASAN CENTRALIZADA ---
+    if (isCasanCentralized && detectarLayout(textToProcess) === "CASAN_SCI8095") {
+      const leitura = lerCasanSci8095(textToProcess);
+      if (leitura.contas.length > 0) {
+        addLog(`[CASAN SCI8095] Layout reconhecido — leitura direta do texto do PDF, sem IA.`);
+        const agora = new Date().toISOString();
+        const docs: DocumentoProcessado[] = leitura.contas.map((conta, cIdx) => ({
+          id: `DOC-CASAN-SCI8095-${Date.now()}-${cIdx + 1}`,
+          nome_arquivo: `${nameToProcess} (Pág ${conta.pagina} | Matrícula: ${conta.matricula})`,
+          layout: "CASAN_FATURA" as DocumentLayoutType,
+          tamanho: textToProcess.length,
+          status: 'VALIDADO',
+          origem_conteudo: textToProcess.split("\f")[conta.pagina - 1] || textToProcess,
+          dados_extraidos: {
+            mes_ano: leitura.referencia,
+            consumo: conta.consumo,
+            valor_total: conta.valor_total,
+            valor_imposto: 0,
+            valor_celular: 0,
+            valor_internet: 0,
+            valor_diversos: conta.valor_servico,
+            valor_linha_privada: 0,
+            valor_credito: conta.valor_bonus,
+            codigo_numero: conta.matricula,
+            medidor: "N/A",
+            unidade_nome: conta.usuario || "N/A",
+            endereco: getContaEndereco(conta),
+            leitura_anterior: conta.leitura_anterior,
+            leitura_atual: conta.leitura_atual,
+            itens_fatura: []
+          },
+          logs_validacao: [],
+          historico_alteracoes: [],
+          criado_em: agora,
+          atualizado_em: agora,
+          numero_pagina: conta.pagina,
+          posicao_na_pagina: cIdx + 1,
+          total_na_pagina: leitura.contas.filter(c => c.pagina === conta.pagina).length,
+          posicao_no_lote: cIdx + 1,
+          total_no_lote: leitura.contas.length,
+          score: 100
+        }));
+        const g = leitura.conferencia.grupos[0];
+        addLog(`[CASAN SCI8095] Lidas ${g.qtdLida} contas (relatório declara ${g.qtdDeclarada ?? "?"}) | Total lido R$ ${g.totalLido.toFixed(2)} (relatório declara ${g.totalDeclarado !== null ? "R$ " + g.totalDeclarado.toFixed(2) : "?"}).`);
+        leitura.conferencia.avisos.forEach(a => addLog(`⚠️ ${a}`));
+        setSessionDocs(docs);
+        setConferencia(leitura.conferencia);
+        setQueueProgress({ current: docs.length, total: docs.length, phase: "Concluído!" });
+        setMessage(leitura.conferencia.ok
+          ? { type: 'success', text: `CASAN: ${docs.length} contas lidas, quantidade e valor total conferem com o relatório.` }
+          : { type: 'error', text: `CASAN: a leitura NÃO confere com os totais do relatório. Veja o quadro de conferência antes de salvar.` });
+        setProcessingQueue(false);
+        return;
+      }
+      addLog(`[CASAN SCI8095] Layout reconhecido, mas nenhuma linha pôde ser lida. Usando a IA como reserva...`);
+    }
+
     if (isCasanCentralized) {
       addLog(`[CASAN Centralizada] Executando arquitetura de extração fracionada PÁGINA A PÁGINA...`);
       
@@ -1287,10 +1346,10 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
       
       setSessionDocs(createdDocs);
       setQueueProgress({ current: totalPages, total: totalPages, phase: "Concluído!" });
-      setMessage({
-        type: 'success',
-        text: `Extração PÁGINA A PÁGINA concluída com sucesso: ${totalExtracted} contas extraídas em ${totalPages} páginas.`
-      });
+      const paginasProblema = pageStats.filter(st => st.count === 0 || st.truncated).map(st => st.page);
+      setMessage(paginasProblema.length === 0
+        ? { type: 'warning', text: `Extração pela IA: ${totalExtracted} contas em ${totalPages} páginas. Layout não reconhecido — confira a quantidade e o total com o documento antes de salvar.` }
+        : { type: 'error', text: `Extração pela IA INCOMPLETA: ${totalExtracted} contas em ${totalPages} páginas, com falha ou corte nas páginas ${paginasProblema.join(", ")}. Não salve sem conferir com o documento.` });
       setProcessingQueue(false);
       return;
     }
@@ -1541,6 +1600,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
           if (!seg.dados_extraidos.consumo || seg.dados_extraidos.consumo <= 0) {
             logs.push("⚠️ Consumo de medição zerado ou ausente.");
           }
+          if (seg.avisos) logs.push(...seg.avisos);
 
           const newDoc: DocumentoProcessado = {
             id: `DOC-LOTE-${Date.now()}-${idx + 1}`,
@@ -1679,6 +1739,16 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
         setSessionDocs(docObjects);
         setProcessingQueue(false);
         setShowSummaryScreen(true); // Open the pre-conference summary screen first!
+
+        if (detectarLayout(textToProcess) === "CELESC_COLETIVA") {
+          const { conferencia: conf } = lerCelescColetiva(textToProcess);
+          setConferencia(conf);
+          conf.grupos.forEach(g => addLog(`[CELESC] ${g.rotulo} (${g.referencia}): lidas ${g.qtdLida} de ${g.qtdDeclarada ?? "?"} | R$ ${g.totalLido.toFixed(2)} de R$ ${g.totalDeclarado !== null ? g.totalDeclarado.toFixed(2) : "?"} ${g.ok ? "✅" : "❌"}`));
+          conf.avisos.forEach(a => addLog(`⚠️ ${a}`));
+          setMessage(conf.ok
+            ? { type: 'success', text: `CELESC: ${conf.grupos.reduce((a, g) => a + g.qtdLida, 0)} faturas lidas, quantidade e valor total conferem com a capa de cada conta coletiva.` }
+            : { type: 'error', text: `CELESC: a leitura NÃO confere com a capa da conta coletiva. Veja o quadro de conferência antes de salvar.` });
+        }
 
         addLog(`Engine de Importação concluída.`);
         addLog(`Páginas do relatório lidas: ${pagesCount}`);
@@ -2213,6 +2283,29 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
           </div>
         )}
 
+        {conferencia && (
+          <div className={`rounded-lg border p-3 text-[11px] font-mono ${conferencia.ok ? 'bg-emerald-500/5 border-emerald-500/30' : 'bg-rose-500/10 border-rose-500/40'}`}>
+            <div className={`uppercase tracking-wider font-bold text-[10px] mb-2 ${conferencia.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {conferencia.ok ? '✅ Conferência com o documento: tudo confere' : '❌ Conferência com o documento: NÃO confere — revise antes de salvar'}
+            </div>
+            <div className="space-y-1">
+              {conferencia.grupos.map(g => (
+                <div key={g.rotulo} className="flex flex-wrap gap-x-4 gap-y-0.5 text-gray-300">
+                  <span className="text-white font-bold">{g.ok ? '✅' : '❌'} {g.rotulo}</span>
+                  <span>Ref. {g.referencia || '?'}</span>
+                  <span>Lidas: <b className="text-white">{g.qtdLida}</b> de {g.qtdDeclarada ?? '?'}</span>
+                  <span>Total: <b className="text-white">{fmtMoeda(g.totalLido)}</b> de {g.totalDeclarado !== null ? fmtMoeda(g.totalDeclarado) : '?'}</span>
+                </div>
+              ))}
+            </div>
+            {conferencia.avisos.length > 0 && (
+              <ul className="mt-2 space-y-0.5 text-amber-300">
+                {conferencia.avisos.map((a, i) => <li key={i}>⚠️ {a}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
+
         {/* --- CADASTRO MESTRE UC VIEW (Etapa 1) --- */}
         {activeImportMode === "CADASTRO" && (
           <div className="space-y-4">
@@ -2676,6 +2769,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                     setLoteSummary(null);
                     setShowSummaryScreen(false);
                     setMessage(null);
+                    setConferencia(null);
                   }}
                   className="bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-semibold px-4 py-2 rounded-md transition border border-white/5"
                 >
@@ -2939,6 +3033,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                     setLoteSummary(null);
                     setShowSummaryScreen(false);
                     setMessage(null);
+                    setConferencia(null);
                   }}
                   className="bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-semibold px-4 py-2 rounded-md transition border border-white/5"
                 >
