@@ -235,19 +235,31 @@ export async function initPostgresSchema(): Promise<boolean> {
       // centenas de unidades duplicadas/órfãs acumuladas (a "unidade 1244" e várias outras
       // reportadas), e também da concessionária de uma unidade parecendo "esquecer" o que já
       // tinha sido definido e ser recalculada do zero a cada reinício.
-      await client.query(`
-        ALTER TABLE unidades ADD COLUMN IF NOT EXISTS uc TEXT;
-        ALTER TABLE unidades ADD COLUMN IF NOT EXISTS codnum TEXT;
-        ALTER TABLE unidades ADD COLUMN IF NOT EXISTS concessionaria TEXT;
-      `);
-
-      // Idem para itens_despesas.codigos_numero_anteriores: guarda os CODNUMs antigos de um
-      // contrato que a concessionária recodificou (ex.: CELESC trocando "0012341210" por
-      // "1.004.748.011-07"), para que o item continue reconhecendo os dois códigos como o mesmo
-      // contrato em vez de virar um "novo" item desconectado do histórico.
-      await client.query(`
-        ALTER TABLE itens_despesas ADD COLUMN IF NOT EXISTS codigos_numero_anteriores JSONB;
-      `);
+      //
+      // Itens_despesas.codigos_numero_anteriores guarda os CODNUMs antigos de um contrato que a
+      // concessionária recodificou (ex.: CELESC trocando "0012341210" por "1.004.748.011-07"),
+      // para que o item continue reconhecendo os dois códigos como o mesmo contrato.
+      //
+      // ALTER TABLE pega lock exclusivo na tabela mesmo quando a coluna já existe; rodar isso a
+      // cada boot fazia uma instância travar esperando a gravação de outra até estourar o
+      // statement timeout. Só executa o ALTER da coluna que realmente falta.
+      const retrofitColumns: [string, string, string][] = [
+        ['unidades', 'uc', 'TEXT'],
+        ['unidades', 'codnum', 'TEXT'],
+        ['unidades', 'concessionaria', 'TEXT'],
+        ['itens_despesas', 'codigos_numero_anteriores', 'JSONB'],
+      ];
+      const existing = await client.query(
+        `SELECT table_name, column_name FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = ANY($1)`,
+        [[...new Set(retrofitColumns.map(([t]) => t))]]
+      );
+      const existingSet = new Set(existing.rows.map(r => `${r.table_name}.${r.column_name}`));
+      for (const [table, column, type] of retrofitColumns) {
+        if (!existingSet.has(`${table}.${column}`)) {
+          await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
+        }
+      }
 
       console.log("[DB] Schema do PostgreSQL verificado e inicializado com sucesso.");
       return true;
@@ -440,42 +452,28 @@ function buildMultiRowUpsertQuery(tableName: string, rows: any[]): { text: strin
   };
 }
 
-// Upsert (ou insert-only, para tabelas de log) de uma única linha, usada pela sincronização
-// completa (saveAllStateToPostgres, abaixo). É o caso de 1 linha só do upsert em lote acima.
-async function execUpsertRow(client: pg.PoolClient, tableName: string, row: any): Promise<void> {
-  const { text, values } = buildMultiRowUpsertQuery(tableName, [row]);
-  await client.query(text, values);
-}
+const FULL_SYNC_TABLE_ORDER = [
+  'usuarios', 'secretarias', 'unidades', 'despesas', 'itens_despesas', 'lancamentos',
+  'pessoas', 'contatos_email', 'logs_erros', 'auditoria_registros', 'documentos_processados',
+  'cadastro_mestre_ucs',
+];
 
+// Usa INSERT multi-linha por tabela: 1 comando por linha fazia a semeadura inicial (milhares de
+// linhas, sobretudo auditoria) levar minutos com a latência até o banco, segurando locks e
+// estourando o statement timeout do Supabase.
 export async function saveAllStateToPostgres(state: any): Promise<void> {
-  const p = getPool();
-  if (!p) return;
+  const rows: { table: string; row: any }[] = [];
+  for (const table of FULL_SYNC_TABLE_ORDER) {
+    // Um id repetido no mesmo INSERT multi-linha quebra o ON CONFLICT DO UPDATE.
+    const byId = new Map<string, any>();
+    for (const row of state[table] || []) {
+      if (row && row.id != null) byId.set(String(row.id), row);
+    }
+    for (const row of byId.values()) rows.push({ table, row });
+  }
 
   try {
-    const client = await connectWithRetry(p);
-    try {
-      await client.query('BEGIN');
-
-      for (const u of state.usuarios || []) await execUpsertRow(client, 'usuarios', u);
-      for (const s of state.secretarias || []) await execUpsertRow(client, 'secretarias', s);
-      for (const u of state.unidades || []) await execUpsertRow(client, 'unidades', u);
-      for (const d of state.despesas || []) await execUpsertRow(client, 'despesas', d);
-      for (const it of state.itens_despesas || []) await execUpsertRow(client, 'itens_despesas', it);
-      for (const l of state.lancamentos || []) await execUpsertRow(client, 'lancamentos', l);
-      for (const pRow of state.pessoas || []) await execUpsertRow(client, 'pessoas', pRow);
-      for (const c of state.contatos_email || []) await execUpsertRow(client, 'contatos_email', c);
-      for (const lg of state.logs_erros || []) await execUpsertRow(client, 'logs_erros', lg);
-      for (const a of state.auditoria_registros || []) await execUpsertRow(client, 'auditoria_registros', a);
-      for (const doc of state.documentos_processados || []) await execUpsertRow(client, 'documentos_processados', doc);
-      for (const u of state.cadastro_mestre_ucs || []) await execUpsertRow(client, 'cadastro_mestre_ucs', u);
-
-      await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
-    }
+    await upsertRowsToPostgres(rows);
   } catch (err: any) {
     console.error("[DB] Erro ao sincronizar estado com PostgreSQL:", err.message || err);
     // Repassa o erro: quem chama precisa saber que a gravação não foi confirmada no banco —

@@ -282,8 +282,17 @@ async function initDatabasePersistence() {
       // Postgres reachable and confirmed empty (not a read failure) — safe to seed it once
       // from the local state, then treat it as the source of truth from here on.
       console.log("[DB] PostgreSQL está sem registros. Semeando dados iniciais...");
+      try {
+        await saveAllStateToPostgres(db);
+      } catch (seedErr: any) {
+        // Sem isso o servidor seguia com postgresHydrated=true e a memória cheia de registros que
+        // não existem no banco: apareciam na tela, mas a exclusão respondia "não encontrado".
+        console.error("[DB] Falha ao semear o PostgreSQL; tentando novamente em segundo plano:", seedErr.message || seedErr);
+        scheduleHydrationRetry();
+        return;
+      }
       postgresHydrated = true;
-      await saveAllStateToPostgres(db);
+      console.log("[DB] Semeadura do PostgreSQL concluída.");
     } else {
       console.error("[DB] Não foi possível confirmar o estado do PostgreSQL; mantendo sincronização em pausa até o próximo carregamento bem-sucedido.");
     }
@@ -1843,9 +1852,29 @@ app.post("/api/lancamentos/excluir-lote", async (req, res) => {
     }
   }
 
+  const deletedIds = new Set([...deletedLancamentos, ...deletedDocumentosFallback]);
+
+  // Com o banco já confirmado como fonte da verdade, um id que o banco não tem mas a memória tem
+  // é um registro fantasma (sobra de cache local que nunca chegou ao banco): some da memória
+  // também, senão ele fica na tela para sempre e nunca pode ser excluído.
+  if (postgresHydrated) {
+    for (const id of ids) {
+      if (deletedIds.has(id)) continue;
+      const lIdx = db.lancamentos.findIndex(l => String(l.id) === String(id));
+      if (lIdx !== -1) {
+        db.lancamentos.splice(lIdx, 1);
+        deletedIds.add(id);
+      }
+      const dIdx = db.documentos_processados.findIndex(d => String(d.id) === String(id));
+      if (dIdx !== -1) {
+        db.documentos_processados.splice(dIdx, 1);
+        deletedIds.add(id);
+      }
+    }
+  }
+
   saveLocalOnly(db);
 
-  const deletedIds = new Set([...deletedLancamentos, ...deletedDocumentosFallback]);
   const notFound = ids.filter(id => !deletedIds.has(id));
 
   res.json({ deletedCount: deletedIds.size, notFound });
