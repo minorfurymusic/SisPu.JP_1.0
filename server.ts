@@ -433,17 +433,60 @@ function ensureUnidadeAndContract(params: {
     db.secretarias.push(defaultSec);
   }
 
-  // 2. Find or Create Unidade Gestora
+  // 2. Find ItemDespesa (Contrato CODNUM)
+  // Uma mesma UC/CODNUM pode ter mais de um hidrômetro/medidor físico faturado no mesmo
+  // documento (comum em contas CASAN maiores). Se o medidor foi extraído, o item é
+  // identificado pelo par (CODNUM, medidor) — não só pelo CODNUM — para que o segundo medidor
+  // vire um item próprio em vez de ser descartado ao "reaproveitar" o primeiro encontrado.
+  // Sem medidor (formatos de relatório que não trazem essa informação), cai no comportamento
+  // antigo de casar só pelo CODNUM.
+  const cleanMedidor = (params.medidor && params.medidor !== "N/A") ? params.medidor.trim() : null;
+  const codnumMatches = (it: ItemDespesa) =>
+    (it.codigo_numero && it.codigo_numero.trim().toUpperCase() === cleanCodnum) ||
+    (it.codigos_numero_anteriores || []).some(c => c && c.trim().toUpperCase() === cleanCodnum);
+  let item = cleanMedidor
+    ? db.itens_despesas.find(it =>
+        codnumMatches(it) &&
+        it.medidor && it.medidor.trim().toUpperCase() === cleanMedidor.toUpperCase())
+    : db.itens_despesas.find(it => codnumMatches(it));
+
+  // Vínculo de recodificação confirmado na conferência do lote: o CODNUM recebido é novo pro
+  // sistema, mas o usuário confirmou que é o mesmo contrato de um item já existente. Em vez de
+  // criar um item novo (o que fragmentaria o histórico), o código antigo desse item vira um
+  // "codigo_numero_anterior" e o novo código passa a ser o atual — daí em diante, tanto o código
+  // antigo quanto o novo continuam casando com este mesmo item (ver codnumMatches acima).
+  if (!item && params.vincularAItemDespesaId) {
+    const alvo = db.itens_despesas.find(it => it.id === params.vincularAItemDespesaId);
+    if (alvo && alvo.codigo_numero.trim().toUpperCase() !== cleanCodnum) {
+      const anteriores = new Set(alvo.codigos_numero_anteriores || []);
+      anteriores.add(alvo.codigo_numero);
+      alvo.codigos_numero_anteriores = Array.from(anteriores);
+      alvo.codigo_numero = cleanCodnum;
+      alvo.atualizado_em = new Date().toISOString();
+      logAudit("itens_despesas", alvo.id, "UPDATE", usuario, null, alvo);
+    }
+    item = alvo || item;
+  }
+
+  // 3. Find or Create Unidade Gestora
   const cleanEndereco = (params.endereco || "").trim().toUpperCase();
   const cleanNomeUnidade = (params.unidade_nome || "").trim().toUpperCase();
 
-  let unidade = db.unidades.find(u => 
-    (u.uc && u.uc.trim().toUpperCase() === cleanCodnum) || 
-    (u.codnum && u.codnum.trim().toUpperCase() === cleanCodnum)
-  );
-
-  if (!unidade && cleanNomeUnidade && cleanNomeUnidade !== "N/A") {
-    unidade = db.unidades.find(u => u.nome.trim().toUpperCase() === cleanNomeUnidade && u.secretaria_id === defaultSec.id);
+  // Quem identifica a unidade é a matrícula/UC, nunca o nome: vários imóveis diferentes vêm com
+  // o mesmo nome de usuário (ex.: "PREFEITURA MUNICIPAL DE RIO DO SUL" na CASAN, ou o nome do
+  // município em toda UC da CELESC) e casar por nome juntava todos numa unidade só. Primeiro
+  // vale a unidade do contrato desta matrícula (inclusive códigos antigos de recodificação),
+  // depois uma unidade cadastrada com este código; sem nenhum dos dois, é uma unidade nova.
+  let unidade = item ? db.unidades.find(u => u.id === item!.unidade_id) : undefined;
+  if (!unidade) {
+    unidade = db.unidades.find(u =>
+      (u.uc && u.uc.trim().toUpperCase() === cleanCodnum) ||
+      (u.codnum && u.codnum.trim().toUpperCase() === cleanCodnum)
+    );
+  }
+  if (unidade && params.vincularAItemDespesaId && unidade.uc !== cleanCodnum) {
+    unidade.uc = cleanCodnum;
+    unidade.codnum = cleanCodnum;
   }
 
   if (unidade) {
@@ -496,41 +539,6 @@ function ensureUnidadeAndContract(params: {
     };
     db.unidades.push(unidade);
     logAudit("unidades", newUnidadeId, "INSERT", usuario, null, unidade);
-  }
-
-  // 3. Find or Create ItemDespesa (Contrato CODNUM)
-  // Uma mesma UC/CODNUM pode ter mais de um hidrômetro/medidor físico faturado no mesmo
-  // documento (comum em contas CASAN maiores). Se o medidor foi extraído, o item é
-  // identificado pelo par (CODNUM, medidor) — não só pelo CODNUM — para que o segundo medidor
-  // vire um item próprio em vez de ser descartado ao "reaproveitar" o primeiro encontrado.
-  // Sem medidor (formatos de relatório que não trazem essa informação), cai no comportamento
-  // antigo de casar só pelo CODNUM.
-  const cleanMedidor = (params.medidor && params.medidor !== "N/A") ? params.medidor.trim() : null;
-  const codnumMatches = (it: ItemDespesa) =>
-    (it.codigo_numero && it.codigo_numero.trim().toUpperCase() === cleanCodnum) ||
-    (it.codigos_numero_anteriores || []).some(c => c && c.trim().toUpperCase() === cleanCodnum);
-  let item = cleanMedidor
-    ? db.itens_despesas.find(it =>
-        codnumMatches(it) &&
-        it.medidor && it.medidor.trim().toUpperCase() === cleanMedidor.toUpperCase())
-    : db.itens_despesas.find(it => codnumMatches(it));
-
-  // Vínculo de recodificação confirmado na conferência do lote: o CODNUM recebido é novo pro
-  // sistema, mas o usuário confirmou que é o mesmo contrato de um item já existente. Em vez de
-  // criar um item novo (o que fragmentaria o histórico), o código antigo desse item vira um
-  // "codigo_numero_anterior" e o novo código passa a ser o atual — daí em diante, tanto o código
-  // antigo quanto o novo continuam casando com este mesmo item (ver codnumMatches acima).
-  if (!item && params.vincularAItemDespesaId) {
-    const alvo = db.itens_despesas.find(it => it.id === params.vincularAItemDespesaId);
-    if (alvo && alvo.codigo_numero.trim().toUpperCase() !== cleanCodnum) {
-      const anteriores = new Set(alvo.codigos_numero_anteriores || []);
-      anteriores.add(alvo.codigo_numero);
-      alvo.codigos_numero_anteriores = Array.from(anteriores);
-      alvo.codigo_numero = cleanCodnum;
-      alvo.atualizado_em = new Date().toISOString();
-      logAudit("itens_despesas", alvo.id, "UPDATE", usuario, null, alvo);
-    }
-    item = alvo || item;
   }
 
   if (item) {
@@ -1081,10 +1089,15 @@ app.post("/api/unidades", (req, res) => {
 
   const cleanUC = (uc || codnum || codigo_legado || "").toString().trim().toUpperCase();
 
-  // Check unique (secretaria_id, nome)
-  const exists = db.unidades.find(u => u.secretaria_id === secretaria_id && u.nome === cleanNome);
+  // Com UC/matrícula informada, ela identifica a unidade (nomes podem se repetir entre imóveis
+  // diferentes). Sem código, só reaproveita uma unidade de mesmo nome que também não tenha código.
+  const exists = cleanUC
+    ? db.unidades.find(u => (u.uc || "").trim().toUpperCase() === cleanUC || (u.codnum || "").trim().toUpperCase() === cleanUC)
+    : db.unidades.find(u => u.secretaria_id === secretaria_id && u.nome === cleanNome && !u.uc && !u.codnum);
   if (exists) {
     const oldVal = { ...exists };
+    exists.nome = cleanNome;
+    exists.secretaria_id = secretaria_id;
     if (cleanUC) {
       exists.uc = cleanUC;
       exists.codnum = cleanUC;
@@ -1154,22 +1167,8 @@ app.put("/api/unidades/:id", (req, res) => {
 
   const oldVal = { ...db.unidades[index] };
   const cleanNome = (nome || "").trim().toUpperCase();
-  const targetSecId = secretaria_id || db.unidades[index].secretaria_id;
 
   if (cleanNome) {
-    const duplicate = db.unidades.find(u => u.secretaria_id === targetSecId && u.nome === cleanNome && u.id !== id);
-    if (duplicate) {
-      // Merge into duplicate instead of failing
-      if (endereco) duplicate.endereco = (endereco || "").trim().toUpperCase();
-      const cleanUC = (uc || codnum || codigo_legado || "").toString().trim().toUpperCase();
-      if (cleanUC) {
-        duplicate.uc = cleanUC;
-        duplicate.codnum = cleanUC;
-      }
-      duplicate.atualizado_em = new Date().toISOString();
-      saveDB(db);
-      return res.json(duplicate);
-    }
     db.unidades[index].nome = cleanNome;
   }
 
