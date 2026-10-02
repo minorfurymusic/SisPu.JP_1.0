@@ -11,6 +11,7 @@ import SmartTable, { SmartTableColumn } from "./SmartTable";
 import FaturasTreeView from "./FaturasTreeView";
 import EditFaturaModal from "./EditFaturaModal";
 import { SugestoesAgrupamento, JuntarContratosModal } from "./UnidadesAgrupamento";
+import Relatorios from "./Relatorios";
 
 interface WebPortalProps {
   onRefreshTrigger?: number;
@@ -153,6 +154,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   const [novoCodigo, setNovoCodigo] = useState("");
   const [itemMedidores, setItemMedidores] = useState<MedidorEditavel[]>([]);
   const [juntarNaUnidade, setJuntarNaUnidade] = useState<any | null>(null);
+  const [versaoDados, setVersaoDados] = useState(0);
 
   const separarContrato = async (itemId: string) => {
     try {
@@ -288,6 +290,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
   const loadAllData = async () => {
     const myGeneration = ++loadGenerationRef.current;
+    setVersaoDados(v => v + 1);
     setLoading(true);
     try {
       const [secRes, uniRes, desRes, itemRes, lancRes, audRes] = await Promise.all([
@@ -1461,6 +1464,8 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                 </div>
               </div>
             </div>
+
+            <Relatorios versao={versaoDados} />
           </>
         )}
 

@@ -1291,6 +1291,73 @@ app.put("/api/unidades/:id", (req, res) => {
   res.json(db.unidades[index]);
 });
 
+// --- Relatórios ----------------------------------------------------------------------------
+// Uma linha por lançamento, já com unidade, secretaria, concessionária e os componentes da fatura
+// CELESC que os relatórios separam (crédito solar, demanda não utilizada, multas). Os cálculos
+// (totais, médias, desvio padrão, rankings) ficam na tela, que filtra por ano/unidade/secretaria.
+function classificarItensCelesc(itens: any[]) {
+  const soma = (re: RegExp) => itens
+    .filter(i => re.test(String(i?.descricao || "")))
+    .reduce((a, i) => a + (Number(i?.valor) || 0), 0);
+  return {
+    credito_solar: Math.abs(soma(/Injetada/i)),
+    demanda_nao_utilizada: soma(/Diferen[çc]a da Demanda Contratad/i),
+    ultrapassagem: soma(/Ultrapassagem/i),
+    reativo_excedente: soma(/Reativa Excedente/i),
+  };
+}
+
+app.get("/api/relatorios/base", (req, res) => {
+  const up = (v?: string) => (v || "").trim().toUpperCase();
+  const docPorCodigoMes = new Map<string, DocumentoProcessado>();
+  for (const d of db.documentos_processados || []) {
+    const cod = up(d?.dados_extraidos?.codigo_numero);
+    const mes = (d?.dados_extraidos?.mes_ano || "").substring(0, 7);
+    if (cod && mes && !docPorCodigoMes.has(`${cod}|${mes}`)) docPorCodigoMes.set(`${cod}|${mes}`, d);
+  }
+  const itemPorId = new Map(db.itens_despesas.map(it => [String(it.id), it]));
+  const unidadePorId = new Map(db.unidades.map(u => [String(u.id), u]));
+  const secretariaPorId = new Map(db.secretarias.map(s => [String(s.id), s]));
+  const despesaPorId = new Map(db.despesas.map(d => [String(d.id), d]));
+
+  const linhas = db.lancamentos.map(l => {
+    const item = itemPorId.get(String(l.item_despesa_id));
+    const unidade = item ? unidadePorId.get(String(item.unidade_id)) : undefined;
+    const secretaria = unidade ? secretariaPorId.get(String(unidade.secretaria_id)) : undefined;
+    const despesa = item ? despesaPorId.get(String(item.despesa_id)) : undefined;
+    const mes = (l.mes_ano || "").substring(0, 7);
+    const concessionaria = /CASAN|ÁGUA|AGUA/i.test(despesa?.descricao || "") || unidade?.concessionaria === "CASAN" ? "CASAN" : "CELESC";
+    const codigos = item ? [item.codigo_numero, ...(item.codigos_numero_anteriores || [])].map(up) : [];
+    const doc = codigos.map(c => docPorCodigoMes.get(`${c}|${mes}`)).find(Boolean);
+    const extras = concessionaria === "CELESC" ? classificarItensCelesc(doc?.dados_extraidos?.itens_fatura || []) : null;
+    return {
+      id: l.id,
+      mes,
+      contrato_id: item?.id || "",
+      codigo: item?.codigo_numero || "",
+      concessionaria,
+      unidade_id: unidade?.id || "",
+      unidade_nome: unidade?.nome || "SEM UNIDADE",
+      unidade_endereco: unidade?.endereco || "",
+      secretaria_id: secretaria?.id || "",
+      secretaria_nome: secretaria?.nome || "SEM SECRETARIA",
+      consumo: Number(l.consumo) || 0,
+      valor_total: Number(l.valor_total) || 0,
+      energia_injetada: Number((l as any).energia_injetada ?? doc?.dados_extraidos?.energia_injetada) || 0,
+      grupo_tarifario: (doc?.dados_extraidos as any)?.grupo_tarifario || "",
+      credito_solar: extras?.credito_solar || 0,
+      demanda_nao_utilizada: extras?.demanda_nao_utilizada || 0,
+      ultrapassagem: extras?.ultrapassagem || 0,
+      reativo_excedente: extras?.reativo_excedente || 0,
+    };
+  });
+  res.json({
+    linhas,
+    unidades: db.unidades.map(u => ({ id: u.id, nome: u.nome, endereco: u.endereco || "", secretaria_id: u.secretaria_id })),
+    secretarias: db.secretarias.map(s => ({ id: s.id, nome: s.nome })),
+  });
+});
+
 // --- Unidade Gestora como local físico: juntar e separar contratos -------------------------
 
 // Move contratos (de qualquer concessionária) para esta unidade. Unidades de origem que ficam sem
