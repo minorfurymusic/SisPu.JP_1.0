@@ -7,7 +7,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import {
   Usuario, Secretaria, Unidade, Despesa, ItemDespesa,
   Lancamento, Pessoa, ContatoEmail, LogError, AuditoriaRegistro,
-  DocumentoProcessado, CadastroMestreUC
+  DocumentoProcessado, CadastroMestreUC, MedidorFisico
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
 import { chaveVinculoDoBloco } from "./src/utils/layoutReaders";
@@ -605,11 +605,15 @@ function autoSyncOrphanRecords() {
         (doc.nome_arquivo && /casan|catarinense/i.test(doc.nome_arquivo)) ||
         (doc.dados_extraidos.unidade_nome && /casan/i.test(doc.dados_extraidos.unidade_nome))
       );
+      // Faturas CELESC salvas antes do leitor novo podem estar sem endereço; o texto original
+      // ainda tem. ensureUnidadeAndContract só preenche endereço de unidade que está sem.
+      const enderecoDoTexto = !doc.dados_extraidos.endereco && /UC:\s/.test(doc.origem_conteudo || "")
+        ? chaveVinculoDoBloco(doc.origem_conteudo).endereco : "";
       const res = ensureUnidadeAndContract({
         codigo_numero: doc.dados_extraidos.codigo_numero,
         concessionaria: isCasan ? 'CASAN' : 'CELESC',
         unidade_nome: doc.dados_extraidos.unidade_nome,
-        endereco: doc.dados_extraidos.endereco,
+        endereco: doc.dados_extraidos.endereco || enderecoDoTexto,
         medidor: doc.dados_extraidos.medidor
       });
       if (res) hasChanges = true;
@@ -1429,6 +1433,51 @@ app.delete("/api/despesas/:id", async (req, res) => {
 
 
 // --- ITENS DE DESPESAS ---
+// Meses em que cada código (matrícula/UC) e cada medidor físico aparecem nas faturas salvas.
+// Base do histórico de códigos/medidores mostrado ao abrir um contrato.
+function mapearCodigosEMedidoresDasFaturas() {
+  const up = (v?: string) => (v || "").trim().toUpperCase();
+  const mesesPorCodigo = new Map<string, Set<string>>();
+  const medidoresPorCodigo = new Map<string, Map<string, Set<string>>>();
+  for (const d of db.documentos_processados || []) {
+    const cod = up(d?.dados_extraidos?.codigo_numero);
+    const mes = (d?.dados_extraidos?.mes_ano || "").substring(0, 7);
+    if (!cod || !mes) continue;
+    if (!mesesPorCodigo.has(cod)) mesesPorCodigo.set(cod, new Set());
+    mesesPorCodigo.get(cod)!.add(mes);
+    const chave = (d.dados_extraidos as any)?.chave_vinculo ||
+      (/UC:\s/.test(d.origem_conteudo || "") ? chaveVinculoDoBloco(d.origem_conteudo) : null);
+    for (const numero of chave?.medidores || []) {
+      if (!medidoresPorCodigo.has(cod)) medidoresPorCodigo.set(cod, new Map());
+      const porNumero = medidoresPorCodigo.get(cod)!;
+      if (!porNumero.has(numero)) porNumero.set(numero, new Set());
+      porNumero.get(numero)!.add(mes);
+    }
+  }
+  return { mesesPorCodigo, medidoresPorCodigo, up };
+}
+
+function historicoDoContrato(it: ItemDespesa, mapa: ReturnType<typeof mapearCodigosEMedidoresDasFaturas>) {
+  const { mesesPorCodigo, medidoresPorCodigo, up } = mapa;
+  const periodo = (meses?: Set<string>) => {
+    const lista = [...(meses || [])].sort();
+    return { primeiro_mes: lista[0] || null, ultimo_mes: lista[lista.length - 1] || null, faturas: lista.length };
+  };
+  const codigos = [it.codigo_numero, ...(it.codigos_numero_anteriores || [])].filter(Boolean);
+  const historico_codigos = codigos.map(c => ({ codigo: c, atual: c === it.codigo_numero, ...periodo(mesesPorCodigo.get(up(c))) }))
+    .sort((a, b) => (a.atual ? 1 : 0) - (b.atual ? 1 : 0) || String(a.primeiro_mes || "").localeCompare(String(b.primeiro_mes || "")));
+  const detectados = new Map<string, Set<string>>();
+  codigos.forEach(c => medidoresPorCodigo.get(up(c))?.forEach((meses, numero) => {
+    if (!detectados.has(numero)) detectados.set(numero, new Set());
+    meses.forEach(m => detectados.get(numero)!.add(m));
+  }));
+  const medidores_detectados = [...detectados.entries()].map(([numero, meses]) => {
+    const p = periodo(meses);
+    return { numero, desde: p.primeiro_mes, ate: p.ultimo_mes, faturas: p.faturas };
+  }).sort((a, b) => String(a.desde).localeCompare(String(b.desde)));
+  return { historico_codigos, medidores_detectados };
+}
+
 app.get("/api/itens_despesas", (req, res) => {
   const activeOnly = req.query.ativo === "true";
   let list = db.itens_despesas;
@@ -1436,12 +1485,14 @@ app.get("/api/itens_despesas", (req, res) => {
     list = list.filter(it => it.ativo);
   }
 
+  const mapa = mapearCodigosEMedidoresDasFaturas();
   const fullList = list.map(it => {
     const despesa = db.despesas.find(d => d.id === it.despesa_id);
     const unidade = db.unidades.find(u => u.id === it.unidade_id);
     const secretaria = unidade ? db.secretarias.find(s => s.id === unidade.secretaria_id) : null;
     return {
       ...it,
+      ...historicoDoContrato(it, mapa),
       despesa_descricao: despesa ? despesa.descricao : "NÃO ENCONTRADA",
       unidade_nome: unidade ? unidade.nome : "NÃO ENCONTRADA",
       unidade_endereco: unidade?.endereco && unidade.endereco !== "ENDEREÇO A CADASTRAR" ? unidade.endereco : "",
@@ -1495,9 +1546,9 @@ app.post("/api/itens_despesas", (req, res) => {
   res.status(201).json(newItem);
 });
 
-app.put("/api/itens_despesas/:id", (req, res) => {
+app.put("/api/itens_despesas/:id", async (req, res) => {
   const { id } = req.params;
-  const { codigo_numero, despesa_id, unidade_id, tipo_fone, medidor, ativo } = req.body;
+  const { codigo_numero, despesa_id, unidade_id, tipo_fone, medidor, ativo, medidores_fisicos } = req.body;
   const usuario = req.headers["x-user"] as string || "admin";
 
   const index = db.itens_despesas.findIndex(it => it.id === id);
@@ -1521,13 +1572,83 @@ app.put("/api/itens_despesas/:id", (req, res) => {
   if (tipo_fone !== undefined) db.itens_despesas[index].tipo_fone = tipo_fone;
   if (medidor !== undefined) db.itens_despesas[index].medidor = medidor;
   if (ativo !== undefined) db.itens_despesas[index].ativo = !!ativo;
+  if (Array.isArray(medidores_fisicos)) {
+    const mes = (v: any) => (typeof v === "string" && /^\d{4}-\d{2}$/.test(v.trim()) ? v.trim() : undefined);
+    db.itens_despesas[index].medidores_fisicos = medidores_fisicos
+      .filter((m: any) => m && typeof m.numero === "string" && m.numero.trim())
+      .map((m: any): MedidorFisico => ({
+        numero: m.numero.trim().toUpperCase(),
+        desde: mes(m.desde),
+        ate: mes(m.ate),
+        observacao: typeof m.observacao === "string" && m.observacao.trim() ? m.observacao.trim() : undefined,
+      }));
+  }
 
   db.itens_despesas[index].atualizado_em = new Date().toISOString();
-  saveDB(db);
+  try {
+    await saveDBTargeted(db, [{ table: "itens_despesas", row: db.itens_despesas[index] }]);
+  } catch (err: any) {
+    db.itens_despesas[index] = oldVal;
+    saveLocalOnly(db);
+    return res.status(503).json({ error: "Não foi possível confirmar a gravação no banco de dados. Tente de novo em alguns segundos." });
+  }
 
   logAudit("itens_despesas", id, "UPDATE", usuario, oldVal, db.itens_despesas[index]);
 
   res.json(db.itens_despesas[index]);
+});
+
+// Substitui a lista de códigos (matrícula/UC) do contrato: um atual + os anteriores. Um código
+// que já tem faturas salvas não pode sair do contrato — a rotina de inicialização recriaria um
+// contrato separado para essas faturas. Nenhum código pode pertencer a outro contrato.
+app.put("/api/itens_despesas/:id/codigos", async (req, res) => {
+  const { id } = req.params;
+  const usuario = req.headers["x-user"] as string || "admin";
+  const up = (v?: string) => (v || "").trim().toUpperCase();
+  const index = db.itens_despesas.findIndex(it => it.id === id);
+  if (index === -1) return res.status(404).json({ error: "Contrato não encontrado." });
+  const item = db.itens_despesas[index];
+
+  const atual = up(req.body?.codigo_atual);
+  if (!atual) return res.status(400).json({ error: "Informe o código atual do contrato." });
+  const anteriores = [...new Set((Array.isArray(req.body?.anteriores) ? req.body.anteriores : []).map((c: any) => up(String(c || ""))))]
+    .filter((c): c is string => !!c && c !== atual);
+  const novos = [atual, ...anteriores];
+
+  const { mesesPorCodigo } = mapearCodigosEMedidoresDasFaturas();
+  const removidosComFatura = [item.codigo_numero, ...(item.codigos_numero_anteriores || [])]
+    .filter(c => !novos.includes(up(c)) && (mesesPorCodigo.get(up(c))?.size || 0) > 0);
+  if (removidosComFatura.length) {
+    return res.status(400).json({ error: `O código ${removidosComFatura.join(", ")} tem faturas salvas neste contrato e não pode ser removido.` });
+  }
+  const emOutro = novos.find(c => db.itens_despesas.some(o => o.id !== id &&
+    (up(o.codigo_numero) === c || (o.codigos_numero_anteriores || []).some(x => up(x) === c))));
+  if (emOutro) return res.status(400).json({ error: `O código ${emOutro} já pertence a outro contrato.` });
+
+  const oldVal = { ...item };
+  const codigoAntigoAtual = item.codigo_numero;
+  item.codigo_numero = atual;
+  item.codigos_numero_anteriores = anteriores;
+  item.atualizado_em = new Date().toISOString();
+  const rows: { table: string; row: any }[] = [{ table: "itens_despesas", row: item }];
+  const unidade = db.unidades.find(u => u.id === item.unidade_id);
+  const unidadeOld = unidade ? { ...unidade } : null;
+  if (unidade && up(unidade.uc) === up(codigoAntigoAtual) && up(unidade.uc) !== atual) {
+    unidade.uc = atual;
+    unidade.codnum = atual;
+    unidade.atualizado_em = item.atualizado_em;
+    rows.push({ table: "unidades", row: unidade });
+  }
+  try {
+    await saveDBTargeted(db, rows);
+  } catch (err: any) {
+    db.itens_despesas[index] = oldVal;
+    if (unidade && unidadeOld) Object.assign(unidade, unidadeOld);
+    saveLocalOnly(db);
+    return res.status(503).json({ error: "Não foi possível confirmar a gravação no banco de dados. Tente de novo em alguns segundos." });
+  }
+  logAudit("itens_despesas", id, "UPDATE", usuario, oldVal, item);
+  res.json({ ...item, ...historicoDoContrato(item, mapearCodigosEMedidoresDasFaturas()) });
 });
 
 app.delete("/api/itens_despesas/:id", async (req, res) => {
@@ -1816,6 +1937,8 @@ app.get("/api/lancamentos", (req, res) => {
       energia_injetada,
       concessionaria,
       codigo_numero: item ? item.codigo_numero : (matchingDoc?.dados_extraidos?.codigo_numero || "NÃO LOCALIZADO"),
+      codigo_fatura: matchingDoc?.dados_extraidos?.codigo_numero || (item ? item.codigo_numero : ""),
+      codigos_numero_anteriores: item?.codigos_numero_anteriores || [],
       medidor: item ? item.medidor : (matchingDoc?.dados_extraidos?.medidor || ""),
       despesa_id: item ? item.despesa_id : (concessionaria === "CASAN" ? "2" : "1"),
       despesa_descricao: finalDespesaDesc,

@@ -43,6 +43,13 @@ export interface Despesa {
   atualizado_em: string;
 }
 
+export interface MedidorFisico {
+  numero: string;
+  desde?: string; // "YYYY-MM"
+  ate?: string;   // "YYYY-MM"; vazio = em uso
+  observacao?: string;
+}
+
 export interface ItemDespesa {
   id: string;
   codigo_numero: string; // CODNUM
@@ -54,6 +61,8 @@ export interface ItemDespesa {
   // UC da CELESC) — continuam reconhecidos na hora de casar uma fatura nova com este item, pra
   // não fragmentar o histórico de lançamentos em dois contratos diferentes.
   codigos_numero_anteriores?: string[];
+  // Aparelhos físicos que já mediram este contrato (trocas de medidor), com o período de cada um.
+  medidores_fisicos?: MedidorFisico[];
   ativo: boolean;
   criado_em: string;
   atualizado_em: string;

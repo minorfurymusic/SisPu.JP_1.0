@@ -10,6 +10,8 @@ export interface SmartTableColumn {
   render?: (item: any) => React.ReactNode;
   isPinned?: boolean;
   searchable?: boolean;
+  // Texto usado na busca quando o valor exibido reúne mais de um campo (ex.: códigos anteriores).
+  searchValue?: (item: any) => string;
   type?: "string" | "number" | "currency" | "date" | "boolean";
 }
 
@@ -225,7 +227,7 @@ export default function SmartTable({
           if (col.searchable === false) return false;
           
           // If custom render is present, we try searching raw key value
-          const val = item[col.key];
+          const val = col.searchValue ? col.searchValue(item) : item[col.key];
           if (val === undefined || val === null) return false;
           return String(val).toLowerCase().includes(q);
         });

@@ -248,6 +248,7 @@ export async function initPostgresSchema(): Promise<boolean> {
         ['unidades', 'codnum', 'TEXT'],
         ['unidades', 'concessionaria', 'TEXT'],
         ['itens_despesas', 'codigos_numero_anteriores', 'JSONB'],
+        ['itens_despesas', 'medidores_fisicos', 'JSONB'],
       ];
       const existing = await client.query(
         `SELECT table_name, column_name FROM information_schema.columns
@@ -365,9 +366,9 @@ const TABLE_UPSERT_SPECS: Record<string, TableUpsertSpec> = {
     updateSet: 'codigo_legado = EXCLUDED.codigo_legado, descricao = EXCLUDED.descricao, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
   },
   itens_despesas: {
-    columns: ['id', 'codigo_numero', 'despesa_id', 'unidade_id', 'tipo_fone', 'medidor', 'codigos_numero_anteriores', 'ativo', 'criado_em', 'atualizado_em'],
-    toValues: (row) => [row.id, row.codigo_numero, row.despesa_id, row.unidade_id, row.tipo_fone || null, row.medidor || null, JSON.stringify(row.codigos_numero_anteriores || []), row.ativo !== false, row.criado_em, row.atualizado_em],
-    updateSet: 'codigo_numero = EXCLUDED.codigo_numero, despesa_id = EXCLUDED.despesa_id, unidade_id = EXCLUDED.unidade_id, tipo_fone = EXCLUDED.tipo_fone, medidor = EXCLUDED.medidor, codigos_numero_anteriores = EXCLUDED.codigos_numero_anteriores, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
+    columns: ['id', 'codigo_numero', 'despesa_id', 'unidade_id', 'tipo_fone', 'medidor', 'codigos_numero_anteriores', 'medidores_fisicos', 'ativo', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [row.id, row.codigo_numero, row.despesa_id, row.unidade_id, row.tipo_fone || null, row.medidor || null, JSON.stringify(row.codigos_numero_anteriores || []), JSON.stringify(row.medidores_fisicos || []), row.ativo !== false, row.criado_em, row.atualizado_em],
+    updateSet: 'codigo_numero = EXCLUDED.codigo_numero, despesa_id = EXCLUDED.despesa_id, unidade_id = EXCLUDED.unidade_id, tipo_fone = EXCLUDED.tipo_fone, medidor = EXCLUDED.medidor, codigos_numero_anteriores = EXCLUDED.codigos_numero_anteriores, medidores_fisicos = EXCLUDED.medidores_fisicos, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
   },
   lancamentos: {
     columns: ['id', 'item_despesa_id', 'mes_ano', 'consumo', 'valor_total', 'valor_imposto', 'valor_celular', 'valor_internet', 'valor_diversos', 'valor_linha_privada', 'valor_credito', 'data_lancamento', 'codigo_legado_numero', 'mes_ano_legado', 'criado_em', 'atualizado_em'],

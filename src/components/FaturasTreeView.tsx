@@ -205,7 +205,7 @@ export default function FaturasTreeView({
       // Filter by Search
       if (searchTerm.trim()) {
         const term = searchTerm.toLowerCase();
-        const codnum = (item.codigo_numero || '').toLowerCase();
+        const codnum = [item.codigo_numero, item.codigo_fatura, ...(item.codigos_numero_anteriores || [])].join(' ').toLowerCase();
         const unidade = (item.unidade_nome || '').toLowerCase();
         const despesa = (item.despesa_descricao || '').toLowerCase();
         const mesAnoStr = (item.mes_ano || '').toLowerCase();
@@ -722,7 +722,10 @@ export default function FaturasTreeView({
                                   return (
                                     <tr key={item.id || `celesc-${idx}`} className="hover:bg-amber-500/5 transition group">
                                       <td className="px-3 py-2 font-mono font-bold text-amber-200">
-                                        {item.codigo_numero}
+                                        {item.codigo_fatura || item.codigo_numero}
+                                        {item.codigo_fatura && item.codigo_fatura !== item.codigo_numero && (
+                                          <div className="text-[10px] font-normal text-gray-500" title="Código atual deste contrato">atual: {item.codigo_numero}</div>
+                                        )}
                                       </td>
                                       <td className="px-3 py-2 text-gray-300 max-w-[220px]">
                                         <span className="block truncate" title={item.unidade_endereco || item.endereco || ""}>
@@ -876,7 +879,10 @@ export default function FaturasTreeView({
                                   return (
                                     <tr key={item.id || `casan-${idx}`} className="hover:bg-blue-500/5 transition group">
                                       <td className="px-3 py-2 font-mono font-bold text-blue-200">
-                                        {item.codigo_numero}
+                                        {item.codigo_fatura || item.codigo_numero}
+                                        {item.codigo_fatura && item.codigo_fatura !== item.codigo_numero && (
+                                          <div className="text-[10px] font-normal text-gray-500" title="Código atual deste contrato">atual: {item.codigo_numero}</div>
+                                        )}
                                       </td>
                                       <td className="px-3 py-2 text-gray-300 max-w-[220px]">
                                         <span className="block truncate" title={item.unidade_endereco || item.endereco || ""}>

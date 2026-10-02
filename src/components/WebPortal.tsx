@@ -145,6 +145,12 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   const [itemUnidadeId, setItemUnidadeId] = useState("");
   const [itemTipoFone, setItemTipoFone] = useState("");
   const [itemMedidor, setItemMedidor] = useState("");
+  type CodigoContrato = { codigo: string; atual: boolean; primeiro_mes?: string | null; ultimo_mes?: string | null; faturas?: number };
+  type MedidorEditavel = { numero: string; desde?: string; ate?: string; observacao?: string };
+  const [itemCodigos, setItemCodigos] = useState<CodigoContrato[]>([]);
+  const [itemCodigosOriginais, setItemCodigosOriginais] = useState<string>("");
+  const [novoCodigo, setNovoCodigo] = useState("");
+  const [itemMedidores, setItemMedidores] = useState<MedidorEditavel[]>([]);
 
   const [editingLancId, setEditingLancId] = useState<string | null>(null);
   const [modalEditItem, setModalEditItem] = useState<any | null>(null);
@@ -594,15 +600,35 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
       return;
     }
     try {
+      if (editingItemId && JSON.stringify(itemCodigos.map(c => [c.codigo, c.atual])) !== itemCodigosOriginais) {
+        const atual = itemCodigos.find(c => c.atual);
+        const resCod = await fetch(`/api/itens_despesas/${editingItemId}/codigos`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "x-user": "gestor_web" },
+          body: JSON.stringify({ codigo_atual: atual?.codigo, anteriores: itemCodigos.filter(c => !c.atual).map(c => c.codigo) })
+        });
+        if (!resCod.ok) {
+          const err = await resCod.json().catch(() => ({}));
+          showError(err.error || "Erro ao salvar os códigos do contrato.");
+          return;
+        }
+      }
       const url = editingItemId ? `/api/itens_despesas/${editingItemId}` : "/api/itens_despesas";
       const method = editingItemId ? "PUT" : "POST";
-      const payload = {
-        codigo_numero: itemCodigoNumero,
-        despesa_id: itemDespesaId,
-        unidade_id: itemUnidadeId,
-        tipo_fone: itemTipoFone || undefined,
-        medidor: itemMedidor || undefined
-      };
+      const payload = editingItemId
+        ? {
+            despesa_id: itemDespesaId,
+            unidade_id: itemUnidadeId,
+            tipo_fone: itemTipoFone || undefined,
+            medidores_fisicos: itemMedidores.filter(m => m.numero.trim())
+          }
+        : {
+            codigo_numero: itemCodigoNumero,
+            despesa_id: itemDespesaId,
+            unidade_id: itemUnidadeId,
+            tipo_fone: itemTipoFone || undefined,
+            medidor: itemMedidor || undefined
+          };
 
       const res = await fetch(url, {
         method,
@@ -635,7 +661,23 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     setItemUnidadeId(it.unidade_id);
     setItemTipoFone(it.tipo_fone || "");
     setItemMedidor(it.medidor || "");
+    const codigos: CodigoContrato[] = Array.isArray(it.historico_codigos) && it.historico_codigos.length
+      ? it.historico_codigos
+      : [{ codigo: it.codigo_numero, atual: true }, ...(it.codigos_numero_anteriores || []).map((c: string) => ({ codigo: c, atual: false }))];
+    setItemCodigos(codigos);
+    setItemCodigosOriginais(JSON.stringify(codigos.map(c => [c.codigo, c.atual])));
+    setNovoCodigo("");
+    const salvos: MedidorEditavel[] = Array.isArray(it.medidores_fisicos) ? it.medidores_fisicos : [];
+    const detectados: MedidorEditavel[] = (it.medidores_detectados || []).map((m: any) => ({ numero: m.numero, desde: m.desde || undefined, ate: m.ate || undefined }));
+    const legado: MedidorEditavel[] = it.medidor && it.medidor !== "N/A" ? [{ numero: it.medidor }] : [];
+    setItemMedidores(salvos.length ? salvos : (detectados.length ? detectados : legado));
     setFormModal('item');
+  };
+
+  const medidorAtualDoContrato = (it: any): string => {
+    const lista: any[] = Array.isArray(it?.medidores_fisicos) && it.medidores_fisicos.length ? it.medidores_fisicos : (it?.medidores_detectados || []);
+    const emUso = lista.find(m => !m.ate) || lista[lista.length - 1];
+    return emUso?.numero || (it?.medidor && it.medidor !== "N/A" ? it.medidor : "");
   };
 
   const handleDeleteItem = (id: string) => {
@@ -1793,7 +1835,15 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                               key: "codigo_numero", 
                               label: "Medidor", 
                               searchable: true,
-                              render: (item) => <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                              searchValue: (item) => [item?.codigo_numero, ...(item?.codigos_numero_anteriores || [])].join(" "),
+                              render: (item) => (
+                                <div>
+                                  <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                                  {(item?.codigos_numero_anteriores || []).length > 0 && (
+                                    <div className="text-[10px] text-slate-500 font-mono" title="Códigos anteriores deste contrato">antes: {item.codigos_numero_anteriores.join(", ")}</div>
+                                  )}
+                                </div>
+                              )
                             },
                             {
                               key: "unidade_endereco",
@@ -1806,7 +1856,8 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                               key: "medidor", 
                               label: "Nº do Aparelho (MEDITM)", 
                               searchable: true,
-                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{item?.medidor || "N/A"}</span>
+                              searchValue: (item) => [item?.medidor, ...(item?.medidores_fisicos || []).map((m: any) => m.numero), ...(item?.medidores_detectados || []).map((m: any) => m.numero)].filter(Boolean).join(" "),
+                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{medidorAtualDoContrato(item) || "N/A"}</span>
                             },
                             { 
                               key: "tipo_fone", 
@@ -1873,7 +1924,15 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                               key: "codigo_numero", 
                               label: "Medidor", 
                               searchable: true,
-                              render: (item) => <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                              searchValue: (item) => [item?.codigo_numero, ...(item?.codigos_numero_anteriores || [])].join(" "),
+                              render: (item) => (
+                                <div>
+                                  <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                                  {(item?.codigos_numero_anteriores || []).length > 0 && (
+                                    <div className="text-[10px] text-slate-500 font-mono" title="Códigos anteriores deste contrato">antes: {item.codigos_numero_anteriores.join(", ")}</div>
+                                  )}
+                                </div>
+                              )
                             },
                             {
                               key: "unidade_endereco",
@@ -1886,7 +1945,8 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                               key: "medidor", 
                               label: "Nº do Aparelho (MEDITM)", 
                               searchable: true,
-                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{item?.medidor || "N/A"}</span>
+                              searchValue: (item) => [item?.medidor, ...(item?.medidores_fisicos || []).map((m: any) => m.numero), ...(item?.medidores_detectados || []).map((m: any) => m.numero)].filter(Boolean).join(" "),
+                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{medidorAtualDoContrato(item) || "N/A"}</span>
                             },
                             { 
                               key: "tipo_fone", 
@@ -1950,7 +2010,15 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                             key: "codigo_numero", 
                             label: "Medidor", 
                             searchable: true,
-                            render: (item) => <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                            searchValue: (item) => [item?.codigo_numero, ...(item?.codigos_numero_anteriores || [])].join(" "),
+                            render: (item) => (
+                              <div>
+                                <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                                {(item?.codigos_numero_anteriores || []).length > 0 && (
+                                  <div className="text-[10px] text-slate-500 font-mono" title="Códigos anteriores deste contrato">antes: {item.codigos_numero_anteriores.join(", ")}</div>
+                                )}
+                              </div>
+                            )
                           },
                           {
                             key: "unidade_endereco",
@@ -1963,7 +2031,8 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                             key: "medidor", 
                             label: "Nº do Aparelho (MEDITM)", 
                             searchable: true,
-                            render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{item?.medidor || "N/A"}</span>
+                            searchValue: (item) => [item?.medidor, ...(item?.medidores_fisicos || []).map((m: any) => m.numero), ...(item?.medidores_detectados || []).map((m: any) => m.numero)].filter(Boolean).join(" "),
+                            render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{medidorAtualDoContrato(item) || "N/A"}</span>
                           },
                           { 
                             key: "tipo_fone", 
@@ -2016,7 +2085,15 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       key: "codigo_numero", 
                       label: "Medidor", 
                       searchable: true,
-                      render: (item) => <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                      searchValue: (item) => [item?.codigo_numero, ...(item?.codigos_numero_anteriores || [])].join(" "),
+                      render: (item) => (
+                        <div>
+                          <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                          {(item?.codigos_numero_anteriores || []).length > 0 && (
+                            <div className="text-[10px] text-slate-500 font-mono" title="Códigos anteriores deste contrato">antes: {item.codigos_numero_anteriores.join(", ")}</div>
+                          )}
+                        </div>
+                      )
                     },
                     {
                       key: "unidade_endereco",
@@ -2029,7 +2106,8 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       key: "medidor", 
                       label: "Nº do Aparelho (MEDITM)", 
                       searchable: true,
-                      render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{item?.medidor || "N/A"}</span>
+                      searchValue: (item) => [item?.medidor, ...(item?.medidores_fisicos || []).map((m: any) => m.numero), ...(item?.medidores_detectados || []).map((m: any) => m.numero)].filter(Boolean).join(" "),
+                      render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{medidorAtualDoContrato(item) || "N/A"}</span>
                     },
                     { 
                       key: "tipo_fone", 
@@ -2485,7 +2563,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         {/* Overlay Modal for Secretarias, Unidades, Despesas, Itens Editing/Creation */}
         {formModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 overflow-y-auto">
-            <div className="bg-[#18181b] border border-white/10 text-white rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-150 my-8">
+            <div className={`bg-[#18181b] border border-white/10 text-white rounded-2xl p-6 ${formModal === 'item' && editingItemId ? 'max-w-2xl' : 'max-w-lg'} w-full shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-150 my-8`}>
               <div className="flex items-center justify-between border-b border-white/10 pb-4">
                 <div className="flex items-center gap-2.5 font-bold text-lg text-white">
                   {formModal === 'secretaria' && <Building2 className="h-5 w-5 text-indigo-400" />}
@@ -2665,6 +2743,54 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               {/* FORM: ITEM / CONTRATO CODNUM */}
               {formModal === 'item' && (
                 <form onSubmit={handleSaveItem} className="space-y-4 text-xs font-semibold">
+                  {editingItemId ? (
+                    <div className="space-y-2">
+                      <label className="text-gray-300">Códigos do contrato (matrícula / UC):</label>
+                      <div className="rounded-xl border border-white/10 divide-y divide-white/5">
+                        {itemCodigos.map((c, idx) => {
+                          const fmtMes = (m?: string | null) => (m ? `${m.substring(5, 7)}/${m.substring(0, 4)}` : "");
+                          const temFaturas = (c.faturas || 0) > 0;
+                          return (
+                            <div key={c.codigo} className="flex flex-wrap items-center gap-2 px-3 py-2">
+                              <span className="font-mono text-sm text-white">{c.codigo}</span>
+                              {c.atual && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">atual</span>}
+                              <span className="text-[11px] text-gray-400 font-normal">
+                                {temFaturas ? `${fmtMes(c.primeiro_mes)} a ${fmtMes(c.ultimo_mes)} · ${c.faturas} fatura${c.faturas === 1 ? "" : "s"}` : "sem faturas"}
+                              </span>
+                              <div className="ml-auto flex gap-1.5">
+                                {!c.atual && (
+                                  <button type="button" onClick={() => setItemCodigos(prev => prev.map((x, i) => ({ ...x, atual: i === idx })))}
+                                    className="px-2 py-1 rounded-lg border border-white/10 text-gray-300 hover:bg-white/5">Tornar atual</button>
+                                )}
+                                {!c.atual && !temFaturas && (
+                                  <button type="button" onClick={() => setItemCodigos(prev => prev.filter((_, i) => i !== idx))}
+                                    className="px-2 py-1 rounded-lg border border-rose-500/30 text-rose-300 hover:bg-rose-500/10">Remover</button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={novoCodigo}
+                          onChange={(e) => setNovoCodigo(e.target.value)}
+                          className="flex-1 bg-white/5 border border-white/15 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 uppercase font-mono transition"
+                          placeholder="Adicionar outro código deste contrato"
+                        />
+                        <button type="button"
+                          onClick={() => {
+                            const cod = novoCodigo.trim().toUpperCase();
+                            if (!cod || itemCodigos.some(c => c.codigo.toUpperCase() === cod)) return;
+                            setItemCodigos(prev => [...prev, { codigo: cod, atual: false, faturas: 0 }]);
+                            setNovoCodigo("");
+                          }}
+                          className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white">Adicionar</button>
+                      </div>
+                      <p className="text-[10px] text-gray-500 font-normal">Códigos com faturas salvas não podem ser removidos. Para corrigir um código digitado errado, adicione o certo e remova o errado.</p>
+                    </div>
+                  ) : (
                   <div className="space-y-1.5">
                     <label className="text-gray-300">Medidor (matrícula / UC):</label>
                     <input
@@ -2677,6 +2803,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       autoFocus
                     />
                   </div>
+                  )}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                       <label className="text-gray-300">Tipo de Conta (Despesa):</label>
@@ -2707,7 +2834,32 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       </select>
                     </div>
                   </div>
+                  {editingItemId && (
+                    <div className="space-y-2">
+                      <label className="text-gray-300">Medidores físicos (aparelhos) deste contrato:</label>
+                      {itemMedidores.length === 0 && <p className="text-[11px] text-gray-500 font-normal">Nenhum medidor registrado.</p>}
+                      {itemMedidores.map((m, idx) => (
+                        <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                          <input type="text" value={m.numero} placeholder="Número"
+                            onChange={(e) => setItemMedidores(prev => prev.map((x, i) => i === idx ? { ...x, numero: e.target.value } : x))}
+                            className="col-span-4 bg-white/5 border border-white/15 rounded-lg px-2.5 py-1.5 text-sm text-white font-mono focus:outline-none focus:border-indigo-500" />
+                          <input type="month" value={m.desde || ""} title="Desde"
+                            onChange={(e) => setItemMedidores(prev => prev.map((x, i) => i === idx ? { ...x, desde: e.target.value || undefined } : x))}
+                            className="col-span-3 bg-white/5 border border-white/15 rounded-lg px-2 py-1.5 text-white focus:outline-none focus:border-indigo-500" />
+                          <input type="month" value={m.ate || ""} title="Até (vazio = em uso)"
+                            onChange={(e) => setItemMedidores(prev => prev.map((x, i) => i === idx ? { ...x, ate: e.target.value || undefined } : x))}
+                            className="col-span-3 bg-white/5 border border-white/15 rounded-lg px-2 py-1.5 text-white focus:outline-none focus:border-indigo-500" />
+                          <button type="button" onClick={() => setItemMedidores(prev => prev.filter((_, i) => i !== idx))}
+                            className="col-span-2 px-2 py-1.5 rounded-lg border border-rose-500/30 text-rose-300 hover:bg-rose-500/10">Remover</button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => setItemMedidores(prev => [...prev, { numero: "" }])}
+                        className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-white">+ Adicionar medidor</button>
+                      <p className="text-[10px] text-gray-500 font-normal">Colunas: número · desde · até (deixe "até" vazio no medidor em uso). Na CELESC, os medidores lidos das faturas já vêm preenchidos.</p>
+                    </div>
+                  )}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {!editingItemId && (
                     <div className="space-y-1.5">
                       <label className="text-gray-300">Nº do Aparelho (MEDITM):</label>
                       <input
@@ -2718,6 +2870,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                         placeholder="Ex: Medidor Celesc 12345"
                       />
                     </div>
+                    )}
                     <div className="space-y-1.5">
                       <label className="text-gray-300">Linha de Suporte (opcional):</label>
                       <input
