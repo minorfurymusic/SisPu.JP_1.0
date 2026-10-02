@@ -1444,6 +1444,7 @@ app.get("/api/itens_despesas", (req, res) => {
       ...it,
       despesa_descricao: despesa ? despesa.descricao : "NÃO ENCONTRADA",
       unidade_nome: unidade ? unidade.nome : "NÃO ENCONTRADA",
+      unidade_endereco: unidade?.endereco && unidade.endereco !== "ENDEREÇO A CADASTRAR" ? unidade.endereco : "",
       secretaria_nome: secretaria ? secretaria.nome : "NÃO ENCONTRADA",
       secretaria_id: secretaria ? secretaria.id : null
     };

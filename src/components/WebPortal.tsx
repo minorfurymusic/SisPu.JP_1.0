@@ -590,7 +590,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   const handleSaveItem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!itemCodigoNumero.trim() || !itemDespesaId || !itemUnidadeId) {
-      showError("CODNUM, Tipo de Conta e Unidade Gestora são obrigatórios.");
+      showError("Medidor, Tipo de Conta e Unidade Gestora são obrigatórios.");
       return;
     }
     try {
@@ -611,7 +611,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
       });
 
       if (res.ok) {
-        showSuccess("Contrato (CODNUM) salvo com sucesso!");
+        showSuccess("Contrato salvo com sucesso!");
         setItemCodigoNumero("");
         setItemTipoFone("");
         setItemMedidor("");
@@ -670,7 +670,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   const handleSaveLancamento = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!lancItemId || !lancMesAno || !lancTotal) {
-      showError("Selecione o CODNUM, data de referência e o valor total.");
+      showError("Selecione o medidor, data de referência e o valor total.");
       return;
     }
     try {
@@ -1174,7 +1174,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               onClick={() => setActiveSection('itens')}
               className={`px-3 py-1.5 rounded-md transition ${activeSection === 'itens' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
             >
-              Contratos CODNUM
+              Contratos
             </button>
             <button
               onClick={() => setActiveSection('lancamentos')}
@@ -1676,7 +1676,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               <div>
                 <h4 className="font-bold text-slate-800 dark:text-white text-base flex items-center gap-2">
                   <Lightbulb className="h-5 w-5 text-indigo-500" />
-                  Identificadores CODNUM Cadastrados
+                  Contratos Cadastrados
                 </h4>
                 <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
                   Gerencie os medidores e contratos vinculados às concessionárias e unidades
@@ -1688,7 +1688,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                 className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-lg shadow-sm hover:shadow flex items-center gap-2 transition active:scale-95 shrink-0"
               >
                 <Plus className="h-4 w-4" />
-                Novo Contrato CODNUM
+                Novo Contrato
               </button>
             </div>
 
@@ -1791,14 +1791,20 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                             },
                             { 
                               key: "codigo_numero", 
-                              label: "CODNUM", 
+                              label: "Medidor", 
                               searchable: true,
                               render: (item) => <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                            },
+                            {
+                              key: "unidade_endereco",
+                              label: "Endereço",
+                              searchable: true,
+                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300" title={item?.unidade_endereco || ""}>{item?.unidade_endereco || "—"}</span>
                             },
                             { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
                             { 
                               key: "medidor", 
-                              label: "Medidor (MEDITM)", 
+                              label: "Nº do Aparelho (MEDITM)", 
                               searchable: true,
                               render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{item?.medidor || "N/A"}</span>
                             },
@@ -1816,14 +1822,14 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                                   <button
                                     onClick={() => item && handleEditItem(item)}
                                     className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
-                                    title="Editar contrato CODNUM"
+                                    title="Editar contrato"
                                   >
                                     <Edit2 className="h-3.5 w-3.5" />
                                   </button>
                                   <button
                                     onClick={() => item?.id && handleDeleteItem(item.id)}
                                     className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-rose-50 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
-                                    title="Excluir contrato CODNUM"
+                                    title="Excluir contrato"
                                   >
                                     <Trash2 className="h-3.5 w-3.5" />
                                   </button>
@@ -1865,14 +1871,20 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                             },
                             { 
                               key: "codigo_numero", 
-                              label: "CODNUM", 
+                              label: "Medidor", 
                               searchable: true,
                               render: (item) => <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                            },
+                            {
+                              key: "unidade_endereco",
+                              label: "Endereço",
+                              searchable: true,
+                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300" title={item?.unidade_endereco || ""}>{item?.unidade_endereco || "—"}</span>
                             },
                             { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
                             { 
                               key: "medidor", 
-                              label: "Medidor (MEDITM)", 
+                              label: "Nº do Aparelho (MEDITM)", 
                               searchable: true,
                               render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{item?.medidor || "N/A"}</span>
                             },
@@ -1890,14 +1902,14 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                                   <button
                                     onClick={() => item && handleEditItem(item)}
                                     className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
-                                    title="Editar contrato CODNUM"
+                                    title="Editar contrato"
                                   >
                                     <Edit2 className="h-3.5 w-3.5" />
                                   </button>
                                   <button
                                     onClick={() => item?.id && handleDeleteItem(item.id)}
                                     className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-rose-50 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
-                                    title="Excluir contrato CODNUM"
+                                    title="Excluir contrato"
                                   >
                                     <Trash2 className="h-3.5 w-3.5" />
                                   </button>
@@ -1936,14 +1948,20 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                           },
                           { 
                             key: "codigo_numero", 
-                            label: "CODNUM", 
+                            label: "Medidor", 
                             searchable: true,
                             render: (item) => <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                          },
+                          {
+                            key: "unidade_endereco",
+                            label: "Endereço",
+                            searchable: true,
+                            render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300" title={item?.unidade_endereco || ""}>{item?.unidade_endereco || "—"}</span>
                           },
                           { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
                           { 
                             key: "medidor", 
-                            label: "Medidor (MEDITM)", 
+                            label: "Nº do Aparelho (MEDITM)", 
                             searchable: true,
                             render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{item?.medidor || "N/A"}</span>
                           },
@@ -1961,14 +1979,14 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                                 <button
                                   onClick={() => item && handleEditItem(item)}
                                   className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
-                                  title="Editar contrato CODNUM"
+                                  title="Editar contrato"
                                 >
                                   <Edit2 className="h-3.5 w-3.5" />
                                 </button>
                                 <button
                                   onClick={() => item?.id && handleDeleteItem(item.id)}
                                   className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-rose-50 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
-                                  title="Excluir contrato CODNUM"
+                                  title="Excluir contrato"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
                                 </button>
@@ -1986,7 +2004,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                 <SmartTable
                   tableId="web_itens"
                   data={filteredItens}
-                  searchPlaceholder="Pesquisar por CODNUM, medidor, unidade..."
+                  searchPlaceholder="Pesquisar por medidor, endereço, unidade..."
                   columns={[
                     { 
                       key: "concessionaria", 
@@ -1996,14 +2014,20 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     },
                     { 
                       key: "codigo_numero", 
-                      label: "CODNUM", 
+                      label: "Medidor", 
                       searchable: true,
                       render: (item) => <span className="font-bold font-mono text-slate-900 dark:text-white">{item?.codigo_numero}</span>
+                    },
+                    {
+                      key: "unidade_endereco",
+                      label: "Endereço",
+                      searchable: true,
+                      render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300" title={item?.unidade_endereco || ""}>{item?.unidade_endereco || "—"}</span>
                     },
                     { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
                     { 
                       key: "medidor", 
-                      label: "Medidor (MEDITM)", 
+                      label: "Nº do Aparelho (MEDITM)", 
                       searchable: true,
                       render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{item?.medidor || "N/A"}</span>
                     },
@@ -2021,14 +2045,14 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                           <button
                             onClick={() => item && handleEditItem(item)}
                             className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
-                            title="Editar contrato CODNUM"
+                            title="Editar contrato"
                           >
                             <Edit2 className="h-3.5 w-3.5" />
                           </button>
                           <button
                             onClick={() => item?.id && handleDeleteItem(item.id)}
                             className="p-1.5 bg-slate-100 dark:bg-white/5 hover:bg-rose-50 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-lg border border-slate-200 dark:border-white/10 transition"
-                            title="Excluir contrato CODNUM"
+                            title="Excluir contrato"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
@@ -2048,7 +2072,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-white/10 pb-4">
               <div>
                 <h3 className="text-lg font-bold text-white tracking-tight">Faturas Mensais e Lançamentos</h3>
-                <p className="text-xs text-gray-400">Consolide despesas de energia e água por contratos CODNUM.</p>
+                <p className="text-xs text-gray-400">Consolide despesas de energia e água por medidor.</p>
               </div>
               <div className="flex gap-2 bg-[#0f0f0f] p-1 rounded-lg border border-white/10 text-xs font-semibold">
                 <button
@@ -2103,7 +2127,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                   </h4>
                   <form onSubmit={handleSaveLancamento} className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end text-xs font-semibold text-gray-300">
                     <div className="space-y-1.5">
-                      <label className="text-gray-400">Contrato CODNUM Associado:</label>
+                      <label className="text-gray-400">Medidor Associado:</label>
                       <select
                         required
                         value={lancItemId}
@@ -2236,7 +2260,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       <SmartTable
                         tableId="web_lancamentos"
                         data={lancamentos}
-                        searchPlaceholder="Filtrar por CODNUM, Unidade..."
+                        searchPlaceholder="Filtrar por Medidor, Unidade..."
                         columns={[
                           { 
                             key: "mes_ano", 
@@ -2248,7 +2272,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                               return <span className="font-mono font-bold">{`${String(dateObj.getMonth() + 1).padStart(2, '0')}/${dateObj.getFullYear()}`}</span>;
                             }
                           },
-                          { key: "codigo_numero", label: "CODNUM", searchable: true },
+                          { key: "codigo_numero", label: "Medidor", searchable: true },
                           { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
                           { key: "consumo", label: "Consumo", searchable: true },
                           { 
@@ -2472,7 +2496,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     {formModal === 'secretaria' && (editingSecId ? "Editar Secretaria" : "Nova Secretaria Municipal")}
                     {formModal === 'unidade' && (editingUniId ? "Editar Unidade Gestora" : "Nova Unidade Gestora")}
                     {formModal === 'despesa' && (editingDesId ? "Editar Tipo de Conta" : "Novo Tipo de Conta / Concessionária")}
-                    {formModal === 'item' && (editingItemId ? "Editar Contrato CODNUM" : "Novo Contrato / Medidor (CODNUM)")}
+                    {formModal === 'item' && (editingItemId ? "Editar Contrato" : "Novo Contrato")}
                   </h3>
                 </div>
                 <button
@@ -2642,7 +2666,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               {formModal === 'item' && (
                 <form onSubmit={handleSaveItem} className="space-y-4 text-xs font-semibold">
                   <div className="space-y-1.5">
-                    <label className="text-gray-300">Identificador CODNUM:</label>
+                    <label className="text-gray-300">Medidor (matrícula / UC):</label>
                     <input
                       type="text"
                       required
@@ -2685,7 +2709,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-1.5">
-                      <label className="text-gray-300">Medidor / UC Físico (MEDITM):</label>
+                      <label className="text-gray-300">Nº do Aparelho (MEDITM):</label>
                       <input
                         type="text"
                         value={itemMedidor}
