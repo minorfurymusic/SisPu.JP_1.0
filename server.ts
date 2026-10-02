@@ -635,13 +635,15 @@ function autoSyncOrphanRecords() {
     }
   });
 
-  // Merge duplicate units with same secretaria_id and nome
+  // Junta unidades duplicadas — duplicada é a que tem a MESMA matrícula/UC. Nunca pelo nome:
+  // imóveis diferentes compartilham o nome do usuário (ex.: "MUNICIPIO DE RIO DO SUL" em toda UC
+  // da CELESC), e juntar por nome fundia e apagava do banco unidades legítimas a cada reinício.
   const unitGroups = new Map<string, Unidade[]>();
   (db.unidades || []).forEach(u => {
-    if (!u) return;
-    const key = `${u.secretaria_id}_${(u.nome || "").trim().toUpperCase()}`;
-    if (!unitGroups.has(key)) unitGroups.set(key, []);
-    unitGroups.get(key)!.push(u);
+    const codigo = (u?.uc || u?.codnum || "").trim().toUpperCase();
+    if (!u || !codigo || codigo === "N/A") return;
+    if (!unitGroups.has(codigo)) unitGroups.set(codigo, []);
+    unitGroups.get(codigo)!.push(u);
   });
 
   unitGroups.forEach((group) => {
@@ -1492,54 +1494,98 @@ function normalizarEndereco(s?: string): string {
     .trim();
 }
 
-// Para cada fatura de um lote ainda não salvo, sugere um contrato (itens_despesas) já existente
-// para vincular quando o CODNUM recebido é desconhecido mas o endereço bate com o de um contrato
-// já cadastrado — o caso típico é a CELESC recodificando o formato da UC. Isso NUNCA vincula
-// nada sozinho: é usado pela grade de conferência do lote pra pré-marcar uma sugestão que o
-// usuário ainda precisa confirmar (ou desmarcar) antes de salvar.
+type ChaveVinculo = { medidores?: string[]; endereco?: string; classe?: string; grupo?: string };
+
+// Para cada fatura de um lote ainda não salvo cujo código ninguém reconhece, sugere um contrato
+// (itens_despesas) já existente — o caso típico é a CELESC recodificando a UC. Critérios, nesta
+// ordem: mesmo medidor; mesmo endereço + classificação + grupo tarifário; mesmo endereço. Uma
+// sugestão só sai quando o par é único nos dois sentidos (o contrato serve para uma única fatura
+// nova e a fatura para um único contrato); com empate, nada é sugerido. Contratos cujo código
+// também está neste lote seguem ativos e nunca são candidatos. Isso NUNCA vincula nada sozinho:
+// a grade de conferência pré-marca a sugestão e o usuário confirma ou desmarca antes de salvar.
 app.post("/api/itens_despesas/sugestoes-vinculo", (req, res) => {
-  const itens: Array<{ codigo_numero?: string; endereco?: string; concessionaria?: string }> =
+  const itens: Array<{ codigo_numero?: string; endereco?: string; concessionaria?: string; chave_vinculo?: ChaveVinculo }> =
     Array.isArray(req.body?.itens) ? req.body.itens : [];
+  const up = (s?: string) => (s || "").trim().toUpperCase();
+  const reconhece = (id: ItemDespesa, cod: string) =>
+    up(id.codigo_numero) === cod || (id.codigos_numero_anteriores || []).some(c => up(c) === cod);
 
-  const resultados = itens.map((it, index) => {
-    const cleanCodnum = (it.codigo_numero || "").trim().toUpperCase();
-    if (!cleanCodnum) return { index, sugestao: null };
+  // Perfil mais recente de cada código já importado (os documentos novos ficam no início).
+  const perfilPorCodigo = new Map<string, ChaveVinculo>();
+  for (const d of db.documentos_processados || []) {
+    const cod = up(d?.dados_extraidos?.codigo_numero);
+    const chave = (d?.dados_extraidos as any)?.chave_vinculo;
+    if (cod && chave && !perfilPorCodigo.has(cod)) perfilPorCodigo.set(cod, chave);
+  }
 
-    const jaReconhecido = db.itens_despesas.some(id =>
-      id.codigo_numero.trim().toUpperCase() === cleanCodnum ||
-      (id.codigos_numero_anteriores || []).some(c => c.trim().toUpperCase() === cleanCodnum)
-    );
-    if (jaReconhecido) return { index, sugestao: null }; // já é reconhecido — nada a sugerir
-
-    const enderecoNorm = normalizarEndereco(it.endereco);
-    if (!enderecoNorm) return { index, sugestao: null };
-
-    const candidatos = db.itens_despesas.filter(id => {
-      if (id.codigo_numero.trim().toUpperCase() === cleanCodnum) return false;
-      const unidade = db.unidades.find(u => u.id === id.unidade_id);
-      if (!unidade || !unidade.endereco) return false;
-      if (it.concessionaria && unidade.concessionaria && unidade.concessionaria !== it.concessionaria) return false;
-      return normalizarEndereco(unidade.endereco) === enderecoNorm;
-    });
-
-    // Mais de um candidato no mesmo endereço é ambíguo (prédio com várias UCs) — melhor não
-    // sugerir do que sugerir errado; o usuário vincula manualmente se for o caso.
-    if (candidatos.length !== 1) return { index, sugestao: null };
-
-    const candidato = candidatos[0];
-    const unidade = db.unidades.find(u => u.id === candidato.unidade_id);
+  const codigosDoLote = itens.map(it => up(it.codigo_numero)).filter(Boolean);
+  const candidatos = db.itens_despesas.filter(id => !codigosDoLote.some(c => reconhece(id, c))).map(id => {
+    const unidade = db.unidades.find(u => u.id === id.unidade_id);
+    const perfil = [id.codigo_numero, ...(id.codigos_numero_anteriores || [])]
+      .map(c => perfilPorCodigo.get(up(c))).find(Boolean) || {};
     return {
-      index,
-      sugestao: {
-        item_despesa_id: candidato.id,
-        codigo_numero_existente: candidato.codigo_numero,
-        unidade_nome: unidade?.nome || "",
-        confianca: "alta" as const
-      }
+      item: id,
+      unidade,
+      medidores: perfil.medidores || [],
+      endereco: normalizarEndereco(perfil.endereco || unidade?.endereco),
+      classe: up(perfil.classe),
+      grupo: up(perfil.grupo),
     };
   });
 
-  res.json({ resultados });
+  type Pendente = { index: number; concessionaria?: string; medidores: string[]; endereco: string; classe: string; grupo: string };
+  let pendentes: Pendente[] = itens.flatMap((it, index) => {
+    const cod = up(it.codigo_numero);
+    if (!cod || db.itens_despesas.some(id => reconhece(id, cod))) return [];
+    const ch = it.chave_vinculo || {};
+    return [{
+      index,
+      concessionaria: it.concessionaria,
+      medidores: ch.medidores || [],
+      endereco: normalizarEndereco(ch.endereco || it.endereco),
+      classe: up(ch.classe),
+      grupo: up(ch.grupo),
+    }];
+  });
+
+  const criterios: [string, (p: Pendente, c: typeof candidatos[number]) => boolean][] = [
+    ["medidor", (p, c) => p.medidores.length > 0 && c.medidores.some(m => p.medidores.includes(m))],
+    ["endereço, classificação e grupo", (p, c) => !!p.endereco && !!p.classe && p.endereco === c.endereco && p.classe === c.classe && p.grupo === c.grupo],
+    ["endereço", (p, c) => !!p.endereco && p.endereco === c.endereco],
+  ];
+
+  const sugestoes = new Map<number, any>();
+  const usados = new Set<string>();
+  for (const [criterio, bate] of criterios) {
+    const disponiveis = (p: Pendente) => candidatos.filter(c =>
+      !usados.has(c.item.id) &&
+      !(p.concessionaria && c.unidade?.concessionaria && c.unidade.concessionaria !== p.concessionaria) &&
+      bate(p, c));
+    const restantes: Pendente[] = [];
+    const escolhas = pendentes.map(p => ({ p, cands: disponiveis(p) }));
+    for (const { p, cands } of escolhas) {
+      const unico = cands.length === 1 && escolhas.filter(e => e.p !== p && e.cands.includes(cands[0])).length === 0;
+      if (!unico) { restantes.push(p); continue; }
+      const c = cands[0];
+      usados.add(c.item.id);
+      sugestoes.set(p.index, {
+        item_despesa_id: c.item.id,
+        codigo_numero_existente: c.item.codigo_numero,
+        unidade_nome: c.unidade?.nome || "",
+        criterio,
+        confianca: criterio === "endereço" ? "media" : "alta",
+      });
+    }
+    pendentes = restantes;
+  }
+
+  const reconhecidos = new Set(itens.flatMap((it, index) => {
+    const cod = up(it.codigo_numero);
+    return cod && db.itens_despesas.some(id => reconhece(id, cod)) ? [index] : [];
+  }));
+  res.json({
+    resultados: itens.map((_, index) => ({ index, sugestao: sugestoes.get(index) || null, reconhecido: reconhecidos.has(index) }))
+  });
 });
 
 // Remove um CODNUM antigo da lista de aliases de um contrato (desfaz um vínculo de recodificação

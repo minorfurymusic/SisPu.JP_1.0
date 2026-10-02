@@ -424,6 +424,7 @@ const segmentarCelescColetiva = (text: string, fileName: string): SegmentedFatur
     parsed.codigo_numero = b.uc;
     parsed.mes_ano = b.referencia;
     parsed.valor_total = b.valorImpresso ?? 0;
+    (parsed as any).chave_vinculo = b.chave;
     const avisos: string[] = [];
     if (b.valorImpresso === null) {
       avisos.push(`⚠️ Campo "Valor" em branco no PDF (itens somam R$ ${valorItens.toFixed(2).replace(".", ",")}). Não entra no total da conta coletiva — confira.`);

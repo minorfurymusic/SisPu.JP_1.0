@@ -145,6 +145,27 @@ export interface BlocoUcCelesc {
   cabecalho: string; // cabeçalho da página de relação (vencimento etc.), sem a linha de endereço do cliente
   texto: string;
   pagina: number;
+  chave: ChaveVinculoUc;
+}
+
+// Dados que continuam iguais quando a CELESC troca o código da UC; usados para sugerir qual
+// contrato antigo corresponde a um código novo.
+export interface ChaveVinculoUc {
+  medidores: string[];
+  endereco: string;
+  classe: string;
+  grupo: string;
+}
+
+const espacos = (s: string) => s.replace(/\s+/g, " ").trim();
+
+export function chaveVinculoDoBloco(texto: string): ChaveVinculoUc {
+  return {
+    medidores: [...new Set([...texto.matchAll(/^\s*(\d{6,})\s+(?:Energia|Demanda|DMCR|UFER)/gm)].map(m => m[1]))],
+    endereco: espacos((texto.match(/Endere[çc]o:\s+(.*?)\s+Etapa:/) || [])[1] || ""),
+    classe: espacos((texto.match(/Fornecimento:\s+(.*?)\s+Munic[íi]pio:/) || [])[1] || ""),
+    grupo: ((texto.match(/Grupo \/ Subgrupo Tens[ãa]o:\s+(.*?)\s+Valor:/) || [])[1] || "").replace(/\s+/g, ""),
+  };
 }
 
 interface ColetivaCelesc {
@@ -168,6 +189,7 @@ export function lerCelescColetiva(text: string): { blocos: BlocoUcCelesc[]; conf
     if (!atual) return;
     const v = atual.texto.match(VALOR_UC);
     atual.valorImpresso = v && v[1] ? valorBR(v[1]) : null;
+    atual.chave = chaveVinculoDoBloco(atual.texto);
     blocos.push(atual);
     atual = null;
   };
@@ -221,6 +243,7 @@ export function lerCelescColetiva(text: string): { blocos: BlocoUcCelesc[]; conf
           cabecalho: cabecalhoAtual,
           texto: linha,
           pagina: pIdx + 1,
+          chave: { medidores: [], endereco: "", classe: "", grupo: "" },
         };
       } else if (atual) {
         atual.texto += "\n" + linha;

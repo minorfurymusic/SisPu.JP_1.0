@@ -396,6 +396,8 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     item_despesa_id: string; codigo_numero_existente: string; unidade_nome: string; confianca: string;
   } | null>>({});
   const [linkConfirmed, setLinkConfirmed] = useState<Record<string, boolean>>({});
+  // doc.id -> código ainda desconhecido pelo sistema e sem sugestão de vínculo (vira unidade nova)
+  const [codigoNovoSemVinculo, setCodigoNovoSemVinculo] = useState<Record<string, boolean>>({});
   const linkSuggestionsCheckedRef = useRef<Set<string>>(new Set());
 
   // Busca sugestões de vínculo pra qualquer doc do lote que ainda não foi checado, assim que o
@@ -420,13 +422,22 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
             itens: pendentes.map(d => ({
               codigo_numero: d.dados_extraidos?.codigo_numero,
               endereco: d.dados_extraidos?.endereco,
-              concessionaria: d.layout?.includes("CASAN") ? "CASAN" : "CELESC"
+              concessionaria: d.layout?.includes("CASAN") ? "CASAN" : "CELESC",
+              chave_vinculo: (d.dados_extraidos as any)?.chave_vinculo
             }))
           })
         });
         if (!res.ok) return;
         const data = await res.json();
-        const resultados: Array<{ index: number; sugestao: any }> = data?.resultados || [];
+        const resultados: Array<{ index: number; sugestao: any; reconhecido?: boolean }> = data?.resultados || [];
+        setCodigoNovoSemVinculo(prev => {
+          const next = { ...prev };
+          resultados.forEach(r => {
+            const doc = pendentes[r.index];
+            if (doc) next[doc.id] = !r.sugestao && r.reconhecido === false;
+          });
+          return next;
+        });
         setLinkSuggestions(prev => {
           const next = { ...prev };
           resultados.forEach(r => {
@@ -2298,6 +2309,20 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                 </div>
               ))}
             </div>
+            {(() => {
+              const ativos = sessionDocs.filter(d => d && d.status !== 'IGNORADA');
+              const vinculados = ativos.filter(d => linkSuggestions[d.id] && linkConfirmed[d.id]).length;
+              const desmarcados = ativos.filter(d => linkSuggestions[d.id] && !linkConfirmed[d.id]).length;
+              const novos = ativos.filter(d => codigoNovoSemVinculo[d.id]).length;
+              if (vinculados + desmarcados + novos === 0) return null;
+              return (
+                <div className={`mt-2 ${novos + desmarcados > 0 ? 'text-amber-300' : 'text-gray-300'}`}>
+                  🔗 Códigos novos: <b className="text-white">{vinculados}</b> serão vinculados ao contrato antigo
+                  {desmarcados > 0 && <> · <b>{desmarcados}</b> com vínculo desmarcado</>}
+                  {novos > 0 && <> · <b>{novos}</b> sem contrato correspondente (viram unidades novas)</>}
+                </div>
+              );
+            })()}
             {conferencia.avisos.length > 0 && (
               <ul className="mt-2 space-y-0.5 text-amber-300">
                 {conferencia.avisos.map((a, i) => <li key={i}>⚠️ {a}</li>)}
