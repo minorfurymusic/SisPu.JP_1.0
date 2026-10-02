@@ -10,6 +10,7 @@ import {
   DocumentoProcessado, CadastroMestreUC
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
+import { chaveVinculoDoBloco } from "./src/utils/layoutReaders";
 import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres, deleteLancamentosLote } from "./src/db/postgres";
 
 dotenv.config();
@@ -382,6 +383,8 @@ function ensureUnidadeAndContract(params: {
   // (itens_despesas.id === vincularAItemDespesaId). O código antigo desse item vai para
   // codigos_numero_anteriores e o novo código passa a ser o codigo_numero atual.
   vincularAItemDespesaId?: string;
+  // Competência da fatura que está sendo vinculada ("YYYY-MM-..."); decide qual código é o atual.
+  mes_ano?: string;
 }) {
   const cleanCodnum = (params.codigo_numero || "").trim().toUpperCase();
   if (!cleanCodnum || cleanCodnum === "DESCONHECIDO" || cleanCodnum === "NÃO LOCALIZADO" || cleanCodnum.startsWith("AUTO-")) {
@@ -458,10 +461,22 @@ function ensureUnidadeAndContract(params: {
   if (!item && params.vincularAItemDespesaId) {
     const alvo = db.itens_despesas.find(it => it.id === params.vincularAItemDespesaId);
     if (alvo && alvo.codigo_numero.trim().toUpperCase() !== cleanCodnum) {
+      // Fatura mais antiga que as já lançadas no contrato (ex.: meses com o código antigo
+      // importados depois dos meses com o código novo): o código recebido é o antigo e só entra
+      // na lista de anteriores; o código atual do contrato não muda.
+      const mesFatura = (params.mes_ano || "").substring(0, 7);
+      const ultimoMes = db.lancamentos
+        .filter(l => l.item_despesa_id === alvo.id)
+        .reduce((m, l) => ((l.mes_ano || "").substring(0, 7) > m ? (l.mes_ano || "").substring(0, 7) : m), "");
+      const codigoRecebidoEhAntigo = !!mesFatura && !!ultimoMes && mesFatura < ultimoMes;
       const anteriores = new Set(alvo.codigos_numero_anteriores || []);
-      anteriores.add(alvo.codigo_numero);
+      if (codigoRecebidoEhAntigo) {
+        anteriores.add(cleanCodnum);
+      } else {
+        anteriores.add(alvo.codigo_numero);
+        alvo.codigo_numero = cleanCodnum;
+      }
       alvo.codigos_numero_anteriores = Array.from(anteriores);
-      alvo.codigo_numero = cleanCodnum;
       alvo.atualizado_em = new Date().toISOString();
       logAudit("itens_despesas", alvo.id, "UPDATE", usuario, null, alvo);
     }
@@ -484,9 +499,9 @@ function ensureUnidadeAndContract(params: {
       (u.codnum && u.codnum.trim().toUpperCase() === cleanCodnum)
     );
   }
-  if (unidade && params.vincularAItemDespesaId && unidade.uc !== cleanCodnum) {
-    unidade.uc = cleanCodnum;
-    unidade.codnum = cleanCodnum;
+  if (unidade && item && params.vincularAItemDespesaId && unidade.uc !== item.codigo_numero) {
+    unidade.uc = item.codigo_numero;
+    unidade.codnum = item.codigo_numero;
   }
 
   if (unidade) {
@@ -633,6 +648,63 @@ function autoSyncOrphanRecords() {
         hasChanges = true;
       }
     }
+  });
+
+  // Uma unidade por matrícula/UC: separa unidades que acumularam contratos de matrículas
+  // diferentes (efeito da antiga junção por nome a cada reinício). Cada matrícula extra ganha a
+  // sua própria unidade, com nome e endereço da fatura mais recente dela e a mesma secretaria;
+  // lançamentos não mudam, continuam no mesmo contrato.
+  const up = (v?: string) => (v || "").trim().toUpperCase();
+  const dadosPorCodigo = new Map<string, any>();
+  (db.documentos_processados || []).forEach(d => {
+    const cod = up(d?.dados_extraidos?.codigo_numero);
+    if (cod && !dadosPorCodigo.has(cod)) dadosPorCodigo.set(cod, d.dados_extraidos);
+  });
+  const contratosPorUnidade = new Map<string, ItemDespesa[]>();
+  (db.itens_despesas || []).forEach(it => {
+    if (!it?.unidade_id) return;
+    const k = String(it.unidade_id);
+    if (!contratosPorUnidade.has(k)) contratosPorUnidade.set(k, []);
+    contratosPorUnidade.get(k)!.push(it);
+  });
+  contratosPorUnidade.forEach((contratos, unidadeId) => {
+    const codigos = [...new Set(contratos.map(c => up(c.codigo_numero)).filter(Boolean))];
+    if (codigos.length <= 1) return;
+    const unidade = db.unidades.find(u => String(u.id) === unidadeId);
+    if (!unidade) return;
+    const codigoDaUnidade = up(unidade.uc || unidade.codnum);
+    const fica = codigos.includes(codigoDaUnidade) ? codigoDaUnidade : codigos[0];
+    if (codigoDaUnidade !== fica) {
+      unidade.uc = fica;
+      unidade.codnum = fica;
+      const dados = dadosPorCodigo.get(fica);
+      if (dados?.endereco && dados.endereco !== "N/A") unidade.endereco = up(dados.endereco);
+      unidade.atualizado_em = new Date().toISOString();
+    }
+    for (const codigo of codigos.filter(c => c !== fica)) {
+      const dados = dadosPorCodigo.get(codigo);
+      const agora = new Date().toISOString();
+      const nova: Unidade = {
+        id: crypto.randomUUID(),
+        secretaria_id: unidade.secretaria_id,
+        nome: dados?.unidade_nome && dados.unidade_nome !== "N/A" ? up(dados.unidade_nome) : unidade.nome,
+        uc: codigo,
+        codnum: codigo,
+        concessionaria: unidade.concessionaria,
+        endereco: dados?.endereco && dados.endereco !== "N/A" ? up(dados.endereco) : "ENDEREÇO A CADASTRAR",
+        ativo: true,
+        criado_em: agora,
+        atualizado_em: agora
+      };
+      db.unidades.push(nova);
+      logAudit("unidades", nova.id, "INSERT", "sistema", null, nova);
+      contratos.filter(c => up(c.codigo_numero) === codigo).forEach(c => {
+        c.unidade_id = nova.id;
+        c.atualizado_em = agora;
+      });
+    }
+    console.log(`[DB] Unidade "${unidade.nome}" tinha ${codigos.length} matrículas diferentes; separada em ${codigos.length} unidades.`);
+    hasChanges = true;
   });
 
   // Junta unidades duplicadas — duplicada é a que tem a MESMA matrícula/UC. Nunca pelo nome:
@@ -1514,8 +1586,11 @@ app.post("/api/itens_despesas/sugestoes-vinculo", (req, res) => {
   const perfilPorCodigo = new Map<string, ChaveVinculo>();
   for (const d of db.documentos_processados || []) {
     const cod = up(d?.dados_extraidos?.codigo_numero);
-    const chave = (d?.dados_extraidos as any)?.chave_vinculo;
-    if (cod && chave && !perfilPorCodigo.has(cod)) perfilPorCodigo.set(cod, chave);
+    if (!cod || perfilPorCodigo.has(cod)) continue;
+    // Faturas salvas antes de existir chave_vinculo: refaz a chave a partir do texto original.
+    const chave = (d?.dados_extraidos as any)?.chave_vinculo ||
+      (/UC:\s/.test(d?.origem_conteudo || "") ? chaveVinculoDoBloco(d.origem_conteudo) : null);
+    if (chave) perfilPorCodigo.set(cod, chave);
   }
 
   const codigosDoLote = itens.map(it => up(it.codigo_numero)).filter(Boolean);
@@ -2126,7 +2201,8 @@ function criarEHomologarFatura(
       // Preenchido pelo front-end quando o usuário confirma, na grade de conferência do lote,
       // que este CODNUM é uma recodificação de um contrato já existente (ver
       // /api/itens_despesas/sugestoes-vinculo) — não deve virar um item novo.
-      vincularAItemDespesaId: dados_extraidos?.vincular_a_item_despesa_id || undefined
+      vincularAItemDespesaId: dados_extraidos?.vincular_a_item_despesa_id || undefined,
+      mes_ano: dados_extraidos?.mes_ano
     });
   }
 
