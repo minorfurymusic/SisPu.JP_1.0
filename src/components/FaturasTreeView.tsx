@@ -209,7 +209,7 @@ export default function FaturasTreeView({
         const unidade = (item.unidade_nome || '').toLowerCase();
         const despesa = (item.despesa_descricao || '').toLowerCase();
         const mesAnoStr = (item.mes_ano || '').toLowerCase();
-        const endereco = (item.unidade_endereco || item.endereco || '').toLowerCase();
+        const endereco = (item.endereco_fatura || item.unidade_endereco || item.endereco || '').toLowerCase();
 
         return codnum.includes(term) || unidade.includes(term) || despesa.includes(term) || mesAnoStr.includes(term) || endereco.includes(term);
       }
@@ -728,8 +728,8 @@ export default function FaturasTreeView({
                                         )}
                                       </td>
                                       <td className="px-3 py-2 text-gray-300 max-w-[220px]">
-                                        <span className="block truncate" title={item.unidade_endereco || item.endereco || ""}>
-                                          {item.unidade_endereco || item.endereco || "—"}
+                                        <span className="block truncate" title={item.endereco_fatura || item.unidade_endereco || item.endereco || ""}>
+                                          {item.endereco_fatura || item.unidade_endereco || item.endereco || "—"}
                                         </span>
                                       </td>
                                       <td className="px-3 py-2 font-semibold">
@@ -885,8 +885,8 @@ export default function FaturasTreeView({
                                         )}
                                       </td>
                                       <td className="px-3 py-2 text-gray-300 max-w-[220px]">
-                                        <span className="block truncate" title={item.unidade_endereco || item.endereco || ""}>
-                                          {item.unidade_endereco || item.endereco || "—"}
+                                        <span className="block truncate" title={item.endereco_fatura || item.unidade_endereco || item.endereco || ""}>
+                                          {item.endereco_fatura || item.unidade_endereco || item.endereco || "—"}
                                         </span>
                                       </td>
                                       <td className="px-3 py-2 font-semibold">

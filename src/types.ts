@@ -29,6 +29,9 @@ export interface Unidade {
   codnum?: string;
   concessionaria?: string;
   endereco?: string;
+  // Unidade montada pelo usuário juntando contratos de matrículas diferentes (mesmo local).
+  // A rotina de inicialização que separa "uma unidade por matrícula" não mexe nelas.
+  agrupada?: boolean;
   ativo: boolean;
   criado_em: string;
   atualizado_em: string;

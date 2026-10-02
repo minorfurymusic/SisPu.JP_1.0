@@ -10,6 +10,7 @@ import DocumentManager from "./DocumentManager";
 import SmartTable, { SmartTableColumn } from "./SmartTable";
 import FaturasTreeView from "./FaturasTreeView";
 import EditFaturaModal from "./EditFaturaModal";
+import { SugestoesAgrupamento, JuntarContratosModal } from "./UnidadesAgrupamento";
 
 interface WebPortalProps {
   onRefreshTrigger?: number;
@@ -151,6 +152,19 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   const [itemCodigosOriginais, setItemCodigosOriginais] = useState<string>("");
   const [novoCodigo, setNovoCodigo] = useState("");
   const [itemMedidores, setItemMedidores] = useState<MedidorEditavel[]>([]);
+  const [juntarNaUnidade, setJuntarNaUnidade] = useState<any | null>(null);
+
+  const separarContrato = async (itemId: string) => {
+    try {
+      const res = await fetch(`/api/itens_despesas/${itemId}/separar`, { method: "POST", headers: { "x-user": "gestor_web" } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { showError(data.error || "Não foi possível separar o contrato."); return; }
+      showSuccess(`Contrato separado para a unidade "${data.unidade?.nome}".`);
+      notifyChange();
+    } catch (err: any) {
+      showError(err.message);
+    }
+  };
 
   const [editingLancId, setEditingLancId] = useState<string | null>(null);
   const [modalEditItem, setModalEditItem] = useState<any | null>(null);
@@ -1052,8 +1066,10 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     
     if (unitItems.length === 0) {
       return (
-        <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 italic text-xs">
-          Nenhum contrato ou medidor CODNUM vinculado a esta unidade. Cadastre um Item de Despesa vinculado a esta Unidade.
+        <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 italic text-xs flex items-center justify-between gap-3">
+          <span>Nenhum contrato vinculado a esta unidade.</span>
+          <button type="button" onClick={(e) => { e.stopPropagation(); setJuntarNaUnidade(unit); }}
+            className="not-italic px-3 py-1.5 rounded-lg bg-indigo-600 text-white font-bold">Juntar contratos</button>
         </div>
       );
     }
@@ -1068,6 +1084,14 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
             <p className="text-[10px] text-slate-500">Selecione a concessionária para inspecionar os medidores associados</p>
           </div>
           <div className="flex gap-1.5">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setJuntarNaUnidade(unit); }}
+              className="px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black hover:bg-amber-400"
+              title="Trazer para esta unidade contratos de água ou luz do mesmo local"
+            >
+              🔗 Juntar contratos
+            </button>
             {concessionaires.map(conces => (
               <button
                 key={conces}
@@ -1086,21 +1110,30 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {activeItems.map(it => {
-            const itemLancs = lancamentos.filter(l => l.codigo_numero === it.codigo_numero);
+            const itemLancs = lancamentos.filter(l => l.item_despesa_id === it.id);
             itemLancs.sort((a, b) => new Date(b.mes_ano).getTime() - new Date(a.mes_ano).getTime());
             const latestLanc = itemLancs[0];
-            const isSolar = activeConcessionaire.toUpperCase().includes("CELESC") || activeConcessionaire.toUpperCase().includes("FOTOVOLTAICO") || activeConcessionaire.toUpperCase().includes("ENERGIA");
+            const isSolar = (parseFloat(latestLanc?.energia_injetada) || 0) > 0;
             
             return (
               <div key={it?.id || it?.codigo_numero || `item-${Math.random()}`} className="bg-white dark:bg-[#121212] p-4 rounded-xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-3 hover:border-slate-300 dark:hover:border-white/20 transition">
                 <div className="flex justify-between items-start gap-4">
                   <div>
-                    <span className="text-[9px] text-slate-400 uppercase font-extrabold tracking-wider block">Código CODNUM</span>
+                    <span className="text-[9px] text-slate-400 uppercase font-extrabold tracking-wider block">Medidor (matrícula / UC)</span>
                     <span className="text-xs font-bold text-slate-900 font-mono">{it.codigo_numero}</span>
+                    {(it.codigos_numero_anteriores || []).length > 0 && (
+                      <span className="block text-[10px] text-slate-500 font-mono">antes: {it.codigos_numero_anteriores.join(", ")}</span>
+                    )}
+                    <span className="block text-[10px] text-slate-500">{it.endereco_contrato || it.unidade_endereco}</span>
                   </div>
-                  <div className="text-right">
-                    <span className="text-[9px] text-slate-400 uppercase font-extrabold tracking-wider block">Unidade Consumidora (UC) / Matrícula</span>
-                    <span className="text-xs font-bold text-indigo-600 font-mono">{it.medidor || "NÃO CONFIGURADO"}</span>
+                  <div className="text-right space-y-1">
+                    <span className="text-[9px] text-slate-400 uppercase font-extrabold tracking-wider block">Nº do Aparelho</span>
+                    <span className="text-xs font-bold text-indigo-600 font-mono block">{medidorAtualDoContrato(it) || "—"}</span>
+                    {unitItems.length > 1 && (
+                      <button type="button" onClick={(e) => { e.stopPropagation(); separarContrato(it.id); }}
+                        className="px-2 py-1 rounded border border-rose-300 text-rose-600 text-[10px] font-bold hover:bg-rose-50"
+                        title="Tirar este contrato desta unidade (volta a ter unidade própria)">Separar</button>
+                    )}
                   </div>
                 </div>
                 
@@ -1138,7 +1171,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     <div className="col-span-2 bg-emerald-50/80 p-2.5 rounded-lg border border-emerald-100 mt-1 flex items-center gap-2">
                       <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0"></div>
                       <span className="text-[10px] text-emerald-800 font-semibold">
-                        Microgeração Solar Fotovoltaica conectada — Compensando excedentes.
+                        Energia injetada na última fatura: {(parseFloat(latestLanc?.energia_injetada) || 0).toLocaleString('pt-BR')} kWh.
                       </span>
                     </div>
                   )}
@@ -1565,6 +1598,8 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               </div>
             </div>
 
+            <SugestoesAgrupamento onChanged={notifyChange} onError={showError} onSuccess={showSuccess} />
+
             <div className="bg-white dark:bg-[#0f0f0f] p-6 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm space-y-4">
               <SmartTable
                 tableId="web_unidades"
@@ -1582,7 +1617,13 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       const displayUC = (item?.uc && item.uc !== "N/A") ? item.uc : 
                                         (item?.codnum && item.codnum !== "N/A") ? item.codnum : 
                                         (item?.codigo_legado && item.codigo_legado !== "None" && item.codigo_legado !== "N/A") ? String(item.codigo_legado) : "None";
-                      return <span className="font-bold text-slate-900 dark:text-white font-mono">{displayUC}</span>;
+                      const qtd = itens.filter(i => String(i?.unidade_id) === String(item?.id)).length;
+                      return (
+                        <div>
+                          <span className="font-bold text-slate-900 dark:text-white font-mono">{displayUC}</span>
+                          {qtd > 1 && <span className="block text-[10px] text-amber-500 font-bold">{qtd} contratos neste local</span>}
+                        </div>
+                      );
                     }
                   },
                   {
@@ -1849,7 +1890,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                               key: "unidade_endereco",
                               label: "Endereço",
                               searchable: true,
-                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300" title={item?.unidade_endereco || ""}>{item?.unidade_endereco || "—"}</span>
+                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300" title={item?.endereco_contrato || item?.unidade_endereco || ""}>{item?.endereco_contrato || item?.unidade_endereco || "—"}</span>
                             },
                             { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
                             { 
@@ -1938,7 +1979,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                               key: "unidade_endereco",
                               label: "Endereço",
                               searchable: true,
-                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300" title={item?.unidade_endereco || ""}>{item?.unidade_endereco || "—"}</span>
+                              render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300" title={item?.endereco_contrato || item?.unidade_endereco || ""}>{item?.endereco_contrato || item?.unidade_endereco || "—"}</span>
                             },
                             { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
                             { 
@@ -2024,7 +2065,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                             key: "unidade_endereco",
                             label: "Endereço",
                             searchable: true,
-                            render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300" title={item?.unidade_endereco || ""}>{item?.unidade_endereco || "—"}</span>
+                            render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300" title={item?.endereco_contrato || item?.unidade_endereco || ""}>{item?.endereco_contrato || item?.unidade_endereco || "—"}</span>
                           },
                           { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
                           { 
@@ -2099,7 +2140,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       key: "unidade_endereco",
                       label: "Endereço",
                       searchable: true,
-                      render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300" title={item?.unidade_endereco || ""}>{item?.unidade_endereco || "—"}</span>
+                      render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300" title={item?.endereco_contrato || item?.unidade_endereco || ""}>{item?.endereco_contrato || item?.unidade_endereco || "—"}</span>
                     },
                     { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
                     { 
@@ -2901,6 +2942,16 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               )}
             </div>
           </div>
+        )}
+
+        {juntarNaUnidade && (
+          <JuntarContratosModal
+            unidade={juntarNaUnidade}
+            itens={itens}
+            onClose={() => setJuntarNaUnidade(null)}
+            onDone={(m) => { showSuccess(m); setJuntarNaUnidade(null); notifyChange(); }}
+            onError={showError}
+          />
         )}
 
         {/* Overlay Modal for Full Invoice Editing */}

@@ -499,7 +499,7 @@ function ensureUnidadeAndContract(params: {
       (u.codnum && u.codnum.trim().toUpperCase() === cleanCodnum)
     );
   }
-  if (unidade && item && params.vincularAItemDespesaId && unidade.uc !== item.codigo_numero) {
+  if (unidade && item && !unidade.agrupada && params.vincularAItemDespesaId && unidade.uc !== item.codigo_numero) {
     unidade.uc = item.codigo_numero;
     unidade.codnum = item.codigo_numero;
   }
@@ -675,7 +675,7 @@ function autoSyncOrphanRecords() {
     const codigos = [...new Set(contratos.map(c => up(c.codigo_numero)).filter(Boolean))];
     if (codigos.length <= 1) return;
     const unidade = db.unidades.find(u => String(u.id) === unidadeId);
-    if (!unidade) return;
+    if (!unidade || unidade.agrupada) return;
     const codigoDaUnidade = up(unidade.uc || unidade.codnum);
     const fica = codigos.includes(codigoDaUnidade) ? codigoDaUnidade : codigos[0];
     if (codigoDaUnidade !== fica) {
@@ -1291,6 +1291,165 @@ app.put("/api/unidades/:id", (req, res) => {
   res.json(db.unidades[index]);
 });
 
+// --- Unidade Gestora como local físico: juntar e separar contratos -------------------------
+
+// Move contratos (de qualquer concessionária) para esta unidade. Unidades de origem que ficam sem
+// contrato são apagadas, para não sobrar unidade vazia. Lançamentos não mudam: continuam no
+// mesmo contrato.
+app.post("/api/unidades/:id/juntar", async (req, res) => {
+  const { id } = req.params;
+  const usuario = req.headers["x-user"] as string || "admin";
+  const destino = db.unidades.find(u => String(u.id) === String(id));
+  if (!destino) return res.status(404).json({ error: "Unidade não encontrada." });
+  const ids: string[] = Array.isArray(req.body?.item_ids) ? req.body.item_ids.map(String) : [];
+  const itens = db.itens_despesas.filter(it => ids.includes(String(it.id)) && String(it.unidade_id) !== String(id));
+  if (itens.length === 0) return res.status(400).json({ error: "Nenhum contrato para juntar." });
+
+  const antes = { destino: { ...destino }, itens: itens.map(it => ({ it, unidade_id: it.unidade_id })) };
+  const origens = new Set(itens.map(it => String(it.unidade_id)));
+  const agora = new Date().toISOString();
+  itens.forEach(it => { it.unidade_id = destino.id; it.atualizado_em = agora; });
+  destino.agrupada = true;
+  destino.atualizado_em = agora;
+  const vazias = db.unidades.filter(u => origens.has(String(u.id)) && !db.itens_despesas.some(it => String(it.unidade_id) === String(u.id)));
+
+  try {
+    await saveDBTargeted(db, [{ table: "unidades", row: destino }, ...itens.map(it => ({ table: "itens_despesas", row: it }))]);
+  } catch (err: any) {
+    Object.assign(destino, antes.destino);
+    antes.itens.forEach(x => { x.it.unidade_id = x.unidade_id; });
+    saveLocalOnly(db);
+    return res.status(503).json({ error: "Não foi possível confirmar a gravação no banco de dados. Tente de novo em alguns segundos." });
+  }
+  for (const u of vazias) {
+    try {
+      await deleteRowFromPostgres("unidades", u.id);
+      db.unidades = db.unidades.filter(x => x.id !== u.id);
+      logAudit("unidades", u.id, "DELETE", usuario, u, null);
+    } catch (err: any) {
+      console.error("[juntar] Unidade vazia não pôde ser excluída agora:", err.message || err);
+    }
+  }
+  saveLocalOnly(db);
+  itens.forEach(it => logAudit("itens_despesas", it.id, "UPDATE", usuario, null, it));
+  res.json({ unidade: destino, contratos_movidos: itens.length, unidades_removidas: vazias.length });
+});
+
+// Tira um contrato de uma unidade agrupada e devolve para uma unidade própria (desfaz um "juntar").
+app.post("/api/itens_despesas/:id/separar", async (req, res) => {
+  const { id } = req.params;
+  const usuario = req.headers["x-user"] as string || "admin";
+  const item = db.itens_despesas.find(it => String(it.id) === String(id));
+  if (!item) return res.status(404).json({ error: "Contrato não encontrado." });
+  const atual = db.unidades.find(u => String(u.id) === String(item.unidade_id));
+  const outros = db.itens_despesas.filter(it => it.id !== item.id && String(it.unidade_id) === String(item.unidade_id));
+  if (!atual || outros.length === 0) return res.status(400).json({ error: "Este contrato já está sozinho na sua unidade." });
+
+  const up = (v?: string) => (v || "").trim().toUpperCase();
+  const codigos = [item.codigo_numero, ...(item.codigos_numero_anteriores || [])].map(up);
+  const dados = (db.documentos_processados || []).find(d => codigos.includes(up(d?.dados_extraidos?.codigo_numero)))?.dados_extraidos;
+  const agora = new Date().toISOString();
+  const nova: Unidade = {
+    id: crypto.randomUUID(),
+    secretaria_id: atual.secretaria_id,
+    nome: dados?.unidade_nome && dados.unidade_nome !== "N/A" ? up(dados.unidade_nome) : atual.nome,
+    uc: item.codigo_numero,
+    codnum: item.codigo_numero,
+    concessionaria: item.despesa_id === "2" ? "CASAN" : (atual.concessionaria || "CELESC"),
+    endereco: dados?.endereco && dados.endereco !== "N/A" ? up(dados.endereco) : "ENDEREÇO A CADASTRAR",
+    ativo: true,
+    criado_em: agora,
+    atualizado_em: agora
+  };
+  const unidadeAnterior = item.unidade_id;
+  db.unidades.push(nova);
+  item.unidade_id = nova.id;
+  item.atualizado_em = agora;
+  // A unidade que ficou deve continuar identificada por um contrato que ainda está nela.
+  const atualAntes = { ...atual };
+  if (codigos.includes(up(atual.uc))) {
+    atual.uc = outros[0].codigo_numero;
+    atual.codnum = outros[0].codigo_numero;
+  }
+  if (outros.length === 1) atual.agrupada = false;
+  atual.atualizado_em = agora;
+  try {
+    await saveDBTargeted(db, [{ table: "unidades", row: nova }, { table: "unidades", row: atual }, { table: "itens_despesas", row: item }]);
+  } catch (err: any) {
+    db.unidades = db.unidades.filter(u => u.id !== nova.id);
+    item.unidade_id = unidadeAnterior;
+    Object.assign(atual, atualAntes);
+    saveLocalOnly(db);
+    return res.status(503).json({ error: "Não foi possível confirmar a gravação no banco de dados. Tente de novo em alguns segundos." });
+  }
+  logAudit("unidades", nova.id, "INSERT", usuario, null, nova);
+  logAudit("itens_despesas", item.id, "UPDATE", usuario, null, item);
+  res.json({ unidade: nova });
+});
+
+// Grupos de unidades que parecem ser o mesmo local físico (para o usuário confirmar e juntar).
+// Critério: mesma rua e mesmo número, ou mesma rua e uma palavra própria em comum no nome ou no
+// complemento do endereço (ex.: "CRAS", "TABOAO"). Nunca junta nada sozinho.
+app.get("/api/unidades/sugestoes-agrupamento", (req, res) => {
+  const norm = (v?: string) => (v || "").toUpperCase().normalize("NFD").replace(/\p{Diacritic}/gu, "")
+    .replace(/[^A-Z0-9/ ]+/g, " ").replace(/\s+/g, " ").trim();
+  const TIPOS = new Set(["R", "RUA", "AV", "AVENIDA", "ROD", "RODOVIA", "EST", "ESTR", "ESTRADA", "TRAV", "TRAVESSA", "LD", "LADEIRA", "BC", "BECO", "AL", "ALAMEDA", "PC", "PRACA", "SERV", "SERVIDAO", "VER", "PREF", "PROF", "DR", "PE", "D"]);
+  const VAZIAS = new Set(["PMRS", "PREFEITURA", "MUNICIPAL", "MUNICIPIO", "RIO", "SUL", "DE", "DO", "DA", "DOS", "DAS", "E", "SN", "S/N", "CENTRO", "LOTE", "ESQ", "ESQUINA", "FR", "FUNDOS", "CX", "SALA", "PUBLICA", "ILUMINACAO", "PREDIO", "SEDE"]);
+  const partes = (endereco?: string) => {
+    const palavras = norm(endereco).replace(/,/g, " ").split(" ").filter(Boolean);
+    while (palavras.length && TIPOS.has(palavras[0])) palavras.shift();
+    const iNum = palavras.findIndex(p => /^\d/.test(p) || p === "SN" || p === "S/N");
+    const rua = (iNum === -1 ? palavras : palavras.slice(0, iNum)).join(" ");
+    const numero = iNum === -1 ? "" : (/^\d/.test(palavras[iNum]) ? palavras[iNum].replace(/^0+/, "") : "");
+    const resto = iNum === -1 ? [] : palavras.slice(iNum + 1);
+    return { rua, numero, resto };
+  };
+  const info = db.unidades.map(u => {
+    const contratos = db.itens_despesas.filter(it => String(it.unidade_id) === String(u.id));
+    if (contratos.length === 0) return null;
+    const { rua, numero, resto } = partes(u.endereco);
+    const palavrasRua = new Set(rua.split(" "));
+    const proprias = new Set([...norm(u.nome).split(" "), ...resto]
+      .filter(p => p.length >= 3 && !VAZIAS.has(p) && !/^\d+$/.test(p) && !palavrasRua.has(p)));
+    return { u, contratos, rua, numero, proprias };
+  }).filter(Boolean) as { u: Unidade; contratos: ItemDespesa[]; rua: string; numero: string; proprias: Set<string> }[];
+
+  const pai = new Map<string, string>();
+  const raiz = (x: string): string => (pai.get(x) && pai.get(x) !== x ? raiz(pai.get(x)!) : x);
+  const motivos = new Map<string, Set<string>>();
+  const porRua = new Map<string, typeof info>();
+  info.forEach(i => { if (i.rua.length >= 4) { if (!porRua.has(i.rua)) porRua.set(i.rua, []); porRua.get(i.rua)!.push(i); } });
+  for (const [rua, lista] of porRua) {
+    for (let a = 0; a < lista.length; a++) for (let b = a + 1; b < lista.length; b++) {
+      const x = lista[a], y = lista[b];
+      const mesmoNumero = !!x.numero && x.numero === y.numero;
+      const comum = [...x.proprias].filter(p => y.proprias.has(p));
+      if (!mesmoNumero && comum.length === 0) continue;
+      const rx = raiz(x.u.id), ry = raiz(y.u.id);
+      if (rx !== ry) pai.set(rx, ry);
+      const motivo = mesmoNumero ? `mesmo endereço (${rua}, ${x.numero})` : `mesma rua (${rua}) e "${comum[0]}" em comum`;
+      [x.u.id, y.u.id].forEach(idU => { if (!motivos.has(idU)) motivos.set(idU, new Set()); motivos.get(idU)!.add(motivo); });
+    }
+  }
+  const grupos = new Map<string, typeof info>();
+  info.filter(i => motivos.has(i.u.id)).forEach(i => {
+    const r = raiz(i.u.id);
+    if (!grupos.has(r)) grupos.set(r, []);
+    grupos.get(r)!.push(i);
+  });
+  const despesaDesc = (idD: string) => db.despesas.find(d => d.id === idD)?.descricao || "";
+  res.json([...grupos.values()].filter(g => g.length > 1).map(g => ({
+    motivos: [...new Set(g.flatMap(i => [...(motivos.get(i.u.id) || [])]))],
+    unidades: g.map(i => ({
+      id: i.u.id,
+      nome: i.u.nome,
+      endereco: i.u.endereco,
+      agrupada: !!i.u.agrupada,
+      contratos: i.contratos.map(c => ({ id: c.id, codigo_numero: c.codigo_numero, despesa_descricao: despesaDesc(c.despesa_id) }))
+    }))
+  })));
+});
+
 app.delete("/api/unidades/:id", async (req, res) => {
   const { id } = req.params;
   const usuario = req.headers["x-user"] as string || "admin";
@@ -1439,6 +1598,7 @@ function mapearCodigosEMedidoresDasFaturas() {
   const up = (v?: string) => (v || "").trim().toUpperCase();
   const mesesPorCodigo = new Map<string, Set<string>>();
   const medidoresPorCodigo = new Map<string, Map<string, Set<string>>>();
+  const enderecoPorCodigo = new Map<string, string>();
   for (const d of db.documentos_processados || []) {
     const cod = up(d?.dados_extraidos?.codigo_numero);
     const mes = (d?.dados_extraidos?.mes_ano || "").substring(0, 7);
@@ -1447,6 +1607,8 @@ function mapearCodigosEMedidoresDasFaturas() {
     mesesPorCodigo.get(cod)!.add(mes);
     const chave = (d.dados_extraidos as any)?.chave_vinculo ||
       (/UC:\s/.test(d.origem_conteudo || "") ? chaveVinculoDoBloco(d.origem_conteudo) : null);
+    const endereco = chave?.endereco || d.dados_extraidos?.endereco;
+    if (endereco && endereco !== "N/A" && !enderecoPorCodigo.has(cod)) enderecoPorCodigo.set(cod, endereco);
     for (const numero of chave?.medidores || []) {
       if (!medidoresPorCodigo.has(cod)) medidoresPorCodigo.set(cod, new Map());
       const porNumero = medidoresPorCodigo.get(cod)!;
@@ -1454,11 +1616,11 @@ function mapearCodigosEMedidoresDasFaturas() {
       porNumero.get(numero)!.add(mes);
     }
   }
-  return { mesesPorCodigo, medidoresPorCodigo, up };
+  return { mesesPorCodigo, medidoresPorCodigo, enderecoPorCodigo, up };
 }
 
 function historicoDoContrato(it: ItemDespesa, mapa: ReturnType<typeof mapearCodigosEMedidoresDasFaturas>) {
-  const { mesesPorCodigo, medidoresPorCodigo, up } = mapa;
+  const { mesesPorCodigo, medidoresPorCodigo, enderecoPorCodigo, up } = mapa;
   const periodo = (meses?: Set<string>) => {
     const lista = [...(meses || [])].sort();
     return { primeiro_mes: lista[0] || null, ultimo_mes: lista[lista.length - 1] || null, faturas: lista.length };
@@ -1475,7 +1637,10 @@ function historicoDoContrato(it: ItemDespesa, mapa: ReturnType<typeof mapearCodi
     const p = periodo(meses);
     return { numero, desde: p.primeiro_mes, ate: p.ultimo_mes, faturas: p.faturas };
   }).sort((a, b) => String(a.desde).localeCompare(String(b.desde)));
-  return { historico_codigos, medidores_detectados };
+  // Endereço impresso na fatura mais recente do contrato (numa unidade que junta vários contratos,
+  // cada um pode ter o seu — ex.: as duas ruas de uma esquina).
+  const endereco_contrato = codigos.map(c => enderecoPorCodigo.get(up(c))).find(Boolean) || "";
+  return { historico_codigos, medidores_detectados, endereco_contrato };
 }
 
 app.get("/api/itens_despesas", (req, res) => {
@@ -1944,6 +2109,9 @@ app.get("/api/lancamentos", (req, res) => {
       despesa_descricao: finalDespesaDesc,
       unidade_nome: finalUnidadeNome,
       unidade_endereco: unidade?.endereco && unidade.endereco !== "ENDEREÇO A CADASTRAR" ? unidade.endereco : (matchingDoc?.dados_extraidos?.endereco || ""),
+      endereco_fatura: ((matchingDoc?.dados_extraidos as any)?.chave_vinculo?.endereco) ||
+        (/UC:\s/.test(matchingDoc?.origem_conteudo || "") ? chaveVinculoDoBloco(matchingDoc!.origem_conteudo).endereco : "") ||
+        (matchingDoc?.dados_extraidos?.endereco && matchingDoc.dados_extraidos.endereco !== "N/A" ? matchingDoc.dados_extraidos.endereco : ""),
       secretaria_id: secretaria ? secretaria.id : null,
       secretaria_nome: secretaria ? secretaria.nome : "NÃO LOCALIZADA"
     };

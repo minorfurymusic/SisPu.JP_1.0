@@ -249,6 +249,7 @@ export async function initPostgresSchema(): Promise<boolean> {
         ['unidades', 'concessionaria', 'TEXT'],
         ['itens_despesas', 'codigos_numero_anteriores', 'JSONB'],
         ['itens_despesas', 'medidores_fisicos', 'JSONB'],
+        ['unidades', 'agrupada', 'BOOLEAN'],
       ];
       const existing = await client.query(
         `SELECT table_name, column_name FROM information_schema.columns
@@ -356,9 +357,9 @@ const TABLE_UPSERT_SPECS: Record<string, TableUpsertSpec> = {
     updateSet: 'codigo_legado = EXCLUDED.codigo_legado, nome = EXCLUDED.nome, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
   },
   unidades: {
-    columns: ['id', 'codigo_legado', 'secretaria_id', 'nome', 'endereco', 'uc', 'codnum', 'concessionaria', 'ativo', 'criado_em', 'atualizado_em'],
-    toValues: (row) => [row.id, row.codigo_legado || null, row.secretaria_id, row.nome, row.endereco || '', row.uc || null, row.codnum || null, row.concessionaria || null, row.ativo !== false, row.criado_em, row.atualizado_em],
-    updateSet: 'codigo_legado = EXCLUDED.codigo_legado, secretaria_id = EXCLUDED.secretaria_id, nome = EXCLUDED.nome, endereco = EXCLUDED.endereco, uc = EXCLUDED.uc, codnum = EXCLUDED.codnum, concessionaria = EXCLUDED.concessionaria, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
+    columns: ['id', 'codigo_legado', 'secretaria_id', 'nome', 'endereco', 'uc', 'codnum', 'concessionaria', 'agrupada', 'ativo', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [row.id, row.codigo_legado || null, row.secretaria_id, row.nome, row.endereco || '', row.uc || null, row.codnum || null, row.concessionaria || null, row.agrupada === true, row.ativo !== false, row.criado_em, row.atualizado_em],
+    updateSet: 'codigo_legado = EXCLUDED.codigo_legado, secretaria_id = EXCLUDED.secretaria_id, nome = EXCLUDED.nome, endereco = EXCLUDED.endereco, uc = EXCLUDED.uc, codnum = EXCLUDED.codnum, concessionaria = EXCLUDED.concessionaria, agrupada = EXCLUDED.agrupada, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
   },
   despesas: {
     columns: ['id', 'codigo_legado', 'descricao', 'ativo', 'criado_em', 'atualizado_em'],
