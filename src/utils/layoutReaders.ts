@@ -210,7 +210,7 @@ export function lerCelescColetiva(text: string): { blocos: BlocoUcCelesc[]; conf
     if (temCabecalho) cabecalhoAtual = cabecalho.filter(l => !/^\s*Endere[çc]o\s*:/i.test(l)).join("\n");
 
     for (const linha of linhas.slice(fimCabecalho + 1)) {
-      const uc = linha.match(/^\s*UC:\s+([\d.]+-\d+)/);
+      const uc = linha.match(/^\s*UC:\s+(\d[\d.]*(?:-\d+)?)\b/);
       if (uc) {
         fecharBloco();
         atual = {

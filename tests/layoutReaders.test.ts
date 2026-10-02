@@ -31,6 +31,7 @@ teste("CASAN SCI8095 09/2026: 108 contas, total igual ao Total Geral", () => {
 });
 
 const celesc: [string, string, { doc: string; ref: string; qtd: number; total: number }[]][] = [
+  ["CELESC maio (UC no formato antigo)", "celesc-coletiva-2026-05-uc-antiga.txt", [{ doc: "105000000132", ref: "05/2026", qtd: 155, total: 175506.79 }]],
   ["CELESC junho", "celesc-coletiva-2026-06.txt", [{ doc: "626000000088", ref: "06/2026", qtd: 154, total: 158224.51 }]],
   ["CELESC agosto", "celesc-coletiva-2026-08.txt", [{ doc: "129000000255", ref: "08/2026", qtd: 149, total: 199550.48 }]],
   ["CELESC arquivo com 2 coletivas", "celesc-duas-coletivas-2026-06-07.txt", [
