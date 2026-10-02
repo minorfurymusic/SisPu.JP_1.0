@@ -209,8 +209,9 @@ export default function FaturasTreeView({
         const unidade = (item.unidade_nome || '').toLowerCase();
         const despesa = (item.despesa_descricao || '').toLowerCase();
         const mesAnoStr = (item.mes_ano || '').toLowerCase();
-        
-        return codnum.includes(term) || unidade.includes(term) || despesa.includes(term) || mesAnoStr.includes(term);
+        const endereco = (item.unidade_endereco || item.endereco || '').toLowerCase();
+
+        return codnum.includes(term) || unidade.includes(term) || despesa.includes(term) || mesAnoStr.includes(term) || endereco.includes(term);
       }
 
       return true;
@@ -344,7 +345,7 @@ export default function FaturasTreeView({
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
             <input
               type="text"
-              placeholder="Buscar por CODNUM ou Unidade..."
+              placeholder="Buscar por Medidor, Endereço ou Unidade..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full bg-[#161616] border border-white/10 rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition"
@@ -705,11 +706,12 @@ export default function FaturasTreeView({
                             <table className="w-full text-xs text-left text-gray-300 border-collapse">
                               <thead className="bg-black/40 text-gray-400 uppercase text-[10px] font-mono border-b border-white/10">
                                 <tr>
-                                  <th className="px-3 py-2">CODNUM</th>
+                                  <th className="px-3 py-2">Medidor</th>
+                                  <th className="px-3 py-2">Endereço</th>
                                   <th className="px-3 py-2">Unidade Gestora</th>
                                   <th className="px-3 py-2 text-right">Consumo (kWh)</th>
                                   <th className="px-3 py-2 text-right">Valor Total</th>
-                                  <th className="px-3 py-2 text-right">Impostos</th>
+                                  <th className="px-3 py-2 text-right leading-tight">Energia<br />Injetada</th>
                                   <th className="px-3 py-2 text-center w-20">Ações</th>
                                 </tr>
                               </thead>
@@ -721,6 +723,11 @@ export default function FaturasTreeView({
                                     <tr key={item.id || `celesc-${idx}`} className="hover:bg-amber-500/5 transition group">
                                       <td className="px-3 py-2 font-mono font-bold text-amber-200">
                                         {item.codigo_numero}
+                                      </td>
+                                      <td className="px-3 py-2 text-gray-300 max-w-[220px]">
+                                        <span className="block truncate" title={item.unidade_endereco || item.endereco || ""}>
+                                          {item.unidade_endereco || item.endereco || "—"}
+                                        </span>
                                       </td>
                                       <td className="px-3 py-2 font-semibold">
                                         <button
@@ -745,8 +752,8 @@ export default function FaturasTreeView({
                                       <td className="px-3 py-2 text-right font-mono font-bold text-amber-400">
                                         R$ {(parseFloat(item.valor_total) || 0).toFixed(2)}
                                       </td>
-                                      <td className="px-3 py-2 text-right font-mono text-gray-400">
-                                        R$ {(parseFloat(item.valor_imposto) || 0).toFixed(2)}
+                                      <td className="px-3 py-2 text-right font-mono text-yellow-300">
+                                        {(parseFloat(item.energia_injetada) || 0).toLocaleString('pt-BR')} kWh
                                       </td>
                                       <td className="px-3 py-2 text-center">
                                         <div className="flex items-center justify-center gap-1">
@@ -854,11 +861,11 @@ export default function FaturasTreeView({
                             <table className="w-full text-xs text-left text-gray-300 border-collapse">
                               <thead className="bg-black/40 text-gray-400 uppercase text-[10px] font-mono border-b border-white/10">
                                 <tr>
-                                  <th className="px-3 py-2">CODNUM</th>
+                                  <th className="px-3 py-2">Medidor</th>
+                                  <th className="px-3 py-2">Endereço</th>
                                   <th className="px-3 py-2">Unidade Gestora</th>
                                   <th className="px-3 py-2 text-right">Consumo (m³)</th>
                                   <th className="px-3 py-2 text-right">Valor Total</th>
-                                  <th className="px-3 py-2 text-right">Impostos</th>
                                   <th className="px-3 py-2 text-center w-20">Ações</th>
                                 </tr>
                               </thead>
@@ -870,6 +877,11 @@ export default function FaturasTreeView({
                                     <tr key={item.id || `casan-${idx}`} className="hover:bg-blue-500/5 transition group">
                                       <td className="px-3 py-2 font-mono font-bold text-blue-200">
                                         {item.codigo_numero}
+                                      </td>
+                                      <td className="px-3 py-2 text-gray-300 max-w-[220px]">
+                                        <span className="block truncate" title={item.unidade_endereco || item.endereco || ""}>
+                                          {item.unidade_endereco || item.endereco || "—"}
+                                        </span>
                                       </td>
                                       <td className="px-3 py-2 font-semibold">
                                         <button
@@ -893,9 +905,6 @@ export default function FaturasTreeView({
                                       </td>
                                       <td className="px-3 py-2 text-right font-mono font-bold text-blue-400">
                                         R$ {(parseFloat(item.valor_total) || 0).toFixed(2)}
-                                      </td>
-                                      <td className="px-3 py-2 text-right font-mono text-gray-400">
-                                        R$ {(parseFloat(item.valor_imposto) || 0).toFixed(2)}
                                       </td>
                                       <td className="px-3 py-2 text-center">
                                         <div className="flex items-center justify-center gap-1">

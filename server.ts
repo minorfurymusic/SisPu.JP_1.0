@@ -1777,9 +1777,12 @@ app.get("/api/lancamentos", (req, res) => {
     const unidade = item ? db.unidades.find(u => u.id === item.unidade_id) : null;
     const secretaria = unidade ? db.secretarias.find(s => s.id === unidade.secretaria_id) : null;
 
-    const matchingDoc = db.documentos_processados?.find(d => 
-      d.dados_extraidos && 
-      d.dados_extraidos.codigo_numero === item?.codigo_numero &&
+    // Inclui os códigos anteriores do contrato: meses faturados com o código antigo (antes de a
+    // concessionária recodificar a UC) têm o documento salvo com aquele código.
+    const codigosDoContrato = item ? [item.codigo_numero, ...(item.codigos_numero_anteriores || [])] : [];
+    const matchingDoc = db.documentos_processados?.find(d =>
+      d.dados_extraidos &&
+      codigosDoContrato.includes(d.dados_extraidos.codigo_numero) &&
       d.dados_extraidos.mes_ano?.substring(0,7) === l.mes_ano?.substring(0,7)
     );
     const energia_injetada = (l as any).energia_injetada ?? matchingDoc?.dados_extraidos?.energia_injetada ?? 0;
@@ -1816,6 +1819,7 @@ app.get("/api/lancamentos", (req, res) => {
       despesa_id: item ? item.despesa_id : (concessionaria === "CASAN" ? "2" : "1"),
       despesa_descricao: finalDespesaDesc,
       unidade_nome: finalUnidadeNome,
+      unidade_endereco: unidade?.endereco && unidade.endereco !== "ENDEREÇO A CADASTRAR" ? unidade.endereco : (matchingDoc?.dados_extraidos?.endereco || ""),
       secretaria_id: secretaria ? secretaria.id : null,
       secretaria_nome: secretaria ? secretaria.nome : "NÃO LOCALIZADA"
     };
