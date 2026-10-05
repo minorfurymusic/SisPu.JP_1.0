@@ -4,6 +4,8 @@ import path from "node:path";
 import { detectarLayout, lerCasanSci8095, lerCelescColetiva } from "../src/utils/layoutReaders";
 import { splitReportIntoFaturas, avisoItensNaoFecham } from "../src/utils/documentParser";
 import { lerPlanilhaClassificacao } from "../src/utils/planilhaClassificacao";
+import { categorizarItens, GRUPOS, grupoDoItem, demandaDoMes, faixaDemanda, simularDemandaIdeal, consumoMedidoDoTexto, custoDisponibilidade, grupoTensaoDoTexto } from "../src/utils/analiseCelesc";
+import { compararComHistorico } from "../src/utils/variacao";
 
 const fixture = (nome: string) => fs.readFileSync(path.join(import.meta.dirname, "fixtures", nome), "utf8");
 let falhas = 0;
@@ -121,6 +123,74 @@ teste("CELESC jan–ago: em toda UC com Valor impresso a soma dos itens fecha (n
 teste("CELESC: item que não foi lido gera aviso com a diferença", () => {
   assert.equal(avisoItensNaoFecham([{ valor: 100 }, { valor: -10.5 }], 89.5), null);
   assert.match(avisoItensNaoFecham([{ valor: 2587.63 }], 40154.22) || "", /diferença de R\$ 37\.566,59/);
+});
+
+teste("Relatórios: todo item CELESC de jan–ago cai num grupo e os grupos somam o Valor da UC", () => {
+  for (const f of ["celesc-coletiva-2026-01.txt", "celesc-coletiva-2026-04.txt", "celesc-duas-coletivas-2026-06-07.txt", "celesc-coletiva-2026-08.txt"]) {
+    for (const s of splitReportIntoFaturas(fixture(f), f)) {
+      const d: any = s.dados_extraidos;
+      const c = categorizarItens(d.itens_fatura);
+      assert.deepEqual(c.naoClassificados, [], `${f} ${d.codigo_numero}`);
+      if (d.valor_total > 0) assert.ok(Math.abs(GRUPOS.reduce((a, g) => a + c.grupos[g], 0) - d.valor_total) < 0.05, `${f} ${d.codigo_numero}`);
+    }
+  }
+  const casos: [string, string][] = [
+    ["Consumo TE", "energia"], ["Consumo Fora Ponta TUSD", "rede"], ["Energia Injetada TUSD", "solar"], ["Bandeira Amarela da Energia Injetada", "solar"],
+    ["Bandeira Amarela", "bandeira"], ["Demanda", "demanda"], ["Demanda de Ultrapassagem", "ultrapassagem"], ["Diferença da Demanda Contratada", "demanda_sem_uso"],
+    ["Energia Reativa Excedente", "reativo"], ["Multa", "multas_juros"], ["Crédito Juros", "multas_juros"], ["COSIP Municipal Rio do Sul", "cosip"],
+    ["Tributo Retido IRPJ", "irpj_retido"], ["Participação Financeira - Rio", "infraestrutura"], ["Cobrança TUSD FioB GD2 05 e 06", "infraestrutura"],
+    ["Vistoria", "infraestrutura"], ["DIC crédito", "ajustes"], ["Anulação de Compensação", "ajustes"], ["Benefício Tarifário Bruto GD2", "solar"],
+  ];
+  for (const [nome, grupo] of casos) assert.equal(grupoDoItem(nome), grupo, nome);
+});
+
+teste("Relatórios: demanda contratada calculada da fatura, faixas de cor e demanda sugerida", () => {
+  const s = splitReportIntoFaturas(fixture("celesc-coletiva-2026-08.txt"), "ago").find(x => x.dados_extraidos.codigo_numero === "1.571.540.011-56")!;
+  const dm = demandaDoMes((s.dados_extraidos as any).itens_fatura)!;
+  assert.equal(dm.faturada, 65.141);
+  assert.equal(dm.ultrapassagem, 30.141);
+  assert.equal(dm.contratada, 35);
+  assert.equal(grupoTensaoDoTexto(s.origem_conteudo), "A4");
+  assert.equal(faixaDemanda(65.141, 35), "vermelho");
+  assert.equal(faixaDemanda(102, 100), "laranja");
+  assert.equal(faixaDemanda(95, 100), "verde");
+  assert.equal(faixaDemanda(80, 100), "amarelo");
+  assert.equal(faixaDemanda(50, 100), "cinza");
+  // Contrata 200 kW e usa no máximo 70: reduzir. Contrata 35 e usa ~100: aumentar.
+  const reduzir = simularDemandaIdeal([50, 60, 70].map(u => ({ usada: u, preco_kw: 23.7, preco_ultrapassagem_kw: 47.4 })), 200)!;
+  assert.ok(reduzir.sugerida >= 66 && reduzir.sugerida <= 70, String(reduzir.sugerida));
+  assert.ok(reduzir.economia > 0);
+  const aumentar = simularDemandaIdeal([90, 100, 110].map(u => ({ usada: u, preco_kw: 23.7, preco_ultrapassagem_kw: 47.4 })), 35)!;
+  assert.ok(aumentar.sugerida > 35 && aumentar.economia > 0);
+});
+
+teste("Relatórios: mínimo pago sem consumo (custo de disponibilidade)", () => {
+  const segs = splitReportIntoFaturas(fixture("celesc-coletiva-2026-01.txt"), "jan");
+  const comMinimo = segs.map(s => custoDisponibilidade((s.dados_extraidos as any).itens_fatura, consumoMedidoDoTexto(s.origem_conteudo), grupoTensaoDoTexto(s.origem_conteudo))).filter(Boolean);
+  assert.ok(comMinimo.length > 5);
+  assert.ok(comMinimo.every(c => c!.kwh > 0 && c!.valor > 0 && [30, 50, 100].includes(c!.minimo)));
+});
+
+teste("Alerta de variação: mesmo mês do ano anterior tem prioridade; só alerta acima de 20% e da diferença mínima", () => {
+  const h = (mes: string, consumo: number, valor = consumo, dias = 30) => ({ mes, consumo, valor, dias });
+  const hist = [h("2025-03", 1000), h("2026-01", 400), h("2026-02", 420)];
+  // Comparado com mar/2025 (1000): 1150 é +15% → sem alerta, mesmo sendo +180% sobre jan/fev.
+  const r1 = compararComHistorico(h("2026-03", 1150), hist, "CELESC");
+  assert.equal(r1.referencia, "mesmo mês de 2025");
+  assert.equal(r1.alerta, null);
+  // Sem o ano anterior: média de jan/fev (410); 600 é +46% e +190 kWh → alta.
+  const r2 = compararComHistorico(h("2026-03", 600), hist.slice(1), "CELESC");
+  assert.match(r2.referencia, /média de 2 meses/);
+  assert.equal(r2.alerta, "alta");
+  // UC pequena: 20 → 40 kWh é +100%, mas só 20 kWh de diferença → sem alerta.
+  assert.equal(compararComHistorico(h("2026-03", 40), [h("2026-01", 20), h("2026-02", 20)], "CELESC").alerta, null);
+  // Normaliza pelos dias: 1100 kWh em 33 dias = 1000 por 30 dias.
+  assert.equal(compararComHistorico(h("2026-03", 1100, 1100, 33), [h("2026-01", 1000), h("2026-02", 1000)], "CELESC").alerta, null);
+  // Água: 10 → 25 m³ (+150%, +15 m³) → alta; consumo zerado → zerado.
+  assert.equal(compararComHistorico(h("2026-03", 25), [h("2026-01", 10), h("2026-02", 10)], "CASAN").alerta, "alta");
+  assert.equal(compararComHistorico(h("2026-03", 0), [h("2026-01", 10), h("2026-02", 10)], "CASAN").alerta, "zerado");
+  // Sem histórico: sem referência.
+  assert.equal(compararComHistorico(h("2026-03", 500), [], "CELESC").referencia, "");
 });
 
 teste("Planilha de classificação CASAN: CSV e texto colado (tab) dão as mesmas 108 matrículas e 12 secretarias", () => {

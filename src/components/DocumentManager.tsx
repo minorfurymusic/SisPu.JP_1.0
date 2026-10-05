@@ -16,6 +16,7 @@ import {
   segmentarCelescPorUCs
 } from "../utils/documentParser";
 import { detectarLayout, lerCasanSci8095, lerCelescColetiva, ConferenciaLeitura } from "../utils/layoutReaders";
+import { ResultadoVariacao, TEXTO_ALERTA } from "../utils/variacao";
 import { extractTextFromPdfFile, convertTextToPaginas, convertPdfToImagesAndText, fileToBase64 } from "../utils/pdfExtractor";
 
 export function computeEnergiaInjetada(itens: any[]): number {
@@ -966,6 +967,46 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'warning', text: string } | null>(null);
   const [conferencia, setConferencia] = useState<ConferenciaLeitura | null>(null);
+  // Alertas de variação das faturas do lote em relação ao histórico de cada contrato.
+  const [variacoes, setVariacoes] = useState<{ docId: string; codigo: string; nome: string; concessionaria: "CASAN" | "CELESC"; consumo: number; valor: number; r: ResultadoVariacao }[]>([]);
+  const verificarVariacoes = async (docs: DocumentoProcessado[]) => {
+    setVariacoes([]);
+    const ativos = docs.filter(d => d?.dados_extraidos?.codigo_numero && d.dados_extraidos.mes_ano);
+    if (!ativos.length) return;
+    const conc = (d: DocumentoProcessado): "CASAN" | "CELESC" => (/CASAN/i.test(d.layout || "") ? "CASAN" : "CELESC");
+    try {
+      const res = await fetch("/api/faturas/variacao", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itens: ativos.map(d => ({
+          chave: d.id, codigo_numero: d.dados_extraidos.codigo_numero, mes_ano: d.dados_extraidos.mes_ano,
+          consumo: d.dados_extraidos.consumo, valor_total: d.dados_extraidos.valor_total,
+          dias: (d.dados_extraidos as any).dias_faturados || 30, concessionaria: conc(d),
+          vincular_a_item_despesa_id: (d.dados_extraidos as any).vincular_a_item_despesa_id,
+        })) }),
+      });
+      if (!res.ok) return;
+      const { resultados } = await res.json();
+      const porId = new Map(ativos.map(d => [d.id, d]));
+      const lista = (resultados || []).filter((x: any) => x.resultado?.alerta).map((x: any) => {
+        const d = porId.get(x.chave)!;
+        return { docId: d.id, codigo: d.dados_extraidos.codigo_numero, nome: d.dados_extraidos.unidade_nome || "", concessionaria: conc(d),
+          consumo: Number(d.dados_extraidos.consumo) || 0, valor: Number(d.dados_extraidos.valor_total) || 0, r: x.resultado as ResultadoVariacao };
+      }).sort((a: any, b: any) => {
+        // Primeiro o que pode ser problema (aumento, zerado, valor), depois as quedas; maior impacto antes.
+        const peso = (x: any) => (x.r.alerta === "queda" ? 1 : 0);
+        return peso(a) - peso(b) || Math.abs(b.r.impacto_valor) - Math.abs(a.r.impacto_valor);
+      });
+      setVariacoes(lista);
+      if (lista.length) {
+        addLog(`📈 Variação em relação ao histórico: ${lista.length} fatura(s) com alerta.`);
+        const texto = new Map<string, string>(lista.map((v: any) => [v.docId, `📈 ${TEXTO_ALERTA[v.r.alerta as keyof typeof TEXTO_ALERTA]}: ${v.r.var_consumo === null ? "" : `${v.r.var_consumo > 0 ? "+" : ""}${(v.r.var_consumo * 100).toFixed(0)}% no consumo, `}${v.r.var_valor === null ? "" : `${v.r.var_valor > 0 ? "+" : ""}${(v.r.var_valor * 100).toFixed(0)}% no valor`} (comparado com ${v.r.referencia}).`]));
+        setSessionDocs(prev => prev.map(d => texto.has(d.id) ? { ...d, logs_validacao: [...(d.logs_validacao || []).filter(l => !l.startsWith("📈")), texto.get(d.id)!] } : d));
+      }
+    } catch {
+      // Sem o alerta a importação segue normal; ele é só uma ajuda na conferência.
+    }
+  };
   const [copiedKey, setCopiedKey] = useState<boolean>(false);
 
   // PDF Viewer controls state
@@ -1138,7 +1179,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
     setProcessingQueue(true);
     setSessionDocs([]);
     setMessage(null);
-    setConferencia(null);
+    setConferencia(null); setVariacoes([]);
     setShowSummaryScreen(false);
     setLoteSummary(null);
 
@@ -1212,6 +1253,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
         leitura.conferencia.avisos.forEach(a => addLog(`⚠️ ${a}`));
         setSessionDocs(docs);
         setConferencia(leitura.conferencia);
+        verificarVariacoes(docs);
         setQueueProgress({ current: docs.length, total: docs.length, phase: "Concluído!" });
         setMessage(leitura.conferencia.ok
           ? { type: 'success', text: `CASAN: ${docs.length} contas lidas, quantidade e valor total conferem com o relatório.` }
@@ -1748,6 +1790,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
         setLoteSummary(summaryData);
         setSessionDocs(docObjects);
+        verificarVariacoes(docObjects);
         setProcessingQueue(false);
         setShowSummaryScreen(true); // Open the pre-conference summary screen first!
 
@@ -2336,6 +2379,41 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
           </div>
         )}
 
+        {variacoes.length > 0 && (
+          <div className="rounded-lg border p-3 text-[11px] bg-amber-500/5 border-amber-500/30 space-y-2">
+            <div className="uppercase tracking-wider font-bold text-[10px] text-amber-300">
+              📈 Variação em relação ao histórico: {variacoes.filter(v => v.r.alerta !== "queda").length} com aumento/zerado · {variacoes.filter(v => v.r.alerta === "queda").length} com queda (mais de 20%)
+            </div>
+            <p className="text-gray-400">Compara com o mesmo mês do ano anterior; sem ele, com a média dos meses anteriores. Consumo levado a 30 dias. Não impede salvar — é para conferir (na água, um salto pode ser vazamento).</p>
+            <div className="max-h-64 overflow-y-auto border border-white/10 rounded-lg">
+              <table className="w-full text-gray-300">
+                <thead className="bg-black/40 text-gray-400 text-[10px] uppercase font-mono sticky top-0">
+                  <tr><th className="px-2 py-1 text-left">Código</th><th className="px-2 py-1 text-left">Alerta</th><th className="px-2 py-1 text-right">Consumo</th><th className="px-2 py-1 text-right">Referência</th><th className="px-2 py-1 text-right">Var. consumo</th><th className="px-2 py-1 text-right">Var. valor</th><th className="px-2 py-1 text-right">Impacto R$</th><th className="px-2 py-1 text-left">Comparado com</th></tr>
+                </thead>
+                <tbody className="divide-y divide-white/5 font-mono">
+                  {variacoes.map(v => {
+                    const un = v.concessionaria === "CASAN" ? "m³" : "kWh";
+                    const pct = (x: number | null) => (x === null ? "—" : `${x > 0 ? "▲ +" : "▼ "}${(x * 100).toFixed(0)}%`);
+                    const cor = (x: number | null) => (x === null ? "" : x > 0 ? "text-rose-300" : "text-sky-300");
+                    return (
+                      <tr key={v.docId}>
+                        <td className="px-2 py-1">{v.concessionaria === "CASAN" ? "💧" : "⚡"} {v.codigo}</td>
+                        <td className="px-2 py-1 font-sans">{TEXTO_ALERTA[v.r.alerta!]}</td>
+                        <td className="px-2 py-1 text-right">{v.consumo.toLocaleString("pt-BR")} {un}</td>
+                        <td className="px-2 py-1 text-right">{v.r.ref_consumo_30d === null ? "—" : `${Math.round(v.r.ref_consumo_30d).toLocaleString("pt-BR")} ${un}`}</td>
+                        <td className={`px-2 py-1 text-right ${cor(v.r.var_consumo)}`}>{pct(v.r.var_consumo)}</td>
+                        <td className={`px-2 py-1 text-right ${cor(v.r.var_valor)}`}>{pct(v.r.var_valor)}</td>
+                        <td className="px-2 py-1 text-right">{fmtMoeda(v.r.impacto_valor)}</td>
+                        <td className="px-2 py-1 font-sans text-gray-400">{v.r.referencia}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         {/* --- CADASTRO MESTRE UC VIEW (Etapa 1) --- */}
         {activeImportMode === "CADASTRO" && (
           <div className="space-y-4">
@@ -2799,7 +2877,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                     setLoteSummary(null);
                     setShowSummaryScreen(false);
                     setMessage(null);
-                    setConferencia(null);
+                    setConferencia(null); setVariacoes([]);
                   }}
                   className="bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-semibold px-4 py-2 rounded-md transition border border-white/5"
                 >
@@ -3063,7 +3141,7 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
                     setLoteSummary(null);
                     setShowSummaryScreen(false);
                     setMessage(null);
-                    setConferencia(null);
+                    setConferencia(null); setVariacoes([]);
                   }}
                   className="bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-semibold px-4 py-2 rounded-md transition border border-white/5"
                 >

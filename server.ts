@@ -12,6 +12,8 @@ import {
 import { runDeterministicParser } from "./src/utils/documentParser";
 import { chaveVinculoDoBloco } from "./src/utils/layoutReaders";
 import { ParserCelesc, VERSAO_LEITOR_CELESC } from "./src/utils/ParserCelesc";
+import { categorizarItens, grupoDoItem, demandaDoMes, custoDisponibilidade, consumoMedidoDoTexto, grupoTensaoDoTexto, diasFaturadosDoTexto } from "./src/utils/analiseCelesc";
+import { compararComHistorico } from "./src/utils/variacao";
 import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres, deleteLancamentosLote } from "./src/db/postgres";
 
 dotenv.config();
@@ -1536,29 +1538,33 @@ app.post("/api/classificacao/aplicar", async (req, res) => {
 });
 
 // --- Relatórios ----------------------------------------------------------------------------
-// Uma linha por lançamento, já com unidade, secretaria, concessionária e os componentes da fatura
-// CELESC que os relatórios separam (crédito solar, demanda não utilizada, multas). Os cálculos
-// (totais, médias, desvio padrão, rankings) ficam na tela, que filtra por ano/unidade/secretaria.
-function classificarItensCelesc(itens: any[]) {
-  const soma = (re: RegExp) => itens
-    .filter(i => re.test(String(i?.descricao || "")))
-    .reduce((a, i) => a + (Number(i?.valor) || 0), 0);
-  return {
-    credito_solar: Math.abs(soma(/Injetada/i)),
-    demanda_nao_utilizada: soma(/Diferen[çc]a da Demanda Contratad/i),
-    ultrapassagem: soma(/Ultrapassagem/i),
-    reativo_excedente: soma(/Reativa Excedente/i),
-  };
-}
-
-app.get("/api/relatorios/base", (req, res) => {
+// Uma linha por lançamento, com unidade, secretaria e concessionária. Nas faturas CELESC vêm os
+// grupos de custo (energia, rede, demanda, perdas, infraestrutura, tributos...), cada tributo à
+// parte, a demanda do mês e o custo de disponibilidade — tudo calculado dos itens da fatura. Os
+// totais, filtros e gráficos ficam na tela.
+function indiceDocsPorCodigoMes() {
   const up = (v?: string) => (v || "").trim().toUpperCase();
-  const docPorCodigoMes = new Map<string, DocumentoProcessado>();
+  const m = new Map<string, DocumentoProcessado>();
   for (const d of db.documentos_processados || []) {
     const cod = up(d?.dados_extraidos?.codigo_numero);
     const mes = (d?.dados_extraidos?.mes_ano || "").substring(0, 7);
-    if (cod && mes && !docPorCodigoMes.has(`${cod}|${mes}`)) docPorCodigoMes.set(`${cod}|${mes}`, d);
+    if (cod && mes && !m.has(`${cod}|${mes}`)) m.set(`${cod}|${mes}`, d);
   }
+  return m;
+}
+
+function docDoLancamento(l: Lancamento, item: ItemDespesa | undefined, idx: Map<string, DocumentoProcessado>) {
+  const up = (v?: string) => (v || "").trim().toUpperCase();
+  const mes = (l.mes_ano || "").substring(0, 7);
+  const codigos = item ? [item.codigo_numero, ...(item.codigos_numero_anteriores || [])].map(up) : [];
+  return codigos.map(c => idx.get(`${c}|${mes}`)).find(Boolean);
+}
+
+const diasDoDoc = (doc?: DocumentoProcessado) =>
+  Number((doc?.dados_extraidos as any)?.dias_faturados) || diasFaturadosDoTexto(doc?.origem_conteudo || "") || 30;
+
+app.get("/api/relatorios/base", (req, res) => {
+  const idx = indiceDocsPorCodigoMes();
   const itemPorId = new Map(db.itens_despesas.map(it => [String(it.id), it]));
   const unidadePorId = new Map(db.unidades.map(u => [String(u.id), u]));
   const secretariaPorId = new Map(db.secretarias.map(s => [String(s.id), s]));
@@ -1569,14 +1575,15 @@ app.get("/api/relatorios/base", (req, res) => {
     const unidade = item ? unidadePorId.get(String(item.unidade_id)) : undefined;
     const secretaria = unidade ? secretariaPorId.get(String(unidade.secretaria_id)) : undefined;
     const despesa = item ? despesaPorId.get(String(item.despesa_id)) : undefined;
-    const mes = (l.mes_ano || "").substring(0, 7);
     const concessionaria = /CASAN|ÁGUA|AGUA/i.test(despesa?.descricao || "") || unidade?.concessionaria === "CASAN" ? "CASAN" : "CELESC";
-    const codigos = item ? [item.codigo_numero, ...(item.codigos_numero_anteriores || [])].map(up) : [];
-    const doc = codigos.map(c => docPorCodigoMes.get(`${c}|${mes}`)).find(Boolean);
-    const extras = concessionaria === "CELESC" ? classificarItensCelesc(doc?.dados_extraidos?.itens_fatura || []) : null;
+    const doc = docDoLancamento(l, item, idx);
+    const itens = concessionaria === "CELESC" ? ((doc?.dados_extraidos?.itens_fatura || []) as any[]) : [];
+    const texto = doc?.origem_conteudo || "";
+    const analise = itens.length ? categorizarItens(itens) : null;
+    const grupoTensao = concessionaria === "CELESC" ? grupoTensaoDoTexto(texto) : "";
     return {
       id: l.id,
-      mes,
+      mes: (l.mes_ano || "").substring(0, 7),
       contrato_id: item?.id || "",
       codigo: item?.codigo_numero || "",
       concessionaria,
@@ -1588,11 +1595,14 @@ app.get("/api/relatorios/base", (req, res) => {
       consumo: Number(l.consumo) || 0,
       valor_total: Number(l.valor_total) || 0,
       energia_injetada: Number((l as any).energia_injetada ?? doc?.dados_extraidos?.energia_injetada) || 0,
-      grupo_tarifario: (doc?.dados_extraidos as any)?.grupo_tarifario || "",
-      credito_solar: extras?.credito_solar || 0,
-      demanda_nao_utilizada: extras?.demanda_nao_utilizada || 0,
-      ultrapassagem: extras?.ultrapassagem || 0,
-      reativo_excedente: extras?.reativo_excedente || 0,
+      dias: diasDoDoc(doc),
+      grupo_tensao: grupoTensao,
+      tem_itens: !!analise,
+      grupos: analise?.grupos || null,
+      tributos: analise?.tributos || null,
+      nao_classificados: analise?.naoClassificados || [],
+      demanda: itens.length ? demandaDoMes(itens) : null,
+      disponibilidade: itens.length ? custoDisponibilidade(itens, consumoMedidoDoTexto(texto), grupoTensao) : null,
     };
   });
   res.json({
@@ -1600,6 +1610,82 @@ app.get("/api/relatorios/base", (req, res) => {
     unidades: db.unidades.map(u => ({ id: u.id, nome: u.nome, endereco: u.endereco || "", secretaria_id: u.secretaria_id })),
     secretarias: db.secretarias.map(s => ({ id: s.id, nome: s.nome })),
   });
+});
+
+// Itens da fatura de um contrato num mês (painel da unidade).
+app.get("/api/relatorios/fatura", (req, res) => {
+  const contratoId = String(req.query.contrato_id || ""), mes = String(req.query.mes || "").substring(0, 7);
+  const item = db.itens_despesas.find(it => String(it.id) === contratoId);
+  const lanc = db.lancamentos.find(l => String(l.item_despesa_id) === contratoId && (l.mes_ano || "").startsWith(mes));
+  if (!item || !lanc) return res.status(404).json({ error: "Fatura não encontrada." });
+  const doc = docDoLancamento(lanc, item, indiceDocsPorCodigoMes());
+  const itens = (doc?.dados_extraidos?.itens_fatura || []) as any[];
+  res.json({
+    codigo: item.codigo_numero, mes, valor_total: lanc.valor_total, consumo: lanc.consumo, dias: diasDoDoc(doc),
+    arquivo: doc?.nome_arquivo || "", itens: itens.map(i => ({ ...i, grupo: grupoDoItem(i.descricao) })),
+  });
+});
+
+// Variação de faturas novas (ainda não salvas) em relação ao histórico do mesmo contrato.
+app.post("/api/faturas/variacao", (req, res) => {
+  const up = (v?: string) => (v || "").trim().toUpperCase();
+  const pedidos: any[] = Array.isArray(req.body?.itens) ? req.body.itens : [];
+  const idx = indiceDocsPorCodigoMes();
+  const resultados = pedidos.map(p => {
+    const cod = up(p.codigo_numero);
+    const item = db.itens_despesas.find(it => [it.codigo_numero, ...(it.codigos_numero_anteriores || [])].map(up).includes(cod)) ||
+      (p.vincular_a_item_despesa_id ? db.itens_despesas.find(it => String(it.id) === String(p.vincular_a_item_despesa_id)) : undefined);
+    if (!item) return { chave: p.chave, resultado: null };
+    const historico = db.lancamentos.filter(l => l.item_despesa_id === item.id).map(l => {
+      const doc = docDoLancamento(l, item, idx);
+      return { mes: (l.mes_ano || "").substring(0, 7), consumo: Number(l.consumo) || 0, valor: Number(l.valor_total) || 0, dias: diasDoDoc(doc) };
+    });
+    const concessionaria = p.concessionaria === "CASAN" ? "CASAN" : "CELESC";
+    const resultado = compararComHistorico({ mes: String(p.mes_ano || ""), consumo: Number(p.consumo) || 0, valor: Number(p.valor_total) || 0, dias: Number(p.dias) || 30 }, historico, concessionaria);
+    return { chave: p.chave, resultado };
+  });
+  res.json({ resultados });
+});
+
+// Análise em texto pelo Gemini. Recebe o RESUMO já calculado pelo sistema (não os PDFs) e só pode
+// comentar esses números — a conta é sempre do sistema.
+app.post("/api/relatorios/analise-ia", async (req, res) => {
+  const titulo = String(req.body?.titulo || "Relatório");
+  const resumo = req.body?.resumo;
+  if (!resumo) return res.status(400).json({ error: "Resumo não informado." });
+  if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: "A chave do Gemini (GEMINI_API_KEY) não está configurada no servidor." });
+  const prompt = `Você é analista de gestão de energia elétrica e água de uma prefeitura (Rio do Sul/SC). Escreva em português do Brasil uma análise objetiva para o gestor, sobre: ${titulo}.
+
+REGRAS:
+- Use SOMENTE os números do JSON abaixo. Não invente valores, percentuais, tarifas nem regras. Se algo não estiver no JSON, diga que não há dado.
+- Não refaça contas que mudem os números do sistema; pode citar os valores como estão.
+- Seja prático: o que está acontecendo, por que custa caro, o que fazer, em ordem de economia.
+- Quando citar mudança de demanda contratada, lembre que a alteração segue regras e prazos da CELESC.
+
+FORMATO (markdown simples, sem tabelas):
+## Diagnóstico
+(3 a 5 frases)
+## Onde está o dinheiro perdido
+(lista com os maiores itens e valores)
+## Recomendações (da maior para a menor economia)
+(lista numerada; cada item com a ação, o porquê e a economia estimada quando o JSON trouxer)
+## Pontos de atenção
+(variações, consumo zerado, dados faltando)
+
+DADOS (JSON):
+${JSON.stringify(resumo).slice(0, 60000)}`;
+  const modelos = ["gemini-pro-latest", "gemini-3.6-flash", "gemini-flash-latest"];
+  let ultimoErro: any = null;
+  for (const model of modelos) {
+    try {
+      const r = await ai.models.generateContent({ model, contents: prompt, config: { temperature: 0.2 } });
+      const texto = (r as any).text || "";
+      if (texto.trim()) return res.json({ texto, modelo: model });
+    } catch (err: any) {
+      ultimoErro = err;
+    }
+  }
+  res.status(502).json({ error: `Não foi possível gerar a análise com o Gemini agora: ${ultimoErro?.message || "sem resposta"}` });
 });
 
 // --- Unidade Gestora como local físico: juntar e separar contratos -------------------------
