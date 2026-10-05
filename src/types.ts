@@ -66,6 +66,8 @@ export interface ItemDespesa {
   codigos_numero_anteriores?: string[];
   // Aparelhos físicos que já mediram este contrato (trocas de medidor), com o período de cada um.
   medidores_fisicos?: MedidorFisico[];
+  // Nome do usuário como vem impresso na fatura mais recente deste contrato.
+  nome_fatura?: string;
   ativo: boolean;
   criado_em: string;
   atualizado_em: string;

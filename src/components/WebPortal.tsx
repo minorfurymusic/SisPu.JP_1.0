@@ -3,7 +3,7 @@ import {
   Building2, Receipt, Lightbulb, Droplets, History,
   TrendingUp, BarChart3, ShieldAlert, Search, Edit2, Trash2,
   Layers, Plus, Trash, Calendar, FolderCheck, CheckCircle2, X,
-  ClipboardList, Settings, Check, HelpCircle, Filter, FolderTree, Table, Eye, RefreshCw
+  ClipboardList, Settings, Check, HelpCircle, Filter, FolderTree, Table, Eye, RefreshCw, FileSpreadsheet
 } from "lucide-react";
 import { Secretaria, Unidade, Despesa, ItemDespesa, Lancamento, AuditoriaRegistro } from "../types";
 import DocumentManager from "./DocumentManager";
@@ -12,6 +12,7 @@ import FaturasTreeView from "./FaturasTreeView";
 import EditFaturaModal from "./EditFaturaModal";
 import { SugestoesAgrupamento, JuntarContratosModal } from "./UnidadesAgrupamento";
 import Relatorios from "./Relatorios";
+import { ImportarClassificacaoModal } from "./ImportarClassificacao";
 
 interface WebPortalProps {
   onRefreshTrigger?: number;
@@ -45,6 +46,7 @@ const renderConcessionariaBadge = (desc?: string) => {
 export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortalProps) {
   // Shared States
   const [secretarias, setSecretarias] = useState<Secretaria[]>([]);
+  const [importandoClassificacao, setImportandoClassificacao] = useState(false);
   const [unidades, setUnidades] = useState<any[]>([]);
   const [despesas, setDespesas] = useState<Despesa[]>([]);
   const [itens, setItens] = useState<any[]>([]);
@@ -1482,15 +1484,32 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                   Gerencie a estrutura administrativa municipal e códigos legados
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={handleOpenCreateSecretaria}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-lg shadow-sm hover:shadow flex items-center gap-2 transition active:scale-95 shrink-0"
-              >
-                <Plus className="h-4 w-4" />
-                Nova Secretaria
-              </button>
+              <div className="flex flex-wrap gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setImportandoClassificacao(true)}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2.5 rounded-lg shadow-sm hover:shadow flex items-center gap-2 transition active:scale-95"
+                >
+                  <FileSpreadsheet className="h-4 w-4" />
+                  Importar classificação (planilha)
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenCreateSecretaria}
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-lg shadow-sm hover:shadow flex items-center gap-2 transition active:scale-95"
+                >
+                  <Plus className="h-4 w-4" />
+                  Nova Secretaria
+                </button>
+              </div>
             </div>
+            {importandoClassificacao && (
+              <ImportarClassificacaoModal
+                onClose={() => setImportandoClassificacao(false)}
+                onDone={(m) => { setImportandoClassificacao(false); showSuccess(m); notifyChange(); }}
+                onError={showError}
+              />
+            )}
 
             <div className="bg-white dark:bg-[#0f0f0f] p-6 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm space-y-4">
               <SmartTable
@@ -2148,9 +2167,15 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300" title={item?.endereco_contrato || item?.unidade_endereco || ""}>{item?.endereco_contrato || item?.unidade_endereco || "—"}</span>
                     },
                     { key: "unidade_nome", label: "Unidade Gestora", searchable: true },
-                    { 
-                      key: "medidor", 
-                      label: "Nº do Aparelho (MEDITM)", 
+                    {
+                      key: "nome_fatura",
+                      label: "Nome na Fatura",
+                      searchable: true,
+                      render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300">{item?.nome_fatura || "—"}</span>
+                    },
+                    {
+                      key: "medidor",
+                      label: "Nº do Aparelho (MEDITM)",
                       searchable: true,
                       searchValue: (item) => [item?.medidor, ...(item?.medidores_fisicos || []).map((m: any) => m.numero), ...(item?.medidores_detectados || []).map((m: any) => m.numero)].filter(Boolean).join(" "),
                       render: (item) => <span className="text-xs text-slate-700 dark:text-slate-300 font-mono">{medidorAtualDoContrato(item) || "N/A"}</span>

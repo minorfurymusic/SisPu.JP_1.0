@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { detectarLayout, lerCasanSci8095, lerCelescColetiva } from "../src/utils/layoutReaders";
 import { splitReportIntoFaturas } from "../src/utils/documentParser";
+import { lerPlanilhaClassificacao } from "../src/utils/planilhaClassificacao";
 
 const fixture = (nome: string) => fs.readFileSync(path.join(import.meta.dirname, "fixtures", nome), "utf8");
 let falhas = 0;
@@ -90,4 +91,27 @@ if (falhas) {
   console.log(`\n${falhas} teste(s) falharam`);
   process.exit(1);
 }
+teste("Planilha de classificação CASAN: CSV e texto colado (tab) dão as mesmas 108 matrículas e 12 secretarias", () => {
+  const csv = fixture("classificacao-casan-2026-09.csv");
+  const r = lerPlanilhaClassificacao(csv);
+  assert.equal(r.erro, undefined);
+  assert.equal(r.linhas.length, 108);
+  assert.equal(new Set(r.linhas.map(l => l.matricula)).size, 108);
+  assert.equal(new Set(r.linhas.map(l => l.secretaria)).size, 12);
+  const padaria = r.linhas.find(l => l.matricula === "637565-0")!;
+  assert.equal(padaria.unidade, "EXTENSÃO UBS LARANJEIRAS");
+  assert.equal(padaria.nome_fatura, "PMRS PADARIA SOCIAL");
+  assert.equal(padaria.endereco, "ROD. VER. CARLOS PROBST,S/N");
+  // O Google Sheets copia em tabulação, sem aspas.
+  const colado = r.linhas.map(l => [l.matricula, l.endereco, l.nome_fatura, "0", "0", "", "", l.unidade, l.secretaria].join("\t"));
+  const tsv = ["Matrícula\tLocalização\tUsuário\tConsumo\tValor Total\tRegistro\tDígito\tUnidade\tSecretaria", ...colado, "TOTAL\t\t\t\t1"].join("\n");
+  assert.deepEqual(lerPlanilhaClassificacao(tsv).linhas, r.linhas);
+});
+
+teste("Planilha sem a coluna Secretaria é recusada com mensagem clara", () => {
+  const r = lerPlanilhaClassificacao("Matrícula;Usuário;Unidade\n637565-0;PMRS PADARIA SOCIAL;EXTENSÃO UBS LARANJEIRAS");
+  assert.equal(r.linhas.length, 0);
+  assert.match(r.erro || "", /Secretaria/);
+});
+
 console.log("\nTodos os testes passaram");

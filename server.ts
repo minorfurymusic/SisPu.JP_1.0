@@ -371,6 +371,18 @@ function logTechnicalError(origem: string, mensagem: string, arquivo: string, li
 }
 
 // Helper function to guarantee Unidade Gestora and Contrato CODNUM creation and linking
+const ID_SECRETARIA_A_CLASSIFICAR = "1";
+function secretariaAClassificar(): Secretaria {
+  let sec = db.secretarias.find(s => s.id === ID_SECRETARIA_A_CLASSIFICAR) ||
+    db.secretarias.find(s => /A CLASSIFICAR/i.test(s.nome));
+  if (!sec) {
+    const agora = new Date().toISOString();
+    sec = { id: ID_SECRETARIA_A_CLASSIFICAR, nome: "SECRETARIA GERAL / A CLASSIFICAR", sigla: "SEC-GERAL", ativo: true, criado_em: agora, atualizado_em: agora };
+    db.secretarias.push(sec);
+  }
+  return sec;
+}
+
 function ensureUnidadeAndContract(params: {
   codigo_numero: string;
   concessionaria?: 'CASAN' | 'CELESC';
@@ -423,18 +435,8 @@ function ensureUnidadeAndContract(params: {
   const targetDespesaId = concessionaria === 'CASAN' ? despesaCasan.id : despesaCelesc.id;
 
   // Ensure default Secretaria
-  let defaultSec = db.secretarias.find(s => s.ativo);
-  if (!defaultSec) {
-    defaultSec = {
-      id: "1",
-      nome: "SECRETARIA GERAL / A CLASSIFICAR",
-      sigla: "SEC-GERAL",
-      ativo: true,
-      criado_em: new Date().toISOString(),
-      atualizado_em: new Date().toISOString()
-    };
-    db.secretarias.push(defaultSec);
-  }
+  // Matrícula nova entra sempre em "a classificar" — nunca na primeira secretaria que existir.
+  const defaultSec = secretariaAClassificar();
 
   // 2. Find ItemDespesa (Contrato CODNUM)
   // Uma mesma UC/CODNUM pode ter mais de um hidrômetro/medidor físico faturado no mesmo
@@ -596,6 +598,17 @@ function ensureUnidadeAndContract(params: {
 // Function to automatically sync and create Unidades & Contratos for all existing documents and launches
 function autoSyncOrphanRecords() {
   let hasChanges = false;
+
+  // Unidades apontando para uma secretaria que não existe (a "a classificar" antiga nunca era
+  // gravada no banco) voltam a ter uma secretaria válida.
+  const idsSecretarias = new Set(db.secretarias.map(sc => String(sc.id)));
+  const orfas = db.unidades.filter(u => !idsSecretarias.has(String(u.secretaria_id)));
+  if (orfas.length) {
+    const sec = secretariaAClassificar();
+    orfas.forEach(u => { u.secretaria_id = sec.id; });
+    console.log(`[DB] ${orfas.length} unidade(s) sem secretaria válida passaram para "${sec.nome}".`);
+    hasChanges = true;
+  }
 
   // Sync from documentos_processados
   (db.documentos_processados || []).forEach(doc => {
@@ -1291,6 +1304,174 @@ app.put("/api/unidades/:id", (req, res) => {
   res.json(db.unidades[index]);
 });
 
+// --- Classificação por planilha: secretarias, Unidades Gestoras e nomes ----------------------
+// Cada linha: matrícula -> nome da unidade no sistema, nome na fatura, secretaria. Matrículas com
+// o mesmo nome de unidade (na mesma secretaria) formam uma Unidade Gestora só, salvo os grupos
+// que o usuário pedir para separar na prévia. Nome final: "UNIDADE - NOME NA FATURA".
+type LinhaClassificacaoReq = { matricula: string; nome_fatura: string; unidade: string; secretaria: string; endereco?: string };
+
+function planejarClassificacao(linhas: LinhaClassificacaoReq[], separar: string[] = []) {
+  const up = (v?: string) => (v || "").trim().toUpperCase();
+  const norm = (v?: string) => up(v).normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/\s+/g, " ").trim();
+  const normEnd = (v?: string) => norm(v).replace(/S\/N|\bSN\b/g, "").replace(/[^A-Z0-9]+/g, " ").trim();
+  const digitos = (v?: string) => (v || "").replace(/\D/g, "").replace(/^0+/, "");
+  const acharContrato = (mat: string) => {
+    const m = up(mat), d = digitos(mat);
+    const codigos = (it: ItemDespesa) => [it.codigo_numero, ...(it.codigos_numero_anteriores || [])];
+    return db.itens_despesas.find(it => codigos(it).some(c => up(c) === m)) ||
+      (d ? db.itens_despesas.find(it => codigos(it).some(c => digitos(c) === d)) : undefined);
+  };
+
+  const secretariasExistentes = new Map(db.secretarias.map(sc => [norm(sc.nome), sc]));
+  const secretariasNovas = [...new Set(linhas.map(l => up(l.secretaria)).filter(Boolean))].filter(n => !secretariasExistentes.has(norm(n)));
+
+  const porChave = new Map<string, { unidade: string; secretaria: string; linhas: (LinhaClassificacaoReq & { contrato?: ItemDespesa })[] }>();
+  for (const l of linhas) {
+    if (!up(l.matricula) || !up(l.unidade) || !up(l.secretaria)) continue;
+    const chave = `${norm(l.unidade)}|${norm(l.secretaria)}`;
+    if (!porChave.has(chave)) porChave.set(chave, { unidade: up(l.unidade), secretaria: up(l.secretaria), linhas: [] });
+    porChave.get(chave)!.linhas.push({ ...l, contrato: acharContrato(l.matricula) });
+  }
+  const nomeFinal = (unidade: string, nomes: string[]) => {
+    const distintos = [...new Set(nomes.map(up).filter(Boolean))];
+    return distintos.length ? `${unidade} - ${distintos.join(" / ")}` : unidade;
+  };
+  const grupos = [...porChave.entries()].map(([chave, g]) => {
+    const enderecos = [...new Set(g.linhas.map(l => normEnd(l.endereco)).filter(Boolean))];
+    const separado = separar.includes(chave);
+    return {
+      chave, unidade: g.unidade, secretaria: g.secretaria, separado,
+      nome_final: nomeFinal(g.unidade, g.linhas.map(l => l.nome_fatura)),
+      enderecos_diferentes: enderecos.length > 1,
+      linhas: g.linhas,
+      // Cada "destino" vira uma Unidade Gestora: o grupo inteiro, ou uma por matrícula se separado.
+      destinos: (separado ? g.linhas.map(l => [l]) : [g.linhas])
+        .map(ls => ({ nome: nomeFinal(g.unidade, ls.map(l => l.nome_fatura)), linhas: ls, contratos: ls.map(l => l.contrato).filter((c): c is ItemDespesa => !!c) })),
+    };
+  });
+  const naoEncontradas = linhas.filter(l => up(l.matricula) && !acharContrato(l.matricula)).map(l => l.matricula);
+  const casanIds = new Set(db.despesas.filter(d => /CASAN|ÁGUA|AGUA/i.test(d.descricao)).map(d => d.id));
+  const usados = new Set(grupos.flatMap(g => g.linhas.map(l => l.contrato?.id)).filter(Boolean) as string[]);
+  const foraDaPlanilha = db.itens_despesas.filter(it => casanIds.has(it.despesa_id) && !usados.has(it.id)).map(it => it.codigo_numero);
+  return { grupos, secretariasNovas, secretariasExistentes, naoEncontradas, foraDaPlanilha, norm, up };
+}
+
+app.post("/api/classificacao/previa", (req, res) => {
+  const linhas: LinhaClassificacaoReq[] = Array.isArray(req.body?.linhas) ? req.body.linhas : [];
+  if (!linhas.length) return res.status(400).json({ error: "Nenhuma linha recebida." });
+  const p = planejarClassificacao(linhas, Array.isArray(req.body?.separar) ? req.body.separar : []);
+  res.json({
+    total_linhas: linhas.length,
+    secretarias_novas: p.secretariasNovas,
+    nao_encontradas: p.naoEncontradas,
+    fora_da_planilha: p.foraDaPlanilha,
+    grupos: p.grupos.map(g => ({
+      chave: g.chave, unidade: g.unidade, secretaria: g.secretaria, nome_final: g.nome_final, separado: g.separado,
+      enderecos_diferentes: g.enderecos_diferentes, nomes_destino: g.destinos.map(d => d.nome),
+      matriculas: g.linhas.map(l => ({ matricula: l.matricula, nome_fatura: l.nome_fatura, endereco: l.endereco || "", encontrada: !!l.contrato })),
+    })).sort((a, b) => b.matriculas.length - a.matriculas.length || a.unidade.localeCompare(b.unidade)),
+  });
+});
+
+app.post("/api/classificacao/aplicar", async (req, res) => {
+  const usuario = req.headers["x-user"] as string || "admin";
+  const linhas: LinhaClassificacaoReq[] = Array.isArray(req.body?.linhas) ? req.body.linhas : [];
+  if (!linhas.length) return res.status(400).json({ error: "Nenhuma linha recebida." });
+  const p = planejarClassificacao(linhas, Array.isArray(req.body?.separar) ? req.body.separar : []);
+
+  const copia = JSON.parse(JSON.stringify({ secretarias: db.secretarias, unidades: db.unidades, itens: db.itens_despesas }));
+  const agora = new Date().toISOString();
+  const tocadas = { secretarias: new Map<string, Secretaria>(), unidades: new Map<string, Unidade>(), itens: new Map<string, ItemDespesa>() };
+
+  for (const nome of p.secretariasNovas) {
+    const sc: Secretaria = { id: crypto.randomUUID(), nome, ativo: true, criado_em: agora, atualizado_em: agora };
+    db.secretarias.push(sc);
+    p.secretariasExistentes.set(p.norm(nome), sc);
+    tocadas.secretarias.set(sc.id, sc);
+  }
+
+  const unidadesAntes = new Set(db.itens_despesas.map(it => String(it.unidade_id)));
+  const reivindicadas = new Set<string>();
+  let unidadesCriadas = 0;
+  for (const g of p.grupos) {
+    const sec = p.secretariasExistentes.get(p.norm(g.secretaria))!;
+    for (const destino of g.destinos) {
+      if (destino.contratos.length === 0) continue;
+      // Reaproveita a unidade que já tem mais contratos deste destino e que nenhum outro destino
+      // pegou; senão cria uma. Contratos de fora da planilha que já estavam nela (ex.: UC da
+      // CELESC juntada pelo usuário) continuam juntos.
+      const contagem = new Map<string, number>();
+      destino.contratos.forEach(c => contagem.set(String(c.unidade_id), (contagem.get(String(c.unidade_id)) || 0) + 1));
+      const candidata = [...contagem.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id)
+        .find(id => !reivindicadas.has(id) && db.unidades.some(u => String(u.id) === id));
+      let alvo = candidata ? db.unidades.find(u => String(u.id) === candidata)! : undefined;
+      if (!alvo) {
+        alvo = { id: crypto.randomUUID(), secretaria_id: sec.id, nome: destino.nome, uc: destino.contratos[0].codigo_numero, codnum: destino.contratos[0].codigo_numero, concessionaria: "CASAN", endereco: "", ativo: true, criado_em: agora, atualizado_em: agora };
+        db.unidades.push(alvo);
+        unidadesCriadas++;
+      }
+      reivindicadas.add(String(alvo.id));
+      destino.contratos.forEach(c => {
+        const linha = destino.linhas.find(l => l.contrato?.id === c.id);
+        c.unidade_id = alvo!.id;
+        if (linha?.nome_fatura) c.nome_fatura = p.up(linha.nome_fatura);
+        c.atualizado_em = agora;
+        tocadas.itens.set(c.id, c);
+      });
+      alvo.nome = destino.nome;
+      alvo.secretaria_id = sec.id;
+      // A UC da unidade precisa ser de um contrato que está nela: a rotina de boot junta unidades
+      // com a mesma UC, e uma UC "emprestada" de outro contrato faria duas unidades se fundirem.
+      const codigosNaUnidade = db.itens_despesas.filter(it => String(it.unidade_id) === String(alvo!.id)).map(it => p.up(it.codigo_numero));
+      if (!codigosNaUnidade.includes(p.up(alvo.uc))) {
+        alvo.uc = destino.contratos[0].codigo_numero;
+        alvo.codnum = destino.contratos[0].codigo_numero;
+      }
+      if (!alvo.endereco || alvo.endereco === "ENDEREÇO A CADASTRAR") alvo.endereco = p.up(destino.linhas[0].endereco) || alvo.endereco || "ENDEREÇO A CADASTRAR";
+      alvo.agrupada = db.itens_despesas.filter(it => String(it.unidade_id) === String(alvo!.id)).length > 1;
+      alvo.atualizado_em = agora;
+      tocadas.unidades.set(String(alvo.id), alvo);
+    }
+  }
+  const vazias = db.unidades.filter(u => unidadesAntes.has(String(u.id)) && !db.itens_despesas.some(it => String(it.unidade_id) === String(u.id)));
+
+  try {
+    await saveDBTargeted(db, [
+      ...[...tocadas.secretarias.values()].map(row => ({ table: "secretarias", row })),
+      ...[...tocadas.unidades.values()].map(row => ({ table: "unidades", row })),
+      ...[...tocadas.itens.values()].map(row => ({ table: "itens_despesas", row })),
+    ]);
+  } catch (err: any) {
+    db.secretarias = copia.secretarias;
+    db.unidades = copia.unidades;
+    db.itens_despesas = copia.itens;
+    saveLocalOnly(db);
+    return res.status(503).json({ error: "Não foi possível confirmar a gravação no banco de dados. Nada foi alterado — tente de novo em alguns segundos." });
+  }
+  let removidas = 0;
+  for (const u of vazias) {
+    try {
+      await deleteRowFromPostgres("unidades", u.id);
+      db.unidades = db.unidades.filter(x => x.id !== u.id);
+      removidas++;
+      logAudit("unidades", u.id, "DELETE", usuario, u, null);
+    } catch (err: any) {
+      console.error("[classificacao] Unidade vazia não pôde ser excluída agora:", err.message || err);
+    }
+  }
+  saveLocalOnly(db);
+  tocadas.secretarias.forEach(sc => logAudit("secretarias", sc.id, "INSERT", usuario, null, sc));
+  tocadas.unidades.forEach(u => logAudit("unidades", u.id, "UPDATE", usuario, null, u));
+  res.json({
+    secretarias_criadas: tocadas.secretarias.size,
+    unidades_atualizadas: tocadas.unidades.size,
+    unidades_criadas: unidadesCriadas,
+    unidades_removidas: removidas,
+    contratos_classificados: tocadas.itens.size,
+    nao_encontradas: p.naoEncontradas,
+  });
+});
+
 // --- Relatórios ----------------------------------------------------------------------------
 // Uma linha por lançamento, já com unidade, secretaria, concessionária e os componentes da fatura
 // CELESC que os relatórios separam (crédito solar, demanda não utilizada, multas). Os cálculos
@@ -1666,6 +1847,7 @@ function mapearCodigosEMedidoresDasFaturas() {
   const mesesPorCodigo = new Map<string, Set<string>>();
   const medidoresPorCodigo = new Map<string, Map<string, Set<string>>>();
   const enderecoPorCodigo = new Map<string, string>();
+  const nomeFaturaPorCodigo = new Map<string, string>();
   for (const d of db.documentos_processados || []) {
     const cod = up(d?.dados_extraidos?.codigo_numero);
     const mes = (d?.dados_extraidos?.mes_ano || "").substring(0, 7);
@@ -1676,6 +1858,8 @@ function mapearCodigosEMedidoresDasFaturas() {
       (/UC:\s/.test(d.origem_conteudo || "") ? chaveVinculoDoBloco(d.origem_conteudo) : null);
     const endereco = chave?.endereco || d.dados_extraidos?.endereco;
     if (endereco && endereco !== "N/A" && !enderecoPorCodigo.has(cod)) enderecoPorCodigo.set(cod, endereco);
+    const nome = d.dados_extraidos?.unidade_nome;
+    if (nome && nome !== "N/A" && !nomeFaturaPorCodigo.has(cod)) nomeFaturaPorCodigo.set(cod, up(nome));
     for (const numero of chave?.medidores || []) {
       if (!medidoresPorCodigo.has(cod)) medidoresPorCodigo.set(cod, new Map());
       const porNumero = medidoresPorCodigo.get(cod)!;
@@ -1683,11 +1867,11 @@ function mapearCodigosEMedidoresDasFaturas() {
       porNumero.get(numero)!.add(mes);
     }
   }
-  return { mesesPorCodigo, medidoresPorCodigo, enderecoPorCodigo, up };
+  return { mesesPorCodigo, medidoresPorCodigo, enderecoPorCodigo, nomeFaturaPorCodigo, up };
 }
 
 function historicoDoContrato(it: ItemDespesa, mapa: ReturnType<typeof mapearCodigosEMedidoresDasFaturas>) {
-  const { mesesPorCodigo, medidoresPorCodigo, enderecoPorCodigo, up } = mapa;
+  const { mesesPorCodigo, medidoresPorCodigo, enderecoPorCodigo, nomeFaturaPorCodigo, up } = mapa;
   const periodo = (meses?: Set<string>) => {
     const lista = [...(meses || [])].sort();
     return { primeiro_mes: lista[0] || null, ultimo_mes: lista[lista.length - 1] || null, faturas: lista.length };
@@ -1707,7 +1891,8 @@ function historicoDoContrato(it: ItemDespesa, mapa: ReturnType<typeof mapearCodi
   // Endereço impresso na fatura mais recente do contrato (numa unidade que junta vários contratos,
   // cada um pode ter o seu — ex.: as duas ruas de uma esquina).
   const endereco_contrato = codigos.map(c => enderecoPorCodigo.get(up(c))).find(Boolean) || "";
-  return { historico_codigos, medidores_detectados, endereco_contrato };
+  const nome_fatura = codigos.map(c => nomeFaturaPorCodigo.get(up(c))).find(Boolean) || it.nome_fatura || "";
+  return { historico_codigos, medidores_detectados, endereco_contrato, nome_fatura };
 }
 
 app.get("/api/itens_despesas", (req, res) => {
@@ -2621,7 +2806,12 @@ function criarEHomologarFatura(
   }
 
   const rows: { table: string; row: any }[] = [];
-  if (linked?.unidade) rows.push({ table: "unidades", row: linked.unidade });
+  if (linked?.unidade) {
+    // A secretaria da unidade também vai: "a classificar" podia existir só na memória.
+    const sec = db.secretarias.find(sc => sc.id === linked!.unidade.secretaria_id);
+    if (sec) rows.push({ table: "secretarias", row: sec });
+    rows.push({ table: "unidades", row: linked.unidade });
+  }
   if (item) rows.push({ table: "itens_despesas", row: item });
 
   if (!extr?.mes_ano) {
