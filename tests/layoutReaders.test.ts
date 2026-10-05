@@ -193,6 +193,23 @@ teste("Alerta de variação: mesmo mês do ano anterior tem prioridade; só aler
   assert.equal(compararComHistorico(h("2026-03", 500), [], "CELESC").referencia, "");
 });
 
+teste("CASAN: linha sem leitura anterior e total com o último dígito cortado", () => {
+  const txt = [
+    "Referência: 05/2024",
+    " 2021925-3   656. 895. 080. 0500. 01 PMRS CE RUTH SCHROEDER OHF   001   002447   000079   1.155,50   0,00   -55,46    0,00 1.100,04 ",
+    " BC. JOSE JOAO DIAS,114 ",
+    " 1696634-1   656. 896. 022. 0570. 01 PREFEITURA MUNICIPAL DE RIO DO SUL   001   000205   000213   000008   81,23   0,00   -3,90    0,00 77,33 ",
+    " R. RUY BARBOSA,SN ",
+    " Total Geral:   2   000087   1.236,73   0,00   -59,36   0,00 1.177,3",
+  ].join("\n");
+  const r = lerCasanSci8095(txt);
+  assert.equal(r.contas.length, 2);
+  assert.equal(r.contas[0].consumo, 79);
+  assert.equal(r.contas[0].leitura_atual, 2447);
+  assert.equal(r.contas[1].leitura_anterior, 205);
+  assert.equal(r.conferencia.ok, true, JSON.stringify(r.conferencia));
+});
+
 teste("Planilha de classificação CASAN: CSV e texto colado (tab) dão as mesmas 108 matrículas e 12 secretarias", () => {
   const csv = fixture("classificacao-casan-2026-09.csv");
   const r = lerPlanilhaClassificacao(csv);

@@ -63,7 +63,9 @@ const DINHEIRO = "(-?[\\d.]+,\\d{2})";
 const LINHA_CASAN = new RegExp(
   "^(\\d{3,9}-\\d)\\s+" +
   "(\\d{3}\\.\\s*\\d{3}\\.\\s*\\d{3}\\.\\s*\\d{4}\\.\\s*\\d{2})\\s+" +
-  "(.*?)\\s+(\\d{3})\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+" +
+  // Leituras: anterior, atual e consumo. Alguns relatórios (ex.: 05/2024) vêm sem a leitura
+  // anterior em parte das linhas — aí só há atual e consumo.
+  "(.*?)\\s+(\\d{3})\\s+(\\d+)\\s+(\\d+)(?:\\s+(\\d+))?\\s+" +
   `${DINHEIRO}\\s+${DINHEIRO}\\s+${DINHEIRO}\\s+${DINHEIRO}\\s+${DINHEIRO}$`
 );
 
@@ -78,13 +80,14 @@ export function lerCasanSci8095(text: string): { referencia: string; contas: Con
       const m = linha.match(LINHA_CASAN);
       if (m) {
         const proxima = linhas[i + 1] || "";
+        const [atual, consumo] = m[7] !== undefined ? [parseInt(m[6], 10), parseInt(m[7], 10)] : [parseInt(m[5], 10), parseInt(m[6], 10)];
         contas.push({
           matricula: m[1],
           localizacao: m[2].replace(/\s+/g, ""),
           usuario: m[3].trim(),
-          leitura_anterior: parseInt(m[5], 10),
-          leitura_atual: parseInt(m[6], 10),
-          consumo: parseInt(m[7], 10),
+          leitura_anterior: m[7] !== undefined ? parseInt(m[5], 10) : atual - consumo,
+          leitura_atual: atual,
+          consumo,
           valor_agua: valorBR(m[8]),
           valor_esgoto: valorBR(m[9]),
           valor_servico: valorBR(m[10]),
@@ -100,7 +103,10 @@ export function lerCasanSci8095(text: string): { referencia: string; contas: Con
   });
 
   const ref = (text.match(/Refer[êe]ncia\s*:\s*(\d{2}\/\d{4})/i) || [])[1] || "";
-  const totalGeral = text.match(/Total Geral:\s*(\d+)\s+(\d+)\s+[\d.,-]+\s+[\d.,-]+\s+[\d.,-]+\s+[\d.,-]+\s+(-?[\d.]+,\d{2})/i);
+  // O relatório às vezes corta o último dígito do total ("102.926,5"): aí a conferência aceita a
+  // diferença de menos de 10 centavos.
+  const totalGeral = text.match(/Total Geral:\s*(\d+)\s+(\d+)\s+[\d.,-]+\s+[\d.,-]+\s+[\d.,-]+\s+[\d.,-]+\s+(-?[\d.]+,\d{1,2})\b/i);
+  const totalCortado = !!totalGeral && /,\d$/.test(totalGeral[3]);
   const qtdDeclarada = totalGeral ? parseInt(totalGeral[1], 10) : null;
   const totalDeclarado = totalGeral ? valorBR(totalGeral[3]) : null;
   const totalLido = contas.reduce((a, c) => a + c.valor_total, 0);
@@ -110,7 +116,8 @@ export function lerCasanSci8095(text: string): { referencia: string; contas: Con
   naoLidas.forEach(l => avisos.push(`Linha de matrícula não reconhecida: ${l}`));
 
   const grupoOk = qtdDeclarada !== null && totalDeclarado !== null &&
-    qtdDeclarada === contas.length && centavos(totalDeclarado) === centavos(totalLido);
+    qtdDeclarada === contas.length &&
+    (totalCortado ? Math.abs(totalDeclarado - totalLido) < 0.1 : centavos(totalDeclarado) === centavos(totalLido));
 
   return {
     referencia: referenciaParaData(ref),
@@ -199,7 +206,8 @@ export function lerCelescColetiva(text: string): { blocos: BlocoUcCelesc[]; conf
       fecharBloco();
       const doc = (pagina.match(/^\s*\d{2}\/\d{2}\/\d{4}\s+(\d{9,})/m) || [])[1];
       const qtd = (pagina.match(/d[ée]bito de\s+(\d+)\s+contas/i) || [])[1];
-      const capa = pagina.match(/(\d{2}\/\d{4})\s+\d{2}\/\d{2}\/\d{4}\s+R\$\s*([\d.]+,\d{2})/);
+      // O valor da capa às vezes vem sem centavos ("R$ 190.689" em 04/2025).
+      const capa = pagina.match(/(\d{2}\/\d{4})\s+\d{2}\/\d{2}\/\d{4}\s+R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)(?![\d,])/);
       if (doc) {
         coletivas.set(doc, {
           documento: doc,
