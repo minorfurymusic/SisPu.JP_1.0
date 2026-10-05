@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { detectarLayout, lerCasanSci8095, lerCelescColetiva } from "../src/utils/layoutReaders";
-import { splitReportIntoFaturas } from "../src/utils/documentParser";
+import { splitReportIntoFaturas, avisoItensNaoFecham } from "../src/utils/documentParser";
 import { lerPlanilhaClassificacao } from "../src/utils/planilhaClassificacao";
 
 const fixture = (nome: string) => fs.readFileSync(path.join(import.meta.dirname, "fixtures", nome), "utf8");
@@ -91,6 +91,38 @@ if (falhas) {
   console.log(`\n${falhas} teste(s) falharam`);
   process.exit(1);
 }
+teste("CELESC: itens lidos pelo formato da linha, inclusive nomes novos, e quantidade com ponto de milhar", () => {
+  const segs = splitReportIntoFaturas(fixture("celesc-coletiva-2026-08.txt"), "ago.pdf");
+  const d: any = segs.find(s => s.dados_extraidos.codigo_numero === "1.004.706.011-01")!.dados_extraidos;
+  const nomes = d.itens_fatura.map((i: any) => i.descricao);
+  for (const n of ["Benefício Tarifário Bruto GD2", "Benefício Tarifário Líquido GD", "Participação Financeira - Rio", "Cobrança TUSD FioB GD2 05 e 06", "Bandeira Amarela da Energia Injetada"]) {
+    assert.ok(nomes.includes(n), `faltou o item ${n}: ${nomes.join(" | ")}`);
+  }
+  assert.equal(d.itens_fatura.length, 14);
+  assert.equal(Math.round(d.itens_fatura.reduce((a: number, i: any) => a + i.valor, 0) * 100) / 100, 40154.22);
+  // "3.166" é 3166 kWh: consumo = 683 + 3166, igual ao Apurado do medidor (3.849,000).
+  assert.equal(d.consumo, 3849);
+  assert.ok(d.itens_fatura.some((i: any) => i.descricao === "Consumo TE" && i.quantidade === 3166));
+  // Grupo A: vírgula decimal continua decimal.
+  const a: any = segs.find(s => s.dados_extraidos.codigo_numero === "1.216.665.011-03")!.dados_extraidos;
+  assert.ok(a.itens_fatura.some((i: any) => i.descricao === "Consumo TE" && i.quantidade === 8219.752));
+});
+
+teste("CELESC jan–ago: em toda UC com Valor impresso a soma dos itens fecha (nenhum aviso de item)", () => {
+  for (const f of ["celesc-coletiva-2026-01.txt", "celesc-coletiva-2026-02.txt", "celesc-coletiva-2026-03.txt", "celesc-coletiva-2026-04.txt",
+    "celesc-coletiva-2026-05-uc-antiga.txt", "celesc-coletiva-2026-06.txt", "celesc-duas-coletivas-2026-06-07.txt", "celesc-coletiva-2026-08.txt"]) {
+    const segs = splitReportIntoFaturas(fixture(f), f);
+    assert.ok(segs.length >= 149, f);
+    const comAviso = segs.filter(s => (s.avisos || []).some(a => a.includes("Itens da fatura somam")));
+    assert.equal(comAviso.length, 0, `${f}: ${comAviso.map(s => s.dados_extraidos.codigo_numero).join(", ")}`);
+  }
+});
+
+teste("CELESC: item que não foi lido gera aviso com a diferença", () => {
+  assert.equal(avisoItensNaoFecham([{ valor: 100 }, { valor: -10.5 }], 89.5), null);
+  assert.match(avisoItensNaoFecham([{ valor: 2587.63 }], 40154.22) || "", /diferença de R\$ 37\.566,59/);
+});
+
 teste("Planilha de classificação CASAN: CSV e texto colado (tab) dão as mesmas 108 matrículas e 12 secretarias", () => {
   const csv = fixture("classificacao-casan-2026-09.csv");
   const r = lerPlanilhaClassificacao(csv);
@@ -114,4 +146,8 @@ teste("Planilha sem a coluna Secretaria é recusada com mensagem clara", () => {
   assert.match(r.erro || "", /Secretaria/);
 });
 
+if (falhas) {
+  console.log(`\n${falhas} teste(s) falharam`);
+  process.exit(1);
+}
 console.log("\nTodos os testes passaram");

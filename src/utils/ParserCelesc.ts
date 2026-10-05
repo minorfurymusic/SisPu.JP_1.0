@@ -16,6 +16,10 @@ export interface ExtractionFieldLog {
   pagina?: number;
 }
 
+// Sobe quando a leitura muda de um jeito que vale reprocessar as faturas já gravadas (o servidor
+// relê o texto original das que têm versão menor). 2 = itens pelo formato da linha + milhar.
+export const VERSAO_LEITOR_CELESC = 2;
+
 export class ParserCelesc {
   /**
    * Helper to parse Brazilian currency/float values (e.g. "1.450,50" -> 1450.5)
@@ -30,6 +34,62 @@ export class ParserCelesc {
     }
     const val = parseFloat(cleaned);
     return isNaN(val) ? 0 : val;
+  }
+
+  /**
+   * Números das colunas de "Itens da Fatura": a CELESC usa vírgula como decimal e ponto só como
+   * milhar ("3.166" = 3166 kWh, "8.219,752" = 8219,752). O parseBrazilianFloat lia "3.166" como
+   * 3,166. Não usar em alíquotas da tabela de tributos, que vêm com ponto decimal ("1.320" %).
+   */
+  private static numeroItem(valStr: string): number {
+    const cleaned = (valStr || "").trim().replace(/[–—]/g, "-").replace(/-\s+/, "-").replace(/\./g, "").replace(",", ".");
+    const val = parseFloat(cleaned);
+    return isNaN(val) ? 0 : val;
+  }
+
+  /**
+   * Lê os itens pelo FORMATO da linha, não pelo nome: descrição + quantidade + preço unitário
+   * (5 casas) + valor + PIS/COFINS + ICMS + IRPJ(%) + IRPJ + PIS + COFINS + CSLL. Assim qualquer
+   * item novo da CELESC ("Cobrança TUSD FioB GD2", "Benefício Tarifário Bruto GD2"...) entra sem
+   * precisar de lista. No PDF a tabela de itens fica na mesma linha de outras tabelas (tributos,
+   * valores medidos), então a descrição é o trecho de texto logo antes dos números.
+   */
+  public static lerItensPorFormato(text: string): any[] {
+    const NUM = String.raw`[-+–—]?\s?\d[\d.]*(?:,\d+)?`;
+    const linhaItem = new RegExp(String.raw`^(.*?[A-Za-zÀ-ú].*?)\s+(${NUM})\s+([-+–—]?\s?\d+,\d{5})\s+(${NUM})\s+(${NUM})\s+(${NUM})\s+(${NUM})\s+(${NUM})\s+(${NUM})\s+(${NUM})\s+(${NUM})\s*$`);
+    const cabecalhos = /^(?:Tributos Federais Retidos|Valores Medidos|Posto Leitura Leitura|Tarif[áa]rio Anterior Atual|Tributos|Itens da Fatura)\s+/i;
+    const itens: any[] = [];
+    for (const linha of text.split("\n")) {
+      const m = linha.trim().match(linhaItem);
+      if (!m) continue;
+      // Descrição = palavras depois do último número da tabela vizinha (ex.: "COFINS 72,17 2.965 2,14 Consumo TE").
+      const tokens = m[1].replace(/\s+/g, " ").trim().split(" ");
+      let ini = 0;
+      tokens.forEach((tk, i) => { if (/[,.]\d|^\d{5,}$/.test(tk)) ini = i + 1; });
+      let desc = tokens.slice(ini).join(" ");
+      for (let k = 0; k < 3; k++) desc = desc.replace(cabecalhos, "");
+      // Mantém o nome como a CELESC imprime; só completa os nomes que o PDF corta.
+      const descricao = /^(?:Diferen[çc]a da Demanda Contratad|Bandeira (?:Amarela|Vermelha) da Energia Inj?|Energia Injetada Fora Ponta TU|Energia Reativa Excedente N[aã]o)$/i.test(desc)
+        ? this.sanitizeItemDescription(desc) : desc;
+      if (descricao.length < 2) continue;
+      const n = m.slice(2, 12).map(v => this.numeroItem(v));
+      itens.push({
+        id: String(itens.length + 1),
+        descricao,
+        quantidade: n[0],
+        valor_unitario: n[1],
+        valor: n[2],
+        pis: n[3],
+        icms: n[4],
+        irpj_pct: n[5],
+        irpj_val: n[6],
+        pis_ret: n[7],
+        cofins_ret: n[8],
+        csll_ret: n[9],
+        cofins: parseFloat((n[6] + n[7] + n[8] + n[9]).toFixed(2)),
+      });
+    }
+    return itens;
   }
 
   /**
@@ -587,7 +647,12 @@ export class ParserCelesc {
       "DESCONTO"
     ];
 
-    const lines = itemsBlock.split("\n");
+    // Primeiro pelo formato da linha (pega qualquer item, conhecido ou não); a lista de nomes
+    // abaixo fica só para layouts antigos que não têm as 10 colunas.
+    const itensPorFormato = this.lerItensPorFormato(text);
+    itens_fatura.push(...itensPorFormato);
+    itemIdCounter = itensPorFormato.length + 1;
+    const lines = itensPorFormato.length ? [] : itemsBlock.split("\n");
     for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
       const line = lines[lineIdx];
       let trimmed = line.trim();
@@ -662,7 +727,7 @@ export class ParserCelesc {
 
         const numTokens = restOfLine.match(/[-+–—]?\s*\d[\d,.]*/g);
         if (numTokens && numTokens.length >= 1) {
-          const nums = numTokens.map(n => this.parseBrazilianFloat(n));
+          const nums = numTokens.map(n => this.numeroItem(n));
           const descricao = this.sanitizeItemDescription(rawDesc);
 
           if (descricao.length >= 2 && !/^(?:DESCRICAO|QUANTIDADE|VALOR|VALORES|BASE DE CALCULO|PREÇO UNITÁRIO)$/i.test(descricao)) {
@@ -1174,6 +1239,7 @@ export class ParserCelesc {
       energia_reativa: energia_reativa ?? undefined,
       historico: historico.length > 0 ? historico : undefined,
       itens_fatura: itens_fatura,
+      versao_leitor_celesc: VERSAO_LEITOR_CELESC,
       boleto: boleto || undefined,
       debug_log: debugLogs
     } as any;

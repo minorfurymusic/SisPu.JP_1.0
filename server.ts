@@ -11,6 +11,7 @@ import {
 } from "./src/types";
 import { runDeterministicParser } from "./src/utils/documentParser";
 import { chaveVinculoDoBloco } from "./src/utils/layoutReaders";
+import { ParserCelesc, VERSAO_LEITOR_CELESC } from "./src/utils/ParserCelesc";
 import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres, deleteLancamentosLote } from "./src/db/postgres";
 
 dotenv.config();
@@ -319,7 +320,69 @@ async function initDatabasePersistence() {
   } catch (err) {
     console.error("[DB] Erro ao inicializar banco PostgreSQL:", err);
   }
+  // Antes do autoSync: ele dispara a sincronização completa em segundo plano, e as duas gravando
+  // as mesmas linhas ao mesmo tempo davam deadlock no Postgres.
+  if (postgresHydrated) {
+    await reprocessarFaturasCelesc().catch(err => console.error("[DB] Releitura das faturas CELESC falhou:", err?.message || err));
+  }
   autoSyncOrphanRecords();
+}
+
+// Faturas CELESC gravadas com um leitor mais antigo são relidas a partir do texto original
+// (origem_conteudo) quando o leitor muda. Corrige itens e o que sai deles (consumo, energia
+// injetada, demanda, créditos); o valor total da fatura e os vínculos não mudam. No lançamento,
+// só troca o número que ainda está igual ao que a leitura antiga deu — se alguém corrigiu à mão,
+// fica a correção.
+async function reprocessarFaturasCelesc() {
+  const up = (v?: string) => (v || "").trim().toUpperCase();
+  const mesmo = (a: any, b: any) => Math.abs((Number(a) || 0) - (Number(b) || 0)) < 0.005;
+  const rows: { table: string; row: any }[] = [];
+  let faturas = 0, lancamentos = 0, avisos = 0;
+  for (const doc of db.documentos_processados || []) {
+    const d: any = doc?.dados_extraidos;
+    if (!d || (doc.layout || "").includes("CASAN") || !/^\s*UC:\s/m.test(doc.origem_conteudo || "")) continue;
+    if ((Number(d.versao_leitor_celesc) || 0) >= VERSAO_LEITOR_CELESC) continue;
+    const novo: any = ParserCelesc.parse(doc.origem_conteudo);
+    const antes = { consumo: d.consumo, valor_credito: d.valor_credito, valor_diversos: d.valor_diversos };
+    d.itens_fatura = novo.itens_fatura || [];
+    d.versao_leitor_celesc = VERSAO_LEITOR_CELESC;
+    for (const campo of ["consumo", "energia_injetada", "demanda", "energia_reativa", "valor_credito", "valor_diversos"]) {
+      if (novo[campo] !== undefined) d[campo] = novo[campo];
+    }
+    const soma = d.itens_fatura.reduce((a: number, it: any) => a + (Number(it.valor) || 0), 0);
+    doc.logs_validacao = (doc.logs_validacao || []).filter(l => !l.includes("Itens da fatura somam"));
+    if (Number(d.valor_total) > 0 && !mesmo(soma, d.valor_total)) {
+      doc.logs_validacao.push(`⚠️ Itens da fatura somam R$ ${soma.toFixed(2)}, mas o Valor da UC é R$ ${Number(d.valor_total).toFixed(2)}. Algum item não foi lido — confira no PDF.`);
+      avisos++;
+    }
+    rows.push({ table: "documentos_processados", row: doc });
+    faturas++;
+
+    const cod = up(d.codigo_numero), mes = (d.mes_ano || "").substring(0, 7);
+    const item = db.itens_despesas.find(it => [it.codigo_numero, ...(it.codigos_numero_anteriores || [])].map(up).includes(cod));
+    const lanc = item && db.lancamentos.find(l => l.item_despesa_id === item.id && (l.mes_ano || "").substring(0, 7) === mes);
+    if (lanc) {
+      let mudou = false;
+      for (const campo of ["consumo", "valor_credito", "valor_diversos"] as const) {
+        if (mesmo((lanc as any)[campo], (antes as any)[campo]) && !mesmo((lanc as any)[campo], d[campo])) {
+          (lanc as any)[campo] = Number(d[campo]) || 0;
+          mudou = true;
+        }
+      }
+      if (mudou) {
+        lanc.atualizado_em = new Date().toISOString();
+        rows.push({ table: "lancamentos", row: lanc });
+        lancamentos++;
+      }
+    }
+  }
+  if (!faturas) return;
+  // Pedaços pequenos: cada documento leva o texto original junto, e o Supabase gratuito corta
+  // comandos longos (statement timeout).
+  for (let i = 0; i < rows.length; i += 50) {
+    await saveDBTargeted(db, rows.slice(i, i + 50));
+  }
+  console.log(`[DB] Faturas CELESC relidas com o leitor ${VERSAO_LEITOR_CELESC}: ${faturas} fatura(s), ${lancamentos} lançamento(s) corrigido(s)${avisos ? `, ${avisos} com itens que não fecham com o valor` : ""}.`);
 }
 
 

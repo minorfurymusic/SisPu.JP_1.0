@@ -44,6 +44,7 @@ export interface ExtractedFaturaData {
   demanda?: number;
   energia_reativa?: number;
   historico?: { mes_ano: string; consumo: number }[];
+  versao_leitor_celesc?: number;
   itens_fatura?: {
     id: string;
     descricao: string;
@@ -415,6 +416,17 @@ export const segmentarCelescPorUCs = (text: string, ucs: string[]): { uc: string
 // coletiva (um PDF pode trazer mais de uma) e o valor impresso no bloco — o mesmo que soma o
 // total da capa. Valores calculados a partir dos itens divergiam em faturas com cobranças
 // avulsas (ex.: "Participação Financeira").
+const reais = (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// Rede de segurança dos itens: se a soma das linhas lidas não bate com o "Valor" impresso da UC,
+// alguma linha não foi reconhecida (ou a CELESC mudou o layout). Não bloqueia, só avisa.
+export const avisoItensNaoFecham = (itens: { valor: number }[], valorImpresso: number): string | null => {
+  const soma = itens.reduce((acc, it) => acc + (Number(it.valor) || 0), 0);
+  const dif = valorImpresso - soma;
+  if (Math.abs(dif) < 0.02) return null;
+  return `⚠️ Itens da fatura somam R$ ${reais(soma)}, mas o Valor da UC é R$ ${reais(valorImpresso)} (diferença de R$ ${reais(dif)}). Algum item não foi lido — confira no PDF.`;
+};
+
 const segmentarCelescColetiva = (text: string, fileName: string): SegmentedFatura[] => {
   const { blocos } = lerCelescColetiva(text);
   return blocos.map((b, idx) => {
@@ -431,6 +443,9 @@ const segmentarCelescColetiva = (text: string, fileName: string): SegmentedFatur
     const avisos: string[] = [];
     if (b.valorImpresso === null) {
       avisos.push(`⚠️ Campo "Valor" em branco no PDF (itens somam R$ ${valorItens.toFixed(2).replace(".", ",")}). Não entra no total da conta coletiva — confira.`);
+    } else {
+      const aviso = avisoItensNaoFecham(parsed.itens_fatura || [], b.valorImpresso);
+      if (aviso) avisos.push(aviso);
     }
     return {
       id: `DOC-SEG-CELESC_FATURA-${Date.now()}-${idx + 1}`,

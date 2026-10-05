@@ -1753,6 +1753,11 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
         if (detectarLayout(textToProcess) === "CELESC_COLETIVA") {
           const { conferencia: conf } = lerCelescColetiva(textToProcess);
+          // UCs cujos itens não fecham com o Valor impresso aparecem no mesmo quadro, para não
+          // precisar abrir fatura por fatura.
+          docObjects.forEach(d => (d.logs_validacao || [])
+            .filter(l => l.includes("Itens da fatura somam"))
+            .forEach(l => conf.avisos.push(`UC ${d.dados_extraidos.codigo_numero}: ${l.replace(/^⚠️\s*/, "")}`)));
           setConferencia(conf);
           conf.grupos.forEach(g => addLog(`[CELESC] ${g.rotulo} (${g.referencia}): lidas ${g.qtdLida} de ${g.qtdDeclarada ?? "?"} | R$ ${g.totalLido.toFixed(2)} de R$ ${g.totalDeclarado !== null ? g.totalDeclarado.toFixed(2) : "?"} ${g.ok ? "✅" : "❌"}`));
           conf.avisos.forEach(a => addLog(`⚠️ ${a}`));
