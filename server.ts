@@ -16,6 +16,7 @@ import { ParserCelesc, VERSAO_LEITOR_CELESC } from "./src/utils/ParserCelesc";
 import { lerCelescAgrupadora, VERSAO_LEITOR_AGRUPADORA } from "./src/utils/leitorCelescAgrupadora";
 import { categorizarItens, grupoDoItem, demandaDoMes, custoDisponibilidade, consumoMedidoDoTexto, grupoTensaoDoTexto, diasFaturadosDoTexto } from "./src/utils/analiseCelesc";
 import { compararComHistorico } from "./src/utils/variacao";
+import { calcularSituacao, ultimosMeses, ehAutomatico } from "./src/utils/situacao";
 import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres, deleteLancamentosLote, unificarContratosNoBanco, versaoDoBanco, versaoCarregada } from "./src/db/postgres";
 
 dotenv.config();
@@ -403,6 +404,7 @@ async function initDatabasePersistence() {
     // Contratos CELESC duplicados (mesma UC em dois contratos) viram um só antes de qualquer
     // rotina que dependa de "um código, um contrato".
     await unificarContratosDuplicados("sistema").catch(err => console.error("[manutenção] Unificação de contratos falhou, nada foi alterado:", err?.message || err));
+    await atualizarSituacaoPorFaturas("sistema").catch(err => console.error("[situação] Não foi possível atualizar a situação dos contratos:", err?.message || err));
   }
   autoSyncOrphanRecords();
 }
@@ -1438,8 +1440,13 @@ app.put("/api/unidades/:id", (req, res) => {
     db.unidades[index].endereco = (endereco || "").trim().toUpperCase();
   }
 
-  if (ativo !== undefined) {
+  if (ativo !== undefined && !!ativo !== db.unidades[index].ativo) {
+    const agora = new Date().toISOString();
     db.unidades[index].ativo = !!ativo;
+    db.unidades[index].situacao_em = agora;
+    db.unidades[index].situacao_motivo = ativo ? null : "Desativada manualmente";
+    // Reativar a unidade reativa os contratos que a regra tinha desativado.
+    if (ativo) db.itens_despesas.filter(it => it.unidade_id === id && !it.ativo && ehAutomatico(it.situacao_motivo)).forEach(it => reativarContrato(it, agora));
   }
 
   db.unidades[index].atualizado_em = new Date().toISOString();
@@ -1698,8 +1705,10 @@ app.get("/api/relatorios/base", (req, res) => {
   });
   res.json({
     linhas,
-    unidades: db.unidades.map(u => ({ id: u.id, nome: u.nome, endereco: u.endereco || "", secretaria_id: u.secretaria_id })),
+    unidades: db.unidades.map(u => ({ id: u.id, nome: u.nome, endereco: u.endereco || "", secretaria_id: u.secretaria_id, ativo: u.ativo !== false, situacao_motivo: u.situacao_motivo || null })),
     secretarias: db.secretarias.map(s => ({ id: s.id, nome: s.nome })),
+    // Contratos desativados (regra dos 3 meses ou à mão), para os relatórios não cobrarem fatura deles.
+    contratos_inativos: db.itens_despesas.filter(it => it.ativo === false).map(it => ({ contrato_id: it.id, codigo: it.codigo_numero, unidade_id: it.unidade_id, motivo: it.situacao_motivo || "Inativo", desde: it.situacao_em || null })),
   });
 });
 
@@ -1987,6 +1996,93 @@ async function unificarContratosDuplicados(usuario: string) {
     unificados: aplicaveis.map(g => ({ ...resumoAntes.get(g.destino.id), lancamentos_movidos: movidosPorDestino.get(g.destino.id) || 0 })), com_conflito,
   };
 }
+
+// Situação pela chegada de faturas (regra em src/utils/situacao.ts): 3 meses seguidos sem fatura
+// nova desativa o contrato (e a unidade, quando todos os dela param); fatura nova reativa. Roda na
+// inicialização e depois de cada importação. Nada é apagado: só o "ativo" e o motivo mudam.
+async function atualizarSituacaoPorFaturas(usuario: string) {
+  const r = calcularSituacao(db.itens_despesas as any, db.unidades as any, db.lancamentos);
+  if (!r.contratos.length && !r.unidades.length) return { contratos: 0, unidades: 0 };
+  const agora = new Date().toISOString();
+  const rows: { table: string; row: any }[] = [];
+  const antes: { alvo: any; copia: any }[] = [];
+  for (const m of r.contratos) {
+    const it = db.itens_despesas.find(x => x.id === m.id);
+    if (!it) continue;
+    antes.push({ alvo: it, copia: { ...it } });
+    it.ativo = m.ativo; it.situacao_motivo = m.situacao_motivo; it.situacao_em = agora; it.atualizado_em = agora;
+    rows.push({ table: "itens_despesas", row: it });
+  }
+  for (const m of r.unidades) {
+    const u = db.unidades.find(x => x.id === m.id);
+    if (!u) continue;
+    antes.push({ alvo: u, copia: { ...u } });
+    u.ativo = m.ativo; u.situacao_motivo = m.situacao_motivo; u.situacao_em = agora; u.atualizado_em = agora;
+    rows.push({ table: "unidades", row: u });
+  }
+  try {
+    for (let i = 0; i < rows.length; i += 200) await saveDBTargeted(db, rows.slice(i, i + 200));
+  } catch (err) {
+    antes.forEach(x => Object.assign(x.alvo, x.copia));
+    throw err;
+  }
+  antes.forEach(x => logAudit(x.alvo.codigo_numero !== undefined ? "itens_despesas" : "unidades", x.alvo.id, "UPDATE", usuario, x.copia, x.alvo));
+  const desat = r.contratos.filter(m => !m.ativo).length;
+  console.log(`[situação] ${r.contratos.length} contrato(s) e ${r.unidades.length} unidade(s) mudaram (${desat} desativado(s) por ${3} meses sem fatura, ${r.contratos.length - desat} reativado(s)).`);
+  return { contratos: r.contratos.length, unidades: r.unidades.length };
+}
+function atualizarSituacaoEmSegundoPlano(usuario: string) {
+  atualizarSituacaoPorFaturas(usuario).catch(err => console.error("[situação] Não foi possível atualizar a situação dos contratos:", err?.message || err));
+}
+
+// Reativação à mão: vale como uma fatura do último mês importado daquela concessionária (a regra
+// só desativa de novo depois de mais 3 meses sem fatura).
+function reativarContrato(it: ItemDespesa, agora: string) {
+  const { porDespesa } = ultimosMeses(db.itens_despesas as any, db.lancamentos);
+  it.ativo = true;
+  it.reativado_mes = porDespesa.get(it.despesa_id) || null;
+  it.situacao_motivo = null;
+  it.situacao_em = agora;
+  it.atualizado_em = agora;
+}
+
+app.post("/api/unidades/:id/reativar", async (req, res) => {
+  const usuario = req.headers["x-user"] as string || "admin";
+  const u = db.unidades.find(x => String(x.id) === String(req.params.id));
+  if (!u) return res.status(404).json({ error: "Unidade não encontrada." });
+  const agora = new Date().toISOString();
+  const contratos = db.itens_despesas.filter(it => it.unidade_id === u.id && !it.ativo);
+  const copias = [{ alvo: u as any, copia: { ...u } }, ...contratos.map(it => ({ alvo: it as any, copia: { ...it } }))];
+  contratos.forEach(it => reativarContrato(it, agora));
+  u.ativo = true; u.situacao_motivo = null; u.situacao_em = agora; u.atualizado_em = agora;
+  try {
+    await saveDBTargeted(db, [{ table: "unidades", row: u }, ...contratos.map(it => ({ table: "itens_despesas", row: it }))]);
+  } catch (err: any) {
+    copias.forEach(x => Object.assign(x.alvo, x.copia));
+    return res.status(503).json({ error: "Não foi possível gravar no banco de dados. Tente de novo em alguns segundos." });
+  }
+  copias.forEach(x => logAudit(x.alvo.codigo_numero !== undefined ? "itens_despesas" : "unidades", x.alvo.id, "UPDATE", usuario, x.copia, x.alvo));
+  res.json({ unidade: u, contratos_reativados: contratos.length });
+});
+
+app.post("/api/itens_despesas/:id/reativar", async (req, res) => {
+  const usuario = req.headers["x-user"] as string || "admin";
+  const it = db.itens_despesas.find(x => String(x.id) === String(req.params.id));
+  if (!it) return res.status(404).json({ error: "Contrato não encontrado." });
+  const agora = new Date().toISOString();
+  const u = db.unidades.find(x => x.id === it.unidade_id);
+  const copias = [{ alvo: it as any, copia: { ...it } }, ...(u ? [{ alvo: u as any, copia: { ...u } }] : [])];
+  reativarContrato(it, agora);
+  if (u && !u.ativo) { u.ativo = true; u.situacao_motivo = null; u.situacao_em = agora; u.atualizado_em = agora; }
+  try {
+    await saveDBTargeted(db, [{ table: "itens_despesas", row: it }, ...(u ? [{ table: "unidades", row: u }] : [])]);
+  } catch (err: any) {
+    copias.forEach(x => Object.assign(x.alvo, x.copia));
+    return res.status(503).json({ error: "Não foi possível gravar no banco de dados. Tente de novo em alguns segundos." });
+  }
+  copias.forEach(x => logAudit(x.alvo.codigo_numero !== undefined ? "itens_despesas" : "unidades", x.alvo.id, "UPDATE", usuario, x.copia, x.alvo));
+  res.json(it);
+});
 
 // Sem {"confirmar":"UNIFICAR"} só simula: lista os grupos que seriam unificados.
 app.post("/api/manutencao/unificar-contratos", async (req, res) => {
@@ -2409,7 +2505,11 @@ app.put("/api/itens_despesas/:id", async (req, res) => {
   if (unidade_id) db.itens_despesas[index].unidade_id = unidade_id;
   if (tipo_fone !== undefined) db.itens_despesas[index].tipo_fone = tipo_fone;
   if (medidor !== undefined) db.itens_despesas[index].medidor = medidor;
-  if (ativo !== undefined) db.itens_despesas[index].ativo = !!ativo;
+  if (ativo !== undefined && !!ativo !== db.itens_despesas[index].ativo) {
+    const agora = new Date().toISOString();
+    if (ativo) reativarContrato(db.itens_despesas[index], agora);
+    else { db.itens_despesas[index].ativo = false; db.itens_despesas[index].situacao_motivo = "Desativado manualmente"; db.itens_despesas[index].situacao_em = agora; }
+  }
   if (Array.isArray(medidores_fisicos)) {
     const mes = (v: any) => (typeof v === "string" && /^\d{4}-\d{2}$/.test(v.trim()) ? v.trim() : undefined);
     db.itens_despesas[index].medidores_fisicos = medidores_fisicos
@@ -2864,6 +2964,7 @@ app.post("/api/lancamentos", async (req, res) => {
 
   logAudit("lancamentos", newId, "INSERT", usuario, null, newLancamento);
 
+  atualizarSituacaoEmSegundoPlano(usuario);
   res.status(201).json(newLancamento);
 });
 
@@ -3336,6 +3437,7 @@ app.post("/api/documentos/homologar-lote", async (req, res) => {
     });
   }
 
+  atualizarSituacaoEmSegundoPlano(usuario);
   res.json({ results });
 });
 

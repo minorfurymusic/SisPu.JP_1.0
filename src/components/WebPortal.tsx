@@ -196,10 +196,13 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
   // Unidades Gestoras Concessionária Filter
   const [unidadesConcessionariaFilter, setUnidadesConcessionariaFilter] = useState<'ambos' | 'celesc' | 'casan'>('ambos');
+  const [unidadesSituacaoFilter, setUnidadesSituacaoFilter] = useState<'todas' | 'ativas' | 'inativas'>('todas');
 
   const filteredUnidades = useMemo(() => {
     return unidades.filter(u => {
       if (!u) return false;
+      if (unidadesSituacaoFilter === 'ativas' && u.ativo === false) return false;
+      if (unidadesSituacaoFilter === 'inativas' && u.ativo !== false) return false;
       if (unidadesConcessionariaFilter === 'ambos') return true;
       
       const uConcess = (u.concessionaria || "").toUpperCase();
@@ -220,7 +223,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         }
       });
     });
-  }, [unidades, unidadesConcessionariaFilter, itens]);
+  }, [unidades, unidadesConcessionariaFilter, unidadesSituacaoFilter, itens]);
 
   const filteredItens = useMemo(() => {
     return itens.filter(item => {
@@ -356,6 +359,19 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     setGlobalError(msg);
     setGlobalSuccess("");
     setTimeout(() => setGlobalError(""), 5000);
+  };
+
+  // Reativa uma unidade desativada (pela regra dos 3 meses sem fatura ou à mão) e os contratos dela.
+  const handleReativarUnidade = async (id: string) => {
+    try {
+      const r = await fetch(`/api/unidades/${id}/reativar`, { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || "Não foi possível reativar.");
+      showSuccess(`Unidade reativada${d.contratos_reativados ? ` (${d.contratos_reativados} contrato(s))` : ""}.`);
+      notifyChange();
+    } catch (e: any) {
+      showError(e.message);
+    }
   };
 
   // --- CRUD ACTIONS ---
@@ -1511,6 +1527,17 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               </div>
             </div>
 
+            <div className="bg-white dark:bg-[#121212] p-4 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm flex flex-wrap items-center gap-3">
+              <span className="text-xs font-bold text-slate-500 dark:text-gray-400 uppercase tracking-wider">Situação:</span>
+              <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-black/40 p-1 rounded-lg border border-slate-200 dark:border-white/10 text-xs font-semibold">
+                {([['todas', `Todas (${unidades.length})`], ['ativas', `Ativas (${unidades.filter(u => u?.ativo !== false).length})`], ['inativas', `Inativas (${unidades.filter(u => u?.ativo === false).length})`]] as const).map(([k, t]) => (
+                  <button key={k} onClick={() => setUnidadesSituacaoFilter(k)}
+                    className={`px-3 py-1.5 rounded-md transition ${unidadesSituacaoFilter === k ? 'bg-indigo-600 text-white font-bold shadow-sm' : 'text-slate-600 dark:text-gray-400 hover:text-white'}`}>{t}</button>
+                ))}
+              </div>
+              <span className="text-[11px] text-slate-500 dark:text-gray-500">Unidade com 3 meses seguidos sem fatura nova fica inativa sozinha (o histórico continua) e volta quando chega fatura ou quando você reativa.</span>
+            </div>
+
             <SugestoesAgrupamento onChanged={notifyChange} onError={showError} onSuccess={showSuccess} />
 
             <div className="bg-white dark:bg-[#0f0f0f] p-6 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm space-y-4">
@@ -1563,6 +1590,19 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       }
                       return renderConcessionariaBadge(item.concessionaria);
                     }
+                  },
+                  {
+                    key: "ativo",
+                    label: "Situação",
+                    render: (item) => item?.ativo === false ? (
+                      <div className="space-y-1" onClick={(e) => e.stopPropagation()}>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-600 dark:bg-white/10 dark:text-gray-300">Inativa</span>
+                        {item.situacao_motivo && <div title={item.situacao_motivo} className="text-[10px] text-slate-500 dark:text-gray-500 whitespace-nowrap">{(item.situacao_motivo.match(/desde (\d{2}\/\d{4})/) || [])[1] ? `sem fatura desde ${(item.situacao_motivo.match(/desde (\d{2}\/\d{4})/) || [])[1].replace(/\/20/, "/")}` : item.situacao_motivo}</div>}
+                        <button onClick={() => item?.id && handleReativarUnidade(item.id)} className="block text-[11px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline">Reativar</button>
+                      </div>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">Ativa</span>
+                    )
                   },
                   { key: "secretaria_nome", label: "Secretaria de Vinculação", searchable: true },
                   { 

@@ -277,6 +277,11 @@ export async function initPostgresSchema(tentativa = 1): Promise<boolean> {
         ['itens_despesas', 'medidores_fisicos', 'JSONB'],
         ['unidades', 'agrupada', 'BOOLEAN'],
         ['itens_despesas', 'nome_fatura', 'TEXT'],
+        ['itens_despesas', 'situacao_motivo', 'TEXT'],
+        ['itens_despesas', 'situacao_em', 'TEXT'],
+        ['itens_despesas', 'reativado_mes', 'TEXT'],
+        ['unidades', 'situacao_motivo', 'TEXT'],
+        ['unidades', 'situacao_em', 'TEXT'],
       ];
       const existing = await client.query(
         `SELECT table_name, column_name FROM information_schema.columns
@@ -419,9 +424,9 @@ const TABLE_UPSERT_SPECS: Record<string, TableUpsertSpec> = {
     updateSet: 'codigo_legado = EXCLUDED.codigo_legado, nome = EXCLUDED.nome, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
   },
   unidades: {
-    columns: ['id', 'codigo_legado', 'secretaria_id', 'nome', 'endereco', 'uc', 'codnum', 'concessionaria', 'agrupada', 'ativo', 'criado_em', 'atualizado_em'],
-    toValues: (row) => [row.id, row.codigo_legado || null, row.secretaria_id, row.nome, row.endereco || '', row.uc || null, row.codnum || null, row.concessionaria || null, row.agrupada === true, row.ativo !== false, row.criado_em, row.atualizado_em],
-    updateSet: 'codigo_legado = EXCLUDED.codigo_legado, secretaria_id = EXCLUDED.secretaria_id, nome = EXCLUDED.nome, endereco = EXCLUDED.endereco, uc = EXCLUDED.uc, codnum = EXCLUDED.codnum, concessionaria = EXCLUDED.concessionaria, agrupada = EXCLUDED.agrupada, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
+    columns: ['id', 'codigo_legado', 'secretaria_id', 'nome', 'endereco', 'uc', 'codnum', 'concessionaria', 'agrupada', 'ativo', 'situacao_motivo', 'situacao_em', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [row.id, row.codigo_legado || null, row.secretaria_id, row.nome, row.endereco || '', row.uc || null, row.codnum || null, row.concessionaria || null, row.agrupada === true, row.ativo !== false, row.situacao_motivo || null, row.situacao_em || null, row.criado_em, row.atualizado_em],
+    updateSet: 'codigo_legado = EXCLUDED.codigo_legado, secretaria_id = EXCLUDED.secretaria_id, nome = EXCLUDED.nome, endereco = EXCLUDED.endereco, uc = EXCLUDED.uc, codnum = EXCLUDED.codnum, concessionaria = EXCLUDED.concessionaria, agrupada = EXCLUDED.agrupada, ativo = EXCLUDED.ativo, situacao_motivo = EXCLUDED.situacao_motivo, situacao_em = EXCLUDED.situacao_em, atualizado_em = EXCLUDED.atualizado_em'
   },
   despesas: {
     columns: ['id', 'codigo_legado', 'descricao', 'ativo', 'criado_em', 'atualizado_em'],
@@ -429,9 +434,9 @@ const TABLE_UPSERT_SPECS: Record<string, TableUpsertSpec> = {
     updateSet: 'codigo_legado = EXCLUDED.codigo_legado, descricao = EXCLUDED.descricao, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
   },
   itens_despesas: {
-    columns: ['id', 'codigo_numero', 'despesa_id', 'unidade_id', 'tipo_fone', 'medidor', 'codigos_numero_anteriores', 'medidores_fisicos', 'nome_fatura', 'ativo', 'criado_em', 'atualizado_em'],
-    toValues: (row) => [row.id, row.codigo_numero, row.despesa_id, row.unidade_id, row.tipo_fone || null, row.medidor || null, JSON.stringify(row.codigos_numero_anteriores || []), JSON.stringify(row.medidores_fisicos || []), row.nome_fatura || null, row.ativo !== false, row.criado_em, row.atualizado_em],
-    updateSet: 'codigo_numero = EXCLUDED.codigo_numero, despesa_id = EXCLUDED.despesa_id, unidade_id = EXCLUDED.unidade_id, tipo_fone = EXCLUDED.tipo_fone, medidor = EXCLUDED.medidor, codigos_numero_anteriores = EXCLUDED.codigos_numero_anteriores, medidores_fisicos = EXCLUDED.medidores_fisicos, nome_fatura = EXCLUDED.nome_fatura, ativo = EXCLUDED.ativo, atualizado_em = EXCLUDED.atualizado_em'
+    columns: ['id', 'codigo_numero', 'despesa_id', 'unidade_id', 'tipo_fone', 'medidor', 'codigos_numero_anteriores', 'medidores_fisicos', 'nome_fatura', 'ativo', 'situacao_motivo', 'situacao_em', 'reativado_mes', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [row.id, row.codigo_numero, row.despesa_id, row.unidade_id, row.tipo_fone || null, row.medidor || null, JSON.stringify(row.codigos_numero_anteriores || []), JSON.stringify(row.medidores_fisicos || []), row.nome_fatura || null, row.ativo !== false, row.situacao_motivo || null, row.situacao_em || null, row.reativado_mes || null, row.criado_em, row.atualizado_em],
+    updateSet: 'codigo_numero = EXCLUDED.codigo_numero, despesa_id = EXCLUDED.despesa_id, unidade_id = EXCLUDED.unidade_id, tipo_fone = EXCLUDED.tipo_fone, medidor = EXCLUDED.medidor, codigos_numero_anteriores = EXCLUDED.codigos_numero_anteriores, medidores_fisicos = EXCLUDED.medidores_fisicos, nome_fatura = EXCLUDED.nome_fatura, ativo = EXCLUDED.ativo, situacao_motivo = EXCLUDED.situacao_motivo, situacao_em = EXCLUDED.situacao_em, reativado_mes = EXCLUDED.reativado_mes, atualizado_em = EXCLUDED.atualizado_em'
   },
   lancamentos: {
     columns: ['id', 'item_despesa_id', 'mes_ano', 'consumo', 'valor_total', 'valor_imposto', 'valor_celular', 'valor_internet', 'valor_diversos', 'valor_linha_privada', 'valor_credito', 'data_lancamento', 'codigo_legado_numero', 'mes_ano_legado', 'criado_em', 'atualizado_em'],

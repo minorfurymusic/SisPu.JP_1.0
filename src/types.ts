@@ -33,6 +33,9 @@ export interface Unidade {
   // A rotina de inicialização que separa "uma unidade por matrícula" não mexe nelas.
   agrupada?: boolean;
   ativo: boolean;
+  // Por que está inativa ("Sem fatura desde 06/2025 ..." = regra automática; outro texto = à mão).
+  situacao_motivo?: string | null;
+  situacao_em?: string | null;
   criado_em: string;
   atualizado_em: string;
 }
@@ -69,6 +72,11 @@ export interface ItemDespesa {
   // Nome do usuário como vem impresso na fatura mais recente deste contrato.
   nome_fatura?: string;
   ativo: boolean;
+  // Situação pela chegada de faturas (src/utils/situacao.ts): motivo, quando mudou e o mês em
+  // que foi reativado à mão (conta como uma fatura daquele mês).
+  situacao_motivo?: string | null;
+  situacao_em?: string | null;
+  reativado_mes?: string | null;
   criado_em: string;
   atualizado_em: string;
 }

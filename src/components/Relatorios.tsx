@@ -12,7 +12,11 @@ type Linha = {
   tem_itens: boolean; grupos: Record<Grupo, number> | null; tributos: TributosFatura | null; nao_classificados: string[];
   demanda: DemandaDoMes | null; disponibilidade: { minimo: number; medido: number; kwh: number; valor: number } | null;
 };
-type Base = { linhas: Linha[]; unidades: { id: string; nome: string; endereco: string; secretaria_id: string }[]; secretarias: { id: string; nome: string }[] };
+type ContratoInativo = { contrato_id: string; codigo: string; unidade_id: string; motivo: string; desde: string | null };
+type Base = {
+  linhas: Linha[]; unidades: { id: string; nome: string; endereco: string; secretaria_id: string; ativo?: boolean; situacao_motivo?: string | null }[];
+  secretarias: { id: string; nome: string }[]; contratos_inativos?: ContratoInativo[];
+};
 
 // ---------------------------------------------------------------------------------------------
 // Grupos de custo exibidos. Cores: paleta categórica validada (dataviz/validate_palette, modo
@@ -54,11 +58,11 @@ const perdasDe = (l: Linha) => valorGrupos(l, GRUPOS_PERDA) + (l.disponibilidade
 // Nome genérico ("MUNICIPIO DE RIO DO SUL") não diz qual é o lugar: aí o endereço vira o título.
 const NOME_GENERICO = /^(MUNIC[IÍ]PIO|PREFEITURA MUNICIPAL) DE RIO DO SUL$|^PMRS$/i;
 const nomeDaUnidade = (nome: string, endereco: string) => (NOME_GENERICO.test((nome || "").trim()) && endereco ? endereco : nome);
-const NomeUnidade = ({ nome, endereco }: { nome: string; endereco: string }) => {
+const NomeUnidade = ({ nome, endereco, inativa }: { nome: string; endereco: string; inativa?: boolean }) => {
   const generico = NOME_GENERICO.test((nome || "").trim()) && !!endereco;
   return (
     <div className="min-w-[11rem]">
-      <div className="text-white">{generico ? endereco : nome}</div>
+      <div className="text-white">{generico ? endereco : nome}{inativa && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-white/10 text-gray-400 align-middle">INATIVA</span>}</div>
       {generico ? <div className="text-[10px] text-amber-500/80">nome da unidade a cadastrar</div> : endereco && <div className="text-[10px] text-gray-500">{endereco}</div>}
     </div>
   );
@@ -650,6 +654,7 @@ type Acao = {
   id: string; quando: "agora" | "economia"; tipo: string; unidade_id?: string; contrato_id?: string; mes?: string;
   unidade: string; endereco: string; codigo: string; titulo: string; detalhe: string; valor: number; rotulo_valor: string;
   investimento?: number; // obra que precisa de verba (usina solar); o resto é pedido, ajuste ou serviço pequeno
+  valor_texto?: string;  // no lugar do R$, quando o cartão conta outra coisa (ex.: "4 UCs")
 };
 
 function SeletorStatus({ status, onChange }: { status: StatusAcao; onChange: (s: StatusAcao) => void }) {
@@ -688,7 +693,7 @@ function CartaoAcao({ a, acomp, onSalvar, onAbrir }: {
           )}
         </div>
         <div className="text-right shrink-0">
-          <div className={`text-lg font-bold font-mono tabular-nums ${a.quando === "agora" ? "text-rose-300" : "text-emerald-300"}`}>{fmtR(a.valor)}</div>
+          <div className={`text-lg font-bold font-mono tabular-nums ${a.valor_texto ? "text-gray-200" : a.quando === "agora" ? "text-rose-300" : "text-emerald-300"}`}>{a.valor_texto || fmtR(a.valor)}</div>
           <div className="text-[10px] text-gray-500">{a.rotulo_valor}</div>
           {a.investimento ? <div className="text-[10px] text-amber-400/90">investimento {fmtR(a.investimento)}</div> : null}
         </div>
@@ -886,8 +891,17 @@ export default function Relatorios({ versao }: { versao: number }) {
         valor: ml.economia[0], rotulo_valor: `por ano (até ${fmtR(ml.economia[1])})`, titulo: "Comprar a energia do grupo A no mercado livre",
         detalhe: `${fmtN(ml.kwh)} kWh/ano. A energia (TE) e as bandeiras somam ${fmtR(ml.base)}/ano; com ${fmtN(PREMISSAS.mercado_livre_desconto[0] * 100)}% a ${fmtN(PREMISSAS.mercado_livre_desconto[1] * 100)}% de desconto do varejista, economia de ${fmtR(ml.economia[0])} a ${fmtR(ml.economia[1])}. Exige licitação.` });
     }
+    // Unidades desativadas pela regra dos 3 meses sem fatura: um cartão só, para conferência.
+    const desativadas = (base?.contratos_inativos || []).filter(c => /^Sem fatura desde/.test(c.motivo));
+    if (desativadas.length) {
+      const nomeU = (id: string) => { const u = base?.unidades.find(x => x.id === id); return u ? nomeDaUnidade(u.nome, u.endereco) : ""; };
+      out.push({ quando: "agora", id: `desativadas:${desativadas.map(c => c.contrato_id).sort().join(",").slice(0, 150)}`, tipo: "Sem fatura", unidade: "", endereco: "", codigo: "",
+        valor: 0, valor_texto: `${desativadas.length} UC(s)`, rotulo_valor: "desativadas",
+        titulo: "Conferir as unidades desativadas por falta de fatura",
+        detalhe: `Ficaram 3 meses seguidos sem fatura nova e foram desativadas (histórico mantido): ${desativadas.slice(0, 8).map(c => `${c.codigo} ${nomeU(c.unidade_id)} — ${c.motivo.replace(/ \(.*\)$/, "")}`).join("; ")}${desativadas.length > 8 ? `; e mais ${desativadas.length - 8}` : ""}. Se alguma ainda funciona, reative em Unidades Gestoras e confira por que a fatura não veio.` });
+    }
     return out;
-  }, [avaliados, recs12, caps, bopt, solar, ml, ult12, precoB]);
+  }, [avaliados, recs12, caps, bopt, solar, ml, ult12, precoB, base]);
 
   if (erro) return <div className="bg-[#0f0f0f] p-6 rounded-xl border border-rose-500/30 text-rose-300 text-sm">{erro}</div>;
   if (!base) return <div className="bg-[#0f0f0f] p-6 rounded-xl border border-white/10 text-gray-400 text-sm">Carregando relatórios…</div>;
@@ -1070,7 +1084,7 @@ export default function Relatorios({ versao }: { versao: number }) {
           {alternar}
           <p className="text-[11px] text-gray-500">Clique numa unidade para abrir os dados dela. Clique no título da coluna para ordenar.</p>
           <Tabela<U> nome={`unidades-${tituloPeriodo}`} linhas={porUnidade} onLinha={u => abrir(u.id)} ordemInicial={{ coluna: "Total", desc: true }} colunas={[
-            { titulo: "Unidade", valor: u => <NomeUnidade nome={u.nome} endereco={u.endereco} />, csv: u => `${nomeDaUnidade(u.nome, u.endereco)} — ${u.endereco}`, ordem: u => nomeDaUnidade(u.nome, u.endereco) },
+            { titulo: "Unidade", valor: u => <NomeUnidade nome={u.nome} endereco={u.endereco} inativa={base.unidades.find(x => x.id === u.id)?.ativo === false} />, csv: u => `${nomeDaUnidade(u.nome, u.endereco)} — ${u.endereco}`, ordem: u => nomeDaUnidade(u.nome, u.endereco) },
             { titulo: "Secretaria", valor: u => u.secretaria, ordem: u => u.secretaria },
             { titulo: "kWh", valor: u => fmtN(u.kwh), direita: true, csv: u => u.kwh, ordem: u => u.kwh },
             { titulo: "Energia R$", valor: u => fmtR(u.energia), direita: true, csv: u => u.energia.toFixed(2), ordem: u => u.energia },
@@ -1113,7 +1127,8 @@ export default function Relatorios({ versao }: { versao: number }) {
     type A = Avaliado;
     const anterior = intervaloMeses(mesesDisp[0] || mes, mes).slice(-2)[0];
     const contratosNoMes = new Set(ls.filter(l => l.mes === mes).map(l => l.contrato_id));
-    const faltando = filtradasTodas.filter(l => l.mes === anterior && anterior !== mes && !contratosNoMes.has(l.contrato_id));
+    const inativos = new Set((base.contratos_inativos || []).map(c => c.contrato_id));
+    const faltando = filtradasTodas.filter(l => l.mes === anterior && anterior !== mes && !contratosNoMes.has(l.contrato_id) && !inativos.has(l.contrato_id));
     const acaoDo = (x: A): Acao => acoes.find(y => y.id === `alerta:${x.l.contrato_id}:${x.l.mes}`) || {
       id: `alerta:${x.l.contrato_id}:${x.l.mes}`, quando: "agora", tipo: TEXTO_ALERTA[x.r.alerta!], unidade_id: x.l.unidade_id, contrato_id: x.l.contrato_id, mes: x.l.mes,
       unidade: x.l.unidade_nome, endereco: x.l.unidade_endereco, codigo: x.l.codigo, titulo: TEXTO_ALERTA[x.r.alerta!], detalhe: x.r.motivo, valor: x.r.impacto_valor, rotulo_valor: "",
@@ -1139,7 +1154,7 @@ export default function Relatorios({ versao }: { versao: number }) {
         </div>
         <div className="space-y-2">
           <div className="text-white font-bold text-sm flex items-center gap-2"><AlertTriangle className="h-4 w-4 text-amber-400" /> Faturado em {rotuloMes(anterior)} e sem fatura em {rotuloMes(mes)} ({faltando.length})</div>
-          <p className="text-[11px] text-gray-500">Fatura não importada, contrato encerrado ou cobrança em outra conta.</p>
+          <p className="text-[11px] text-gray-500">Fatura não importada, contrato encerrado ou cobrança em outra conta. Com 3 meses seguidos sem fatura a unidade fica inativa sozinha e sai desta lista (veja "O que fazer").</p>
           <Tabela<Linha> nome={`alertas-faltando-${mes}`} linhas={faltando} onLinha={l => abrir(l.unidade_id)} vazio="Nenhuma fatura faltando." colunas={[
             { titulo: "Unidade", valor: l => <NomeUnidade nome={l.unidade_nome} endereco={l.unidade_endereco} />, csv: l => `${nomeDaUnidade(l.unidade_nome, l.unidade_endereco)} — ${l.unidade_endereco}` },
             { titulo: "Código", valor: l => `${l.concessionaria === "CASAN" ? "💧" : "⚡"} ${l.codigo}` },

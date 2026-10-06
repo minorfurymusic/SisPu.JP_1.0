@@ -6,6 +6,7 @@ import { splitReportIntoFaturas, avisoItensNaoFecham } from "../src/utils/docume
 import { lerPlanilhaClassificacao } from "../src/utils/planilhaClassificacao";
 import { categorizarItens, GRUPOS, grupoDoItem, demandaDoMes, faixaDemanda, simularDemandaIdeal, consumoMedidoDoTexto, custoDisponibilidade, grupoTensaoDoTexto } from "../src/utils/analiseCelesc";
 import { compararComHistorico } from "../src/utils/variacao";
+import { calcularSituacao } from "../src/utils/situacao";
 import { agregarContratos, precoMedioB, candidatosSolar, candidatosCapacitor, candidatosBOptante, mercadoLivre, PREMISSAS } from "../src/utils/oportunidades";
 import { lerCelescAgrupadora } from "../src/utils/leitorCelescAgrupadora";
 
@@ -219,6 +220,40 @@ teste("Oportunidades: B optante, capacitor, solar e mercado livre com os número
   assert.equal(Math.round(ml.base), 5105);
   // Com menos de 6 meses de faturas o contrato não entra (não dá para levar a 12 meses).
   assert.equal(agregarContratos(dom.slice(0, 5)).length, 0);
+});
+
+teste("Situação: 3 meses sem fatura desativa; fatura nova ou reativação manual reativa; desativação manual fica", () => {
+  const c = (id: string, despesa_id: string, unidade_id: string, extra: any = {}) => ({ id, despesa_id, unidade_id, ativo: true, ...extra });
+  const l = (item_despesa_id: string, ...meses: string[]) => meses.map(m => ({ item_despesa_id, mes_ano: `${m}-01` }));
+  const contratos = [
+    c("ref", "2", "u0"),                                  // define o último mês da CASAN: 2026-09
+    c("a", "2", "u1"),                                    // última 2026-06 → 3 meses → inativa
+    c("b", "2", "u2"),                                    // última 2026-07 → 2 meses → continua
+    c("x", "1", "u3"),                                    // CELESC: último mês da CELESC é 2026-08
+    c("m", "2", "u4", { ativo: false, situacao_motivo: "Desativado manualmente" }),
+    c("r", "2", "u5", { reativado_mes: "2026-08" }),      // reativada à mão em ago/2026
+    c("n", "2", "u6"),                                    // nunca faturou: não mexe
+    c("refE", "1", "u7"),                                 // define o último mês da CELESC: 2026-08
+  ];
+  const lanc = [...l("ref", "2026-09"), ...l("a", "2026-05", "2026-06"), ...l("b", "2026-07"), ...l("x", "2026-05"), ...l("m", "2026-09"), ...l("r", "2025-01"), ...l("refE", "2026-08")];
+  const unidades = ["u0", "u1", "u2", "u3", "u4", "u5", "u6", "u7"].map(id => ({ id, ativo: true }));
+  const r = calcularSituacao(contratos, unidades, lanc);
+  const mud = Object.fromEntries(r.contratos.map(m => [m.id, m]));
+  assert.equal(mud.a.ativo, false);
+  assert.match(mud.a.situacao_motivo!, /Sem fatura desde 06\/2026/);
+  assert.equal(mud.b, undefined);
+  // A CELESC conta pelo último mês da CELESC (ago/2026): mai/2026 → 3 meses → inativa.
+  assert.equal(mud.x.ativo, false);
+  assert.equal(mud.m, undefined);
+  assert.equal(mud.r, undefined);   // reativada em ago: só 1 mês até set
+  assert.equal(mud.n, undefined);
+  assert.deepEqual(r.unidades.map(u => [u.id, u.ativo]).sort(), [["u1", false], ["u3", false]]);
+  // Chegou fatura nova: volta a ativa sozinha, com a unidade.
+  const contratos2 = contratos.map(k => (k.id === "a" ? { ...k, ativo: false, situacao_motivo: mud.a.situacao_motivo } : k));
+  const unidades2 = unidades.map(u => (u.id === "u1" ? { ...u, ativo: false, situacao_motivo: mud.a.situacao_motivo } : u));
+  const r2 = calcularSituacao(contratos2, unidades2, [...lanc, ...l("a", "2026-09")]);
+  assert.deepEqual(r2.contratos.find(m => m.id === "a"), { id: "a", ativo: true, situacao_motivo: null, ultimo_mes: "2026-09" });
+  assert.deepEqual(r2.unidades.find(u => u.id === "u1"), { id: "u1", ativo: true, situacao_motivo: null });
 });
 
 teste("Alerta de variação: compara com o mês anterior E com o mesmo mês do ano anterior", () => {
