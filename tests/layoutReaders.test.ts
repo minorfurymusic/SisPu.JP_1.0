@@ -172,26 +172,47 @@ teste("Relatórios: mínimo pago sem consumo (custo de disponibilidade)", () => 
   assert.ok(comMinimo.every(c => c!.kwh > 0 && c!.valor > 0 && [30, 50, 100].includes(c!.minimo)));
 });
 
-teste("Alerta de variação: mesmo mês do ano anterior tem prioridade; só alerta acima de 20% e da diferença mínima", () => {
+teste("Itens migrados do sistema antigo da CELESC entram em ajustes", () => {
+  for (const d of ["Pag. Duplicidade - Migrado", "Item Migrado", "Dev. Cred. Fatura Cancelada"]) assert.equal(grupoDoItem(d), "ajustes");
+});
+
+teste("Alerta de variação: compara com o mês anterior E com o mesmo mês do ano anterior", () => {
   const h = (mes: string, consumo: number, valor = consumo, dias = 30) => ({ mes, consumo, valor, dias });
   const hist = [h("2025-03", 1000), h("2026-01", 400), h("2026-02", 420)];
-  // Comparado com mar/2025 (1000): 1150 é +15% → sem alerta, mesmo sendo +180% sobre jan/fev.
+  // 1150 em mar/2026: +15% sobre mar/2025 (sem alerta no ano), mas +174% sobre fev (salto no mês).
   const r1 = compararComHistorico(h("2026-03", 1150), hist, "CELESC");
-  assert.equal(r1.referencia, "mesmo mês de 2025");
-  assert.equal(r1.alerta, null);
-  // Sem o ano anterior: média de jan/fev (410); 600 é +46% e +190 kWh → alta.
-  const r2 = compararComHistorico(h("2026-03", 600), hist.slice(1), "CELESC");
-  assert.match(r2.referencia, /média de 2 meses/);
-  assert.equal(r2.alerta, "alta");
+  assert.equal(r1.anual!.referencia, "mesmo mês de 2025");
+  assert.equal(r1.anual!.alerta, null);
+  assert.equal(r1.mensal!.referencia, "mês anterior (02/2026)");
+  assert.equal(r1.mensal!.alerta, "alta");
+  assert.equal(r1.alerta, "alta");
+  assert.match(r1.motivo, /Salto no mês/);
+  // Outubro com R$ 200 num ano e R$ 1.200 no seguinte, já alto em setembro: o alerta é o anual.
+  const r2 = compararComHistorico(h("2026-10", 300, 1200), [h("2025-10", 300, 200), h("2026-09", 300, 1150)], "CELESC");
+  assert.equal(r2.mensal!.alerta, null);
+  assert.equal(r2.anual!.alerta, "valor");
+  assert.equal(r2.referencia, "mesmo mês de 2025");
+  assert.match(r2.motivo, /sem o consumo/);
+  // Mês anterior faltando: usa o último com fatura (até 3 meses antes).
+  assert.equal(compararComHistorico(h("2026-03", 600), [h("2026-01", 410)], "CELESC").mensal!.referencia, "último mês com fatura (01/2026)");
+  // Água saindo do zero (0 → 256 m³): é aumento de consumo, não "valor subiu".
+  const r3 = compararComHistorico(h("2026-09", 256, 4591), [h("2025-09", 0, 43), h("2026-08", 144, 2550)], "CASAN");
+  assert.equal(r3.anual!.alerta, "alta");
+  assert.equal(r3.anual!.var_consumo, null);
+  assert.equal(r3.mensal!.alerta, "alta");
+  assert.match(r3.motivo, /vazamento/);
   // UC pequena: 20 → 40 kWh é +100%, mas só 20 kWh de diferença → sem alerta.
-  assert.equal(compararComHistorico(h("2026-03", 40), [h("2026-01", 20), h("2026-02", 20)], "CELESC").alerta, null);
+  assert.equal(compararComHistorico(h("2026-03", 40), [h("2026-02", 20)], "CELESC").alerta, null);
   // Normaliza pelos dias: 1100 kWh em 33 dias = 1000 por 30 dias.
-  assert.equal(compararComHistorico(h("2026-03", 1100, 1100, 33), [h("2026-01", 1000), h("2026-02", 1000)], "CELESC").alerta, null);
+  assert.equal(compararComHistorico(h("2026-03", 1100, 1100, 33), [h("2026-02", 1000)], "CELESC").alerta, null);
   // Água: 10 → 25 m³ (+150%, +15 m³) → alta; consumo zerado → zerado.
-  assert.equal(compararComHistorico(h("2026-03", 25), [h("2026-01", 10), h("2026-02", 10)], "CASAN").alerta, "alta");
-  assert.equal(compararComHistorico(h("2026-03", 0), [h("2026-01", 10), h("2026-02", 10)], "CASAN").alerta, "zerado");
+  assert.equal(compararComHistorico(h("2026-03", 25), [h("2026-02", 10)], "CASAN").alerta, "alta");
+  assert.equal(compararComHistorico(h("2026-03", 0), [h("2026-02", 10)], "CASAN").alerta, "zerado");
   // Sem histórico: sem referência.
-  assert.equal(compararComHistorico(h("2026-03", 500), [], "CELESC").referencia, "");
+  const r4 = compararComHistorico(h("2026-03", 500), [], "CELESC");
+  assert.equal(r4.referencia, "");
+  assert.equal(r4.mensal, null);
+  assert.equal(r4.anual, null);
 });
 
 teste("CASAN: linha sem leitura anterior e total com o último dígito cortado", () => {

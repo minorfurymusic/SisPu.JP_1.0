@@ -1000,7 +1000,8 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
       setVariacoes(lista);
       if (lista.length) {
         addLog(`📈 Variação em relação ao histórico: ${lista.length} fatura(s) com alerta.`);
-        const texto = new Map<string, string>(lista.map((v: any) => [v.docId, `📈 ${TEXTO_ALERTA[v.r.alerta as keyof typeof TEXTO_ALERTA]}: ${v.r.var_consumo === null ? "" : `${v.r.var_consumo > 0 ? "+" : ""}${(v.r.var_consumo * 100).toFixed(0)}% no consumo, `}${v.r.var_valor === null ? "" : `${v.r.var_valor > 0 ? "+" : ""}${(v.r.var_valor * 100).toFixed(0)}% no valor`} (comparado com ${v.r.referencia}).`]));
+        const parte = (c: any, nome: string) => !c ? "" : `${nome}: ${c.var_consumo === null ? (c.ref_consumo_30d === 0 ? "saiu do zero" : "—") : `${c.var_consumo > 0 ? "+" : ""}${(c.var_consumo * 100).toFixed(0)}%`} no consumo, ${c.var_valor === null ? "—" : `${c.var_valor > 0 ? "+" : ""}${(c.var_valor * 100).toFixed(0)}%`} no valor`;
+        const texto = new Map<string, string>(lista.map((v: any) => [v.docId, `📈 ${TEXTO_ALERTA[v.r.alerta as keyof typeof TEXTO_ALERTA]} — ${v.r.motivo}. ${[parte(v.r.mensal, "vs mês anterior"), parte(v.r.anual, "vs mesmo mês do ano anterior")].filter(Boolean).join("; ")}.`]));
         setSessionDocs(prev => prev.map(d => texto.has(d.id) ? { ...d, logs_validacao: [...(d.logs_validacao || []).filter(l => !l.startsWith("📈")), texto.get(d.id)!] } : d));
       }
     } catch {
@@ -2384,27 +2385,32 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
             <div className="uppercase tracking-wider font-bold text-[10px] text-amber-300">
               📈 Variação em relação ao histórico: {variacoes.filter(v => v.r.alerta !== "queda").length} com aumento/zerado · {variacoes.filter(v => v.r.alerta === "queda").length} com queda (mais de 20%)
             </div>
-            <p className="text-gray-400">Compara com o mesmo mês do ano anterior; sem ele, com a média dos meses anteriores. Consumo levado a 30 dias. Não impede salvar — é para conferir (na água, um salto pode ser vazamento).</p>
+            <p className="text-gray-400">Duas comparações: com o <b className="text-gray-200">mês anterior</b> (salto de um mês para o outro — na água, costuma ser vazamento) e com o <b className="text-gray-200">mesmo mês do ano anterior</b> (mudança de uso, cobrança nova ou tarifa). Consumo levado a 30 dias. Não impede salvar — é para conferir.</p>
             <div className="max-h-64 overflow-y-auto border border-white/10 rounded-lg">
               <table className="w-full text-gray-300">
                 <thead className="bg-black/40 text-gray-400 text-[10px] uppercase font-mono sticky top-0">
-                  <tr><th className="px-2 py-1 text-left">Código</th><th className="px-2 py-1 text-left">Alerta</th><th className="px-2 py-1 text-right">Consumo</th><th className="px-2 py-1 text-right">Referência</th><th className="px-2 py-1 text-right">Var. consumo</th><th className="px-2 py-1 text-right">Var. valor</th><th className="px-2 py-1 text-right">Impacto R$</th><th className="px-2 py-1 text-left">Comparado com</th></tr>
+                  <tr><th className="px-2 py-1 text-left">Código</th><th className="px-2 py-1 text-left">Alerta</th><th className="px-2 py-1 text-right">Consumo</th><th className="px-2 py-1 text-right">vs mês anterior</th><th className="px-2 py-1 text-right">vs mesmo mês ano anterior</th><th className="px-2 py-1 text-right">Impacto R$</th></tr>
                 </thead>
                 <tbody className="divide-y divide-white/5 font-mono">
                   {variacoes.map(v => {
                     const un = v.concessionaria === "CASAN" ? "m³" : "kWh";
                     const pct = (x: number | null) => (x === null ? "—" : `${x > 0 ? "▲ +" : "▼ "}${(x * 100).toFixed(0)}%`);
                     const cor = (x: number | null) => (x === null ? "" : x > 0 ? "text-rose-300" : "text-sky-300");
+                    const comp = (c: ResultadoVariacao["mensal"]) => !c ? <span className="text-gray-600 font-sans">sem fatura</span> : (
+                      <div>
+                        <span className={cor(c.var_consumo)}>{c.var_consumo === null ? (c.ref_consumo_30d === 0 ? "saiu do zero" : "—") : pct(c.var_consumo)}</span>
+                        <span className={`ml-2 ${cor(c.var_valor)}`}>{pct(c.var_valor)} R$</span>
+                        <div className="text-[10px] text-gray-500 font-sans">era {Math.round(c.ref_consumo_30d).toLocaleString("pt-BR")} {un} · {fmtMoeda(c.ref_valor_30d)}</div>
+                      </div>
+                    );
                     return (
                       <tr key={v.docId}>
                         <td className="px-2 py-1">{v.concessionaria === "CASAN" ? "💧" : "⚡"} {v.codigo}</td>
-                        <td className="px-2 py-1 font-sans">{TEXTO_ALERTA[v.r.alerta!]}</td>
+                        <td className="px-2 py-1 font-sans">{TEXTO_ALERTA[v.r.alerta!]}<div className="text-[10px] text-gray-500">{v.r.motivo}</div></td>
                         <td className="px-2 py-1 text-right">{v.consumo.toLocaleString("pt-BR")} {un}</td>
-                        <td className="px-2 py-1 text-right">{v.r.ref_consumo_30d === null ? "—" : `${Math.round(v.r.ref_consumo_30d).toLocaleString("pt-BR")} ${un}`}</td>
-                        <td className={`px-2 py-1 text-right ${cor(v.r.var_consumo)}`}>{pct(v.r.var_consumo)}</td>
-                        <td className={`px-2 py-1 text-right ${cor(v.r.var_valor)}`}>{pct(v.r.var_valor)}</td>
+                        <td className="px-2 py-1 text-right">{comp(v.r.mensal)}</td>
+                        <td className="px-2 py-1 text-right">{comp(v.r.anual)}</td>
                         <td className="px-2 py-1 text-right">{fmtMoeda(v.r.impacto_valor)}</td>
-                        <td className="px-2 py-1 font-sans text-gray-400">{v.r.referencia}</td>
                       </tr>
                     );
                   })}

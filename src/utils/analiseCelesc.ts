@@ -62,7 +62,9 @@ export function grupoDoItem(descricao: string): Grupo {
   if (/BANDEIRA/.test(d)) return "bandeira";
   // Layout antigo (até abr/2024): "DEVOL.PAGA DUPLICIDADE", "DEV SDO CTA ANT", "DIF.NDEVOLV/SALDO
   // NEGATIVO", "CRED VIOL PRAZO", "COMP VIOL META CONTINUIDADE".
-  if (/CREDITO|^DIC|^DMIC|^FIC|DEVOLUCAO|^DEV|^DIF\.|^CRED |^COMP |DESCONTO|BONUS|ANULACAO|COMPENSACAO|ESTORNO|AJUSTE/.test(d)) return "ajustes";
+  // "Pag. Duplicidade - Migrado" e "Item Migrado": saldo de pagamento em duplicidade trazido do
+  // sistema antigo da CELESC e devolvido aos poucos como crédito.
+  if (/CREDITO|^DIC|^DMIC|^FIC|DEVOLUCAO|^DEV|^DIF\.|^CRED |^COMP |DESCONTO|BONUS|ANULACAO|COMPENSACAO|ESTORNO|AJUSTE|DUPLICIDADE|MIGRADO/.test(d)) return "ajustes";
   if (/TUSD/.test(d)) return "rede";
   if (/CONSUMO|\bTE\b/.test(d)) return "energia";
   return "outros";

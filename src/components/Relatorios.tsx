@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowDown, ArrowUp, Download, Printer, Sparkles, X } from "lucide-react";
 import { Grupo, GRUPOS_PERDA, NOME_GRUPO, TributosFatura, DemandaDoMes, FaixaDemanda, faixaDemanda, simularDemandaIdeal } from "../utils/analiseCelesc";
-import { compararComHistorico, TEXTO_ALERTA, ResultadoVariacao } from "../utils/variacao";
+import { compararComHistorico, TEXTO_ALERTA, ResultadoVariacao, Comparacao } from "../utils/variacao";
 
 type Linha = {
   id: string; mes: string; contrato_id: string; codigo: string; concessionaria: "CASAN" | "CELESC";
@@ -75,6 +75,26 @@ function contratadaPorMes(ls: Linha[]) {
     m.set(l.mes, (antes || depois)?.c ?? null);
   }
   return m;
+}
+
+// Uma das duas comparações do alerta (mês anterior / mesmo mês do ano anterior).
+function textoComparacao(c: Comparacao | null, un: string): string {
+  if (!c) return "sem fatura para comparar";
+  const vc = c.var_consumo === null ? (c.ref_consumo_30d === 0 ? "saiu do zero" : "—") : fmtPct(c.var_consumo);
+  return `${vc} no consumo (era ${fmtN(c.ref_consumo_30d)} ${un}), ${fmtPct(c.var_valor)} no valor (era ${fmtR(c.ref_valor_30d)})`;
+}
+function CelulaComparacao({ c, un }: { c: Comparacao | null; un: string; key?: string }) {
+  if (!c) return <span className="text-gray-600 text-[11px]">sem fatura</span>;
+  const cor = c.alerta === "queda" || c.alerta === "zerado" ? "text-sky-300" : c.alerta ? "text-rose-300" : "text-gray-400";
+  const vc = c.var_consumo === null ? (c.ref_consumo_30d === 0 ? "saiu do zero" : "—") : fmtPct(c.var_consumo);
+  return (
+    <div className="text-right whitespace-nowrap">
+      <div className={`font-mono ${cor}`}>{vc} <span className="text-[10px] text-gray-500">consumo</span></div>
+      <div className={`font-mono text-[11px] ${c.alerta === "valor" ? "text-rose-300" : "text-gray-400"}`}>{fmtPct(c.var_valor)} <span className="text-[10px] text-gray-500">valor</span></div>
+      <div className="text-[10px] text-gray-600">era {fmtN(c.ref_consumo_30d)} {un} · {fmtR(c.ref_valor_30d)}</div>
+      {/^último/.test(c.referencia) && <div className="text-[10px] text-amber-500/80">{c.referencia}</div>}
+    </div>
+  );
 }
 
 function faixaConsumoDoMes(l: Linha, historico: Linha[]): { faixa: FaixaConsumo; r: ResultadoVariacao } {
@@ -894,16 +914,14 @@ export default function Relatorios({ versao }: { versao: number }) {
         <div className="text-xs text-gray-400">Mês analisado: <b className="text-white">{rotuloMes(mes)}</b> (o último mês do período escolhido).</div>
         <div className="space-y-2">
           <div className="text-white font-bold text-sm flex items-center gap-2"><AlertTriangle className="h-4 w-4 text-amber-400" /> Variação acima de 20% ({avaliados.length})</div>
-          <p className="text-[11px] text-gray-500">Comparado com o mesmo mês do ano anterior; sem ele, com a média dos meses anteriores. Consumo levado a 30 dias; só entra com diferença de pelo menos 100 kWh / 5 m³ (ou R$ 100 no valor). Na água, um salto pode ser vazamento.</p>
+          <p className="text-[11px] text-gray-500">Duas comparações: com o <b className="text-gray-300">mês anterior</b> (salto de um mês para o outro — na água, costuma ser vazamento) e com o <b className="text-gray-300">mesmo mês do ano anterior</b> (tira a sazonalidade e mostra mudança de uso, cobrança nova ou tarifa). Consumo levado a 30 dias; só entra com mais de 20% e diferença de pelo menos 100 kWh / 5 m³ (ou R$ 100 no valor).</p>
           <Tabela<A> nome={`alertas-variacao-${mes}`} linhas={avaliados} onLinha={x => abrir(x.l.unidade_id)} vazio="Nenhuma variação fora do normal neste mês." colunas={[
-            { titulo: "Unidade", valor: x => <NomeUnidade nome={x.l.unidade_nome} endereco={x.l.unidade_endereco} />, csv: x => `${x.l.unidade_nome} — ${x.l.unidade_endereco}` }, { titulo: "Código", valor: x => `${x.l.concessionaria === "CASAN" ? "💧" : "⚡"} ${x.l.codigo}` },
-            { titulo: "Alerta", valor: x => <span className={x.r.alerta === "queda" ? "text-sky-300" : "text-rose-300"}>{TEXTO_ALERTA[x.r.alerta!]}</span>, csv: x => TEXTO_ALERTA[x.r.alerta!] },
+            { titulo: "Unidade", valor: x => <NomeUnidade nome={x.l.unidade_nome} endereco={x.l.unidade_endereco} />, csv: x => `${x.l.unidade_nome} — ${x.l.unidade_endereco}` }, { titulo: "Código", valor: x => <span className="whitespace-nowrap">{x.l.concessionaria === "CASAN" ? "💧" : "⚡"} {x.l.codigo}</span>, csv: x => x.l.codigo },
+            { titulo: "Alerta", valor: x => <div className="min-w-[190px]"><span className={x.r.alerta === "queda" ? "text-sky-300" : "text-rose-300"}>{TEXTO_ALERTA[x.r.alerta!]}</span><div className="text-[10px] text-gray-500 min-w-[190px] max-w-[260px] leading-tight">{x.r.motivo.split(" · ").map(m => <div key={m}>{m}</div>)}</div></div>, csv: x => `${TEXTO_ALERTA[x.r.alerta!]} — ${x.r.motivo}` },
             { titulo: "Consumo", valor: x => `${fmtN(x.l.consumo)} ${un(x.l)}`, direita: true, csv: x => x.l.consumo },
-            { titulo: "Normal (30 dias)", valor: x => `${fmtN(x.r.ref_consumo_30d || 0)} ${un(x.l)}`, direita: true, csv: x => x.r.ref_consumo_30d || 0 },
-            { titulo: "Var. consumo", valor: x => fmtPct(x.r.var_consumo), direita: true },
-            { titulo: "Var. valor", valor: x => fmtPct(x.r.var_valor), direita: true },
-            { titulo: "Impacto R$", valor: x => fmtR(x.r.impacto_valor), direita: true, csv: x => x.r.impacto_valor.toFixed(2) },
-            { titulo: "Comparado com", valor: x => x.r.referencia },
+            { titulo: "vs mês anterior", valor: x => <CelulaComparacao c={x.r.mensal} un={un(x.l)} />, csv: x => textoComparacao(x.r.mensal, un(x.l)), ordem: x => x.r.mensal?.var_consumo ?? -Infinity },
+            { titulo: "vs mesmo mês ano anterior", valor: x => <CelulaComparacao c={x.r.anual} un={un(x.l)} />, csv: x => textoComparacao(x.r.anual, un(x.l)), ordem: x => x.r.anual?.var_consumo ?? -Infinity },
+            { titulo: "Impacto R$", valor: x => fmtR(x.r.impacto_valor), direita: true, csv: x => x.r.impacto_valor.toFixed(2), ordem: x => x.r.impacto_valor },
           ]} />
         </div>
         <div className="space-y-2">
