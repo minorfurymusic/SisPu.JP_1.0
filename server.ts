@@ -1,4 +1,5 @@
 import express from "express";
+import zlib from "zlib";
 import path from "path";
 import fs from "fs";
 import dotenv from "dotenv";
@@ -33,6 +34,23 @@ const ai = new GoogleGenAI({
 
 // JSON Middleware
 app.use(express.json({ limit: '10mb' }));
+// Respostas grandes (lista de lançamentos/documentos) vão compactadas em gzip: o Cloud Run recusa
+// respostas acima de 32 MB, e depois da importação de 2024–2025 essas listas passaram disso
+// (o site devolvia erro 500). JSON compacta umas 10 vezes.
+app.use((req, res, next) => {
+  const json = res.json.bind(res);
+  res.json = (body: any) => {
+    const texto = JSON.stringify(body);
+    if (texto.length > 50_000 && /\bgzip\b/.test(String(req.headers["accept-encoding"] || ""))) {
+      res.setHeader("Content-Encoding", "gzip");
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Vary", "Accept-Encoding");
+      return res.send(zlib.gzipSync(texto));
+    }
+    return json(body);
+  };
+  next();
+});
 app.use("/api", (req, _res, next) => {
   garantirEstadoAtual(req.method !== "GET").then(() => next(), () => next());
 });
@@ -2485,6 +2503,14 @@ app.post("/api/vincular-unidade", (req, res) => {
 
 
 // --- LANÇAMENTOS ---
+// Dados da fatura para as listas: sem o log interno do leitor (debug_log, não usado pelas telas)
+// e sem os itens (que vão uma vez só, no campo itens_fatura do lançamento).
+function extracaoEnxuta(de: any) {
+  if (!de) return de;
+  const { debug_log, itens_fatura, ...resto } = de;
+  return resto;
+}
+
 app.get("/api/lancamentos", (req, res) => {
   // autoSyncOrphanRecords() já roda uma vez na inicialização do servidor (suficiente pra
   // autocorreção). Chamá-la aqui de novo, a cada carregamento de tela, fazia o servidor
@@ -2505,8 +2531,17 @@ app.get("/api/lancamentos", (req, res) => {
     list = list.filter(l => l.mes_ano.substring(0, 7) === cleanMesAno);
   }
 
+  // Índice "código|mês" → documento (o primeiro, como o find de antes): procurar o documento de
+  // cada lançamento varrendo todos os documentos ficou lento com milhares de faturas.
+  const docPorCodigoMes = new Map<string, DocumentoProcessado>();
+  for (const d of db.documentos_processados || []) {
+    const cod = d?.dados_extraidos?.codigo_numero, mes = (d?.dados_extraidos?.mes_ano || "").substring(0, 7);
+    if (cod && mes && !docPorCodigoMes.has(`${cod}|${mes}`)) docPorCodigoMes.set(`${cod}|${mes}`, d);
+  }
+  const itemPorId = new Map(db.itens_despesas.map(it => [it.id, it]));
+
   const populatedList = list.map(l => {
-    const item = db.itens_despesas.find(it => it.id === l.item_despesa_id);
+    const item = itemPorId.get(l.item_despesa_id);
     const despesa = item ? db.despesas.find(d => d.id === item.despesa_id) : null;
     const unidade = item ? db.unidades.find(u => u.id === item.unidade_id) : null;
     const secretaria = unidade ? db.secretarias.find(s => s.id === unidade.secretaria_id) : null;
@@ -2514,11 +2549,10 @@ app.get("/api/lancamentos", (req, res) => {
     // Inclui os códigos anteriores do contrato: meses faturados com o código antigo (antes de a
     // concessionária recodificar a UC) têm o documento salvo com aquele código.
     const codigosDoContrato = item ? [item.codigo_numero, ...(item.codigos_numero_anteriores || [])] : [];
-    const matchingDoc = db.documentos_processados?.find(d =>
-      d.dados_extraidos &&
-      codigosDoContrato.includes(d.dados_extraidos.codigo_numero) &&
-      d.dados_extraidos.mes_ano?.substring(0,7) === l.mes_ano?.substring(0,7)
-    );
+    const matchingDoc = codigosDoContrato.map(c => docPorCodigoMes.get(`${c}|${l.mes_ano?.substring(0, 7)}`)).find(Boolean);
+    // Sem o log interno do leitor nem os itens repetidos (os itens vão uma vez, em itens_fatura):
+    // a lista inteira passava de 32 MB.
+    const extracao = extracaoEnxuta(matchingDoc?.dados_extraidos);
     const energia_injetada = (l as any).energia_injetada ?? matchingDoc?.dados_extraidos?.energia_injetada ?? 0;
 
     let concessionaria: 'CASAN' | 'CELESC' = (unidade?.concessionaria as 'CASAN' | 'CELESC') || (despesa?.id === "2" ? "CASAN" : "CELESC");
@@ -2542,9 +2576,9 @@ app.get("/api/lancamentos", (req, res) => {
       // documentos_processados.dados_extraidos — a tabela lancamentos guarda só os totais.
       // Sem isso aqui, a tela sempre mostrava esses campos zerados/vazios ao reabrir um
       // lançamento já salvo, mesmo quando a extração original tinha vindo correta.
-      ...(matchingDoc?.dados_extraidos || {}),
+      ...(extracao || {}),
       ...l,
-      dados_extraidos: matchingDoc?.dados_extraidos,
+      dados_extraidos: extracao,
       itens_fatura: matchingDoc?.dados_extraidos?.itens_fatura || [],
       energia_injetada,
       concessionaria,
@@ -2912,7 +2946,8 @@ app.post("/api/logs_erros", (req, res) => {
 // --- CENTRAL DE DOCUMENTOS (Upload / Parsing with Gemini) ---
 
 app.get("/api/documentos", (req, res) => {
-  res.json(db.documentos_processados);
+  res.json((db.documentos_processados || []).map(d => (d?.dados_extraidos && "debug_log" in (d.dados_extraidos as any))
+    ? { ...d, dados_extraidos: { ...d.dados_extraidos, debug_log: undefined } } : d));
 });
 
 // Cria e homologa uma fatura em memória (mesma lógica de POST /api/documentos +
