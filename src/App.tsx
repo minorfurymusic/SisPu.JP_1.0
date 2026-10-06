@@ -28,7 +28,7 @@ export default function App() {
       
       {/* 🚀 Header Navbar */}
       <header className="bg-[#0f0f0f] border-b border-white/10 py-3.5 px-6 sticky top-0 z-50 shadow-md">
-        <div className="max-w-7xl mx-auto flex items-center justify-center">
+        <div className="max-w-[1680px] mx-auto flex items-center justify-center">
           <div className="flex items-center justify-center text-center gap-3">
             <div className="h-9 w-9 rounded-lg bg-blue-600 flex items-center justify-center font-bold font-mono text-white text-lg shadow-sm shadow-blue-500/20">
               SP
@@ -46,7 +46,7 @@ export default function App() {
       </header>
 
       {/* 🖼️ Main Workspace Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-6">
+      <main className="flex-1 max-w-[1680px] w-full mx-auto p-6">
         <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
           <WebPortal 
             onRefreshTrigger={refreshCounter} 
@@ -57,7 +57,7 @@ export default function App() {
 
       {/* 🛠️ Global Application Footer */}
       <footer className="bg-[#050505] border-t border-white/5 text-gray-500 text-[11px] py-4 px-6 font-mono text-center">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-2">
+        <div className="max-w-[1680px] mx-auto flex flex-col md:flex-row justify-between items-center gap-2">
           <span>SISPU.JP 2.0 — Sistema Público de Gestão de Despesas</span>
           <span className="text-gray-400">
             {dbStatus.connected ? (

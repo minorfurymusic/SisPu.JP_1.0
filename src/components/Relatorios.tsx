@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowDown, ArrowUp, Download, Printer, Sparkles, X, SlidersHorizontal } from "lucide-react";
 import { Grupo, GRUPOS_PERDA, NOME_GRUPO, TributosFatura, DemandaDoMes, FaixaDemanda, faixaDemanda, simularDemandaIdeal } from "../utils/analiseCelesc";
 import { compararComHistorico, TEXTO_ALERTA, ResultadoVariacao, Comparacao } from "../utils/variacao";
+import GraficoComparativo from "./GraficoComparativo";
 import { PREMISSAS, Contrato12, agregarContratos, precoMedioB, candidatosSolar, candidatosCapacitor, candidatosBOptante, mercadoLivre, CandidatoSolar, CandidatoCapacitor, CandidatoBOptante } from "../utils/oportunidades";
 
 type Linha = {
@@ -198,7 +199,24 @@ function Tabela<T>({ nome, colunas, linhas, rodape, vazio = "Sem dados para o pe
           <Download className="h-3.5 w-3.5" /> Exportar CSV
         </button>
       </div>
-      <div className="overflow-x-auto border border-white/10 rounded-lg">
+      {/* Celular: cada linha vira um cartão (1ª coluna como título, o resto em pares rótulo/valor). */}
+      <div className="md:hidden space-y-2">
+        {linhas.length === 0 && <div className="text-xs text-gray-500 border border-white/10 rounded-lg p-3">{vazio}</div>}
+        {ordenadas.map((l, i) => (
+          <div key={i} onClick={() => onLinha?.(l)} className={`bg-[#141414] border border-white/10 rounded-lg p-3 text-xs ${onLinha ? "cursor-pointer active:bg-white/5" : ""}`}>
+            <div className="mb-2">{colunas[0].valor(l)}</div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+              {colunas.slice(1).map(c => (
+                <div key={c.titulo} className="min-w-0">
+                  <div className="text-[9px] uppercase tracking-wider text-gray-500">{c.titulo}</div>
+                  <div className="text-gray-200 font-mono tabular-nums break-words">{c.valor(l)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="hidden md:block overflow-x-auto border border-white/10 rounded-lg">
         <table className="w-full text-xs text-gray-300">
           <thead className="bg-black/40 text-gray-400 text-[10px] uppercase font-mono">
             <tr>{colunas.map(c => (
@@ -301,18 +319,21 @@ function Colunas({ rotulos, series, formato = fmtR, altura = 240 }: {
 }
 
 // "Para onde vai o dinheiro": barras horizontais com valor e % do total.
-function Composicao({ itens }: { itens: { nome: string; cor?: string; valor: number }[] }) {
+function Composicao({ itens }: { itens: { nome: string; cor?: string; valor: number; variacao?: number | null }[] }) {
   const pos = soma(itens.filter(i => i.valor > 0), i => i.valor);
   const max = Math.max(1, ...itens.map(i => Math.abs(i.valor)));
   return (
     <div className="space-y-1.5">
       {itens.filter(i => Math.abs(i.valor) >= 0.005).map(i => (
-        <div key={i.nome} className="grid grid-cols-[minmax(0,14rem)_1fr_auto] items-center gap-3 text-xs">
+        <div key={i.nome} className="grid grid-cols-[minmax(0,14rem)_1fr_auto_auto] items-center gap-3 text-xs">
           <span className="text-gray-300 truncate flex items-center gap-1.5">{i.cor && <span className="h-2.5 w-2.5 rounded-sm shrink-0" style={{ background: i.cor }} />}{i.nome}</span>
           <div className="h-3 bg-white/5 rounded-sm overflow-hidden">
             <div className="h-full rounded-sm" style={{ width: `${(Math.abs(i.valor) / max) * 100}%`, background: i.valor < 0 ? "#383835" : i.cor || COR_UNICA }} />
           </div>
           <span className="font-mono tabular-nums text-gray-200 text-right w-44">{fmtR(i.valor)} <span className="text-gray-500">{i.valor > 0 && pos ? `${fmtN((i.valor / pos) * 100, 1)}%` : ""}</span></span>
+          <span className={`font-mono tabular-nums text-right w-24 font-bold ${i.variacao === undefined ? "hidden" : i.variacao === null ? "text-gray-600" : i.variacao > 0 ? "text-rose-300" : "text-emerald-300"}`}>
+            {i.variacao === null || i.variacao === undefined ? "—" : i.variacao > 3 ? "▲ > 300%" : `${i.variacao > 0 ? "▲" : "▼"} ${fmtPct(i.variacao).replace("+", "")}`}
+          </span>
         </div>
       ))}
     </div>
@@ -973,22 +994,45 @@ export default function Relatorios({ versao }: { versao: number }) {
     conteudo = (
       <div className="space-y-5">
         {kpis}
+        {(() => {
+          const menos12 = (m: string) => `${Number(m.substring(0, 4)) - 1}${m.substring(4)}`;
+          const porMes = (xs: Linha[], m: string, f: (l: Linha) => number) => { const ys = xs.filter(l => l.mes === m); return ys.length ? soma(ys, f) : null; };
+          const fE = filtradasTodas.filter(l => l.concessionaria === "CELESC"), fA = filtradasTodas.filter(l => l.concessionaria === "CASAN");
+          const reais = (v: number) => (v >= 1000 ? `R$ ${fmtN(v / 1000, 0)} mil` : fmtR(v));
+          const rotulos = periodo.map(rotuloMes);
+          return (
+            <div className="space-y-5">
+              {(!conc || conc === "CELESC") && (
+                <div className="space-y-2">
+                  <div className="text-white font-bold text-sm">⚡ Energia por mês — comparada com o mesmo mês do ano anterior</div>
+                  <GraficoComparativo rotulos={rotulos} atual={periodo.map(m => porMes(fE, m, l => l.valor_total))} anterior={periodo.map(m => porMes(fE, menos12(m), l => l.valor_total))}
+                    nomeAtual="Mês do período" nomeAnterior="Mesmo mês, ano anterior" cor="#c98500" formato={reais} altura={240} />
+                </div>
+              )}
+              {(!conc || conc === "CASAN") && (
+                <div className="space-y-2">
+                  <div className="text-white font-bold text-sm">💧 Água por mês — comparada com o mesmo mês do ano anterior</div>
+                  <GraficoComparativo rotulos={rotulos} atual={periodo.map(m => porMes(fA, m, l => l.valor_total))} anterior={periodo.map(m => porMes(fA, menos12(m), l => l.valor_total))}
+                    nomeAtual="Mês do período" nomeAnterior="Mesmo mês, ano anterior" cor="#3987e5" formato={reais} altura={240} />
+                </div>
+              )}
+            </div>
+          );
+        })()}
         <div className="space-y-2">
-          <div className="text-white font-bold text-sm">Conta de energia por mês, por grupo de custo (R$)</div>
-          <Colunas rotulos={resumo.map(r => r.rotulo)} series={MACRO.map(m => ({ nome: m.nome, cor: m.cor, valores: resumo.map(r => r.macro[m.k]) }))} />
-        </div>
-        {a.length > 0 && (
-          <div className="space-y-2">
-            <div className="text-white font-bold text-sm">Conta de água por mês (R$)</div>
-            <Colunas rotulos={resumo.map(r => r.rotulo)} series={[{ nome: "Água", cor: COR_UNICA, valores: resumo.map(r => r.agua) }]} altura={180} />
-          </div>
-        )}
-        <div className="space-y-2">
-          <div className="text-white font-bold text-sm">Para onde vai o dinheiro da energia</div>
-          <Composicao itens={[
-            ...MACRO.map(m => ({ nome: m.nome, cor: m.cor, valor: g(m.grupos) })).sort((x, y) => y.valor - x.valor),
-            ...DEDUCOES.map(d => ({ nome: NOME_GRUPO[d], valor: g([d]) })),
-          ]} />
+          <div className="text-white font-bold text-sm">Para onde vai o dinheiro da energia <span className="text-gray-500 font-normal">— e quanto cada parte mudou contra os mesmos meses do ano anterior</span></div>
+          {(() => {
+            const menos12 = (m: string) => `${Number(m.substring(0, 4)) - 1}${m.substring(4)}`;
+            const fE = filtradasTodas.filter(l => l.concessionaria === "CELESC");
+            const temAnt = new Set(fE.map(l => l.mes));
+            const meses = periodo.filter(m => temAnt.has(m) && temAnt.has(menos12(m)));
+            const atu = fE.filter(l => meses.includes(l.mes)), ant = fE.filter(l => meses.some(m => menos12(m) === l.mes));
+            const itens = [
+              ...MACRO.map(m => ({ nome: m.nome, cor: m.cor, valor: g(m.grupos), a: soma(atu, l => valorGrupos(l, m.grupos)), b: soma(ant, l => valorGrupos(l, m.grupos)) })).sort((x, y) => y.valor - x.valor),
+              ...DEDUCOES.map(d => ({ nome: NOME_GRUPO[d], cor: undefined as string | undefined, valor: g([d]), a: soma(atu, l => valorGrupos(l, [d])), b: soma(ant, l => valorGrupos(l, [d])) })),
+            ];
+            return <Composicao itens={itens.map(i => ({ nome: i.nome, cor: i.cor, valor: i.valor, variacao: meses.length && Math.abs(i.b) > 1 && i.valor > 0 ? i.a / i.b - 1 : null }))} />;
+          })()}
           <p className="text-[11px] text-gray-500">"Perdas e penalidades" = ultrapassagem de demanda, demanda paga sem uso, energia reativa excedente, multas e juros. Valores negativos reduzem a conta.</p>
         </div>
         <BotaoIA titulo={`Gastos da prefeitura com água e energia (${tituloPeriodo})`} resumo={() => ({

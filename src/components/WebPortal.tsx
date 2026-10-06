@@ -12,6 +12,7 @@ import FaturasTreeView from "./FaturasTreeView";
 import EditFaturaModal from "./EditFaturaModal";
 import { SugestoesAgrupamento, JuntarContratosModal } from "./UnidadesAgrupamento";
 import Relatorios from "./Relatorios";
+import GraficoComparativo from "./GraficoComparativo";
 import { categorizarItens, GRUPOS_PERDA } from "../utils/analiseCelesc";
 
 const valorPerdasDosItens = (itens: any[]) => {
@@ -129,6 +130,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   >("dashboard");
 
   const [chartMode, setChartMode] = useState<'energia' | 'agua'>('energia');
+  const [metricaHist, setMetricaHist] = useState<'valor' | 'consumo' | 'perdas' | 'injetada'>('valor');
 
   // Hover Actions State
   const [expandedUnitId, setExpandedUnitId] = useState<string | null>(null);
@@ -1014,63 +1016,31 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     }
   }, [availableYears]);
 
-  const yearlyChartData = React.useMemo(() => {
-    return monthNames.map((mName, idx) => {
-      const monthNumStr = String(idx + 1).padStart(2, '0');
-      const refPrefix = `${selectedYear}-${monthNumStr}`;
-
-      const matches = lancamentos.filter(l => {
-        if (!l || !l.mes_ano) return false;
-        return String(l.mes_ano).substring(0, 7) === refPrefix;
-      });
-
-      const filterCelesc = matches.filter(l => {
-        const desc = (l.despesa_descricao || "").toUpperCase();
-        const cod = (l.codigo_numero || "").toUpperCase();
-        const id = String(l.despesa_id || "");
-        return desc.includes("CELESC") || desc.includes("ENERGIA") || cod.includes("CELESC") || id === "1" || (!id && !desc.includes("CASAN"));
-      });
-
-      const filterCasan = matches.filter(l => {
-        const desc = (l.despesa_descricao || "").toUpperCase();
-        const cod = (l.codigo_numero || "").toUpperCase();
-        const id = String(l.despesa_id || "");
-        return desc.includes("CASAN") || desc.includes("ÁGUA") || desc.includes("AGUA") || cod.includes("CASAN") || id === "2";
-      });
-
-      const listToUse = chartMode === 'energia' ? filterCelesc : filterCasan;
-
-      const consumo = listToUse.reduce((acc, l) => acc + Number(l.consumo || 0), 0);
-      const valor_total = listToUse.reduce((acc, l) => acc + Number(l.valor_total || 0), 0);
-      const valor_imposto = listToUse.reduce((acc, l) => acc + Number(l.valor_imposto || 0), 0);
-      const energia_injetada = chartMode === 'energia' ? listToUse.reduce((acc, l) => acc + Number(l.energia_injetada || 0), 0) : 0;
-      // Perdas e penalidades (R$) tiradas dos itens da fatura: ultrapassagem, demanda paga sem uso,
-      // energia reativa excedente, multas e juros. Antes ficava fixo em zero.
-      const desperdicio = chartMode === 'energia'
-        ? Math.round(listToUse.reduce((acc, l) => acc + valorPerdasDosItens(l.itens_fatura || []), 0) * 100) / 100
-        : 0;
-
-      return {
-        monthIndex: idx,
-        label: mName,
-        monthFull: `${mName} / ${selectedYear}`,
-        count: listToUse.length,
-        consumo,
-        valor_total,
-        valor_imposto,
-        energia_injetada,
-        desperdicio
-      };
+  // Totais de um mês (energia ou água) — usados no gráfico do ano escolhido e do ano anterior.
+  const totaisDoAno = (ano: number) => monthNames.map((mName, idx) => {
+    const refPrefix = `${ano}-${String(idx + 1).padStart(2, '0')}`;
+    const matches = lancamentos.filter(l => l && l.mes_ano && String(l.mes_ano).substring(0, 7) === refPrefix);
+    const listToUse = matches.filter(l => {
+      const desc = (l.despesa_descricao || "").toUpperCase();
+      const cod = (l.codigo_numero || "").toUpperCase();
+      const id = String(l.despesa_id || "");
+      const casan = desc.includes("CASAN") || desc.includes("ÁGUA") || desc.includes("AGUA") || cod.includes("CASAN") || id === "2";
+      const celesc = desc.includes("CELESC") || desc.includes("ENERGIA") || cod.includes("CELESC") || id === "1" || (!id && !desc.includes("CASAN"));
+      return chartMode === 'energia' ? celesc : casan;
     });
-  }, [lancamentos, selectedYear, chartMode]);
-
-  const chartMaxes = React.useMemo(() => {
-    const maxConsumo = Math.max(...yearlyChartData.map(d => d.consumo), 1);
-    const maxValor = Math.max(...yearlyChartData.map(d => d.valor_total), 1);
-    const maxImposto = Math.max(...yearlyChartData.map(d => d.valor_imposto), 1);
-    const maxInjetada = Math.max(...yearlyChartData.map(d => d.energia_injetada), 1);
-    return { maxConsumo, maxValor, maxImposto, maxInjetada };
-  }, [yearlyChartData]);
+    return {
+      label: mName,
+      count: listToUse.length,
+      consumo: listToUse.reduce((acc, l) => acc + Number(l.consumo || 0), 0),
+      valor_total: listToUse.reduce((acc, l) => acc + Number(l.valor_total || 0), 0),
+      energia_injetada: chartMode === 'energia' ? listToUse.reduce((acc, l) => acc + Number(l.energia_injetada || 0), 0) : 0,
+      // Perdas e penalidades (R$) tiradas dos itens da fatura: ultrapassagem, demanda paga sem uso,
+      // energia reativa excedente, multas e juros.
+      desperdicio: chartMode === 'energia' ? Math.round(listToUse.reduce((acc, l) => acc + valorPerdasDosItens(l.itens_fatura || []), 0) * 100) / 100 : 0,
+    };
+  });
+  const yearlyChartData = React.useMemo(() => totaisDoAno(selectedYear), [lancamentos, selectedYear, chartMode]);
+  const anoAnteriorChartData = React.useMemo(() => totaisDoAno(selectedYear - 1), [lancamentos, selectedYear, chartMode]);
 
   // --- NESTED COMPONENT FOR EXPANDABLE UNIT DETAILS ---
   function ExpandedUnitDetails({ unit }: { unit: any }) {
@@ -1204,7 +1174,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     <div className="bg-[#0a0a0a] min-h-screen text-gray-200 font-sans pb-12" id="web-portal">
       {/* 🧭 Top Navbar */}
       <nav className="bg-[#0f0f0f] text-white border-b border-white/10 sticky top-0 z-30 shadow-lg">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
+        <div className="max-w-[1680px] mx-auto px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
           <div className="flex items-center gap-3">
             <div className="bg-blue-600 p-2 rounded-lg text-white shadow-lg shadow-blue-600/15">
               <Layers className="h-6 w-6" />
@@ -1285,7 +1255,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
       </nav>
 
       {/* 📊 Main Content Space */}
-      <div className="max-w-7xl mx-auto px-6 py-6 space-y-6">
+      <div className="max-w-[1680px] mx-auto px-6 py-6 space-y-6">
         
         {/* Status Messages */}
         {globalSuccess && (
@@ -1329,154 +1299,61 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     onClick={() => setChartMode('energia')}
                     className={`px-3 py-1.5 rounded transition ${chartMode === 'energia' ? 'bg-amber-500 text-black font-bold shadow-md' : 'text-gray-400 hover:text-white'}`}
                   >
-                    Energia (Celesc kWh)
+                    ⚡ Energia (CELESC)
                   </button>
                   <button
                     onClick={() => setChartMode('agua')}
                     className={`px-3 py-1.5 rounded transition ${chartMode === 'agua' ? 'bg-blue-600 text-white font-bold shadow-md' : 'text-gray-400 hover:text-white'}`}
                   >
-                    Água (Casan m³)
+                    💧 Água (CASAN)
                   </button>
                 </div>
               </div>
 
-              {/* Chart Legend */}
-              <div className="flex flex-wrap items-center gap-4 text-xs font-semibold text-gray-300 bg-[#141414] p-3 rounded-lg border border-white/10">
-                <div className="flex items-center gap-1.5">
-                  <span className={`w-3 h-3 rounded-sm inline-block shadow-sm ${chartMode === 'energia' ? 'bg-amber-400' : 'bg-blue-500'}`}></span>
-                  <span>Consumo ({chartMode === 'energia' ? 'kWh' : 'm³'})</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-sm bg-emerald-400 inline-block shadow-sm"></span>
-                  <span>Valor Total (R$)</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-sm bg-indigo-400 inline-block shadow-sm"></span>
-                  <span>Imposto (R$)</span>
-                </div>
-                {chartMode === 'energia' && (
-                  <>
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-3 h-3 rounded-sm bg-sky-400 inline-block shadow-sm"></span>
-                      <span>Energia Injetada (kWh)</span>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-3 h-3 rounded-sm bg-rose-400 inline-block shadow-sm"></span>
-                      <span>Perdas e penalidades (R$)</span>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* Chart Display Area (Annual 12 Months) */}
-              <div className="pt-2">
-                <div className="relative h-64 border-b border-white/10 pb-2 flex items-end justify-between gap-1 sm:gap-2">
-                  {/* Grid Lines */}
-                  <div className="absolute left-0 right-0 top-1/4 border-t border-white/5 border-dashed pointer-events-none"></div>
-                  <div className="absolute left-0 right-0 top-2/4 border-t border-white/5 border-dashed pointer-events-none"></div>
-                  <div className="absolute left-0 right-0 top-3/4 border-t border-white/5 border-dashed pointer-events-none"></div>
-
-                  {yearlyChartData.map((d) => {
-                    const hConsumo = d.consumo > 0 ? Math.max(6, (d.consumo / chartMaxes.maxConsumo) * 100) : 0;
-                    const hValor = d.valor_total > 0 ? Math.max(6, (d.valor_total / chartMaxes.maxValor) * 100) : 0;
-                    const hImposto = d.valor_imposto > 0 ? Math.max(6, (d.valor_imposto / chartMaxes.maxImposto) * 100) : 0;
-                    const hInjetada = d.energia_injetada > 0 ? Math.max(6, (d.energia_injetada / chartMaxes.maxInjetada) * 100) : 0;
-                    // Mesma escala do Valor Total (os dois são R$), para dar para comparar.
-                    const hDesperdicio = d.desperdicio > 0 ? Math.max(3, (d.desperdicio / chartMaxes.maxValor) * 100) : 0;
-
-                    const unitStr = chartMode === 'energia' ? 'kWh' : 'm³';
-
-                    return (
-                      <div key={d.monthIndex} className="flex-1 flex flex-col items-center group relative h-full justify-end px-0.5 sm:px-1">
-                        {/* Tooltip on Hover */}
-                        <div className="absolute bottom-full mb-2 bg-[#181818] border border-white/20 text-white text-[11px] p-2.5 rounded-lg opacity-0 group-hover:opacity-100 transition duration-150 pointer-events-none shadow-2xl z-30 whitespace-nowrap min-w-[160px]">
-                          <span className="font-bold text-gray-200 block border-b border-white/10 pb-1 mb-1 font-mono">
-                            {d.monthFull} ({d.count} fatura{d.count !== 1 ? 's' : ''})
-                          </span>
-                          <div className="space-y-0.5 text-[10px]">
-                            <div className="flex justify-between gap-2 text-amber-300">
-                              <span>Consumo:</span>
-                              <span className="font-bold font-mono">{d.consumo.toLocaleString('pt-BR')} {unitStr}</span>
-                            </div>
-                            <div className="flex justify-between gap-2 text-emerald-300">
-                              <span>Valor Total:</span>
-                              <span className="font-bold font-mono">R$ {d.valor_total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                            </div>
-                            <div className="flex justify-between gap-2 text-indigo-300">
-                              <span>Impostos:</span>
-                              <span className="font-bold font-mono">R$ {d.valor_imposto.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                            </div>
-                            {chartMode === 'energia' && (
-                              <>
-                                <div className="flex justify-between gap-2 text-sky-300">
-                                  <span>Energia Injetada:</span>
-                                  <span className="font-bold font-mono">{d.energia_injetada.toLocaleString('pt-BR')} kWh</span>
-                                </div>
-                                <div className="flex justify-between gap-2 text-rose-300">
-                                  <span>Desperdício:</span>
-                                  <span className="font-bold font-mono">{d.desperdicio.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span>
-                                </div>
-                              </>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Multi-Column Group */}
-                        <div className="w-full h-full flex items-end justify-center gap-0.5 sm:gap-1">
-                          {/* Consumo Bar */}
-                          <div
-                            style={{ height: `${hConsumo}%` }}
-                            className={`flex-1 rounded-t-sm transition-all duration-300 ${
-                              d.consumo > 0 
-                                ? (chartMode === 'energia' ? 'bg-amber-400 hover:bg-amber-300' : 'bg-blue-500 hover:bg-blue-400') 
-                                : 'bg-white/5'
-                            }`}
-                            title={`Consumo: ${d.consumo} ${unitStr}`}
-                          />
-                          {/* Valor Total Bar */}
-                          <div
-                            style={{ height: `${hValor}%` }}
-                            className={`flex-1 rounded-t-sm transition-all duration-300 ${d.valor_total > 0 ? 'bg-emerald-400 hover:bg-emerald-300' : 'bg-white/5'}`}
-                            title={`Valor: R$ ${d.valor_total}`}
-                          />
-                          {/* Imposto Bar */}
-                          <div
-                            style={{ height: `${hImposto}%` }}
-                            className={`flex-1 rounded-t-sm transition-all duration-300 ${d.valor_imposto > 0 ? 'bg-indigo-400 hover:bg-indigo-300' : 'bg-white/5'}`}
-                            title={`Imposto: R$ ${d.valor_imposto}`}
-                          />
-                          {/* Celesc Specific Columns */}
-                          {chartMode === 'energia' && (
-                            <>
-                              {/* Energia Injetada Bar */}
-                              <div
-                                style={{ height: `${hInjetada}%` }}
-                                className={`flex-1 rounded-t-sm transition-all duration-300 ${d.energia_injetada > 0 ? 'bg-sky-400 hover:bg-sky-300' : 'bg-white/5'}`}
-                                title={`Energia Injetada: ${d.energia_injetada} kWh`}
-                              />
-                              {/* Desperdício Bar */}
-                              <div
-                                style={{ height: `${hDesperdicio}%` }}
-                                className={`flex-1 rounded-t-sm transition-all duration-300 ${d.desperdicio > 0 ? 'bg-rose-400 hover:bg-rose-300' : 'bg-white/5'}`}
-                                title={`Perdas e penalidades: ${d.desperdicio.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`}
-                              />
-                            </>
-                          )}
-                        </div>
+              {(() => {
+                const METRICAS = (chartMode === 'energia'
+                  ? [['valor', 'Valor pago (R$)'], ['consumo', 'Consumo (kWh)'], ['perdas', 'Perdas e penalidades (R$)'], ['injetada', 'Energia injetada (kWh)']]
+                  : [['valor', 'Valor pago (R$)'], ['consumo', 'Consumo (m³)']]) as [typeof metricaHist, string][];
+                const metrica = METRICAS.some(m => m[0] === metricaHist) ? metricaHist : 'valor';
+                const valorDe = (d: typeof yearlyChartData[number]) => d.count === 0 ? null
+                  : metrica === 'valor' ? d.valor_total : metrica === 'consumo' ? d.consumo : metrica === 'perdas' ? d.desperdicio : d.energia_injetada;
+                const atual = yearlyChartData.map(valorDe), anterior = anoAnteriorChartData.map(valorDe);
+                const emReais = metrica === 'valor' || metrica === 'perdas';
+                const un = chartMode === 'energia' ? 'kWh' : 'm³';
+                const formato = (v: number) => emReais
+                  ? (v >= 1000 ? `R$ ${(v / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} mil` : v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 }))
+                  : `${v.toLocaleString('pt-BR', { maximumFractionDigits: 0 })} ${un}`;
+                // Total do ano contra os mesmos meses do ano anterior (só meses com fatura nos dois).
+                const pares = atual.map((v, i) => [v, anterior[i]] as const).filter(([x, y]) => x !== null && y !== null);
+                const somaA = pares.reduce((acc, [x]) => acc + (x || 0), 0), somaB = pares.reduce((acc, [, y]) => acc + (y || 0), 0);
+                const totalAno = atual.reduce((acc: number, v) => acc + (v || 0), 0);
+                const varAno = somaB > 0 ? somaA / somaB - 1 : null;
+                const cor = metrica === 'perdas' ? '#d55181' : chartMode === 'energia' ? '#c98500' : '#3987e5';
+                return (
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap items-end justify-between gap-3">
+                      <div className="flex flex-wrap gap-1.5">
+                        {METRICAS.map(([k, t]) => (
+                          <button key={k} type="button" onClick={() => setMetricaHist(k)}
+                            className={`px-3 py-1 rounded-full border text-xs font-semibold ${metrica === k ? 'border-indigo-500 bg-indigo-600/30 text-white' : 'border-white/10 text-gray-400 hover:text-white'}`}>{t}</button>
+                        ))}
                       </div>
-                    );
-                  })}
-                </div>
-
-                {/* Month Labels (12 Months) */}
-                <div className="flex justify-between pt-2 px-0.5 text-xs font-bold text-gray-400 font-mono">
-                  {yearlyChartData.map((d) => (
-                    <span key={d.monthIndex} className="flex-1 text-center text-[10px] sm:text-xs">
-                      {d.label}
-                    </span>
-                  ))}
-                </div>
-              </div>
+                      <div className="text-right">
+                        <div className="text-[11px] uppercase tracking-wider text-gray-400 font-bold">Total de {selectedYear}</div>
+                        <div className="text-2xl font-bold text-white tabular-nums">{formato(totalAno)}</div>
+                        {varAno !== null && (
+                          <div className={`text-xs font-bold ${varAno > 0 ? 'text-rose-300' : 'text-emerald-300'}`}>
+                            {varAno > 0 ? '▲ +' : '▼ '}{(varAno * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%
+                            <span className="text-gray-500 font-normal"> vs. {selectedYear - 1}, nos {pares.length} meses com fatura nos dois anos</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <GraficoComparativo rotulos={monthNames} atual={atual} anterior={anterior} nomeAtual={String(selectedYear)} nomeAnterior={`${selectedYear - 1} (mesmo mês)`} cor={cor} formato={formato} />
+                    <p className="text-[11px] text-gray-500">Cada mês mostra {selectedYear} ao lado do mesmo mês de {selectedYear - 1}. ▲/▼ em cima da barra = variação de mais de 20%. Passe o mouse para ver os valores. Escolha a métrica nos botões acima: uma de cada vez, para não misturar R$ com {un}.</p>
+                  </div>
+                );
+              })()}
             </div>
 
             <Relatorios versao={versaoDados} />
