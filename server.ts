@@ -16,7 +16,7 @@ import { ParserCelesc, VERSAO_LEITOR_CELESC } from "./src/utils/ParserCelesc";
 import { lerCelescAgrupadora, VERSAO_LEITOR_AGRUPADORA } from "./src/utils/leitorCelescAgrupadora";
 import { categorizarItens, grupoDoItem, demandaDoMes, custoDisponibilidade, consumoMedidoDoTexto, grupoTensaoDoTexto, diasFaturadosDoTexto } from "./src/utils/analiseCelesc";
 import { compararComHistorico } from "./src/utils/variacao";
-import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres, deleteLancamentosLote, versaoDoBanco, versaoCarregada } from "./src/db/postgres";
+import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres, deleteLancamentosLote, unificarContratosNoBanco, versaoDoBanco, versaoCarregada } from "./src/db/postgres";
 
 dotenv.config();
 
@@ -390,6 +390,9 @@ async function initDatabasePersistence() {
   // as mesmas linhas ao mesmo tempo davam deadlock no Postgres.
   if (postgresHydrated) {
     await reprocessarFaturasCelesc().catch(err => console.error("[DB] Releitura das faturas CELESC falhou:", err?.message || err));
+    // Contratos CELESC duplicados (mesma UC em dois contratos) viram um só antes de qualquer
+    // rotina que dependa de "um código, um contrato".
+    await unificarContratosDuplicados("sistema").catch(err => console.error("[manutenção] Unificação de contratos falhou, nada foi alterado:", err?.message || err));
   }
   autoSyncOrphanRecords();
 }
@@ -589,7 +592,10 @@ function ensureUnidadeAndContract(params: {
   const codnumMatches = (it: ItemDespesa) =>
     (it.codigo_numero && it.codigo_numero.trim().toUpperCase() === cleanCodnum) ||
     (it.codigos_numero_anteriores || []).some(c => c && c.trim().toUpperCase() === cleanCodnum);
-  let item = cleanMedidor
+  // Só a CASAN tem matrícula com dois hidrômetros. Na CELESC uma UC é um contrato: medidor
+  // diferente é troca de medidor (ou o número do layout antigo, "RG-..."), nunca contrato novo —
+  // separar por medidor criou um contrato duplicado para cada UC importada do layout antigo.
+  let item = cleanMedidor && concessionaria === 'CASAN'
     ? db.itens_despesas.find(it =>
         codnumMatches(it) &&
         it.medidor && it.medidor.trim().toUpperCase() === cleanMedidor.toUpperCase())
@@ -1816,6 +1822,126 @@ app.post("/api/unidades/:id/juntar", async (req, res) => {
   saveLocalOnly(db);
   itens.forEach(it => logAudit("itens_despesas", it.id, "UPDATE", usuario, null, it));
   res.json({ unidade: destino, contratos_movidos: itens.length, unidades_removidas: vazias.length });
+});
+
+// Contratos CELESC duplicados: dois ou mais contratos que dividem um código (atual ou anterior)
+// são a mesma UC — na CELESC uma UC é um contrato só; código antigo é recodificação e medidor
+// diferente é troca de medidor. Fica o contrato com a fatura mais recente; os outros entregam
+// seus lançamentos e códigos a ele e são excluídos, com a unidade, se ela ficar vazia. Um grupo
+// em que dois contratos têm lançamento no mesmo mês não é mexido (precisa olhar caso a caso).
+// A CASAN fica de fora: lá a mesma matrícula pode ter dois hidrômetros, um contrato para cada.
+type GrupoDuplicado = { destino: ItemDespesa; origens: ItemDespesa[]; conflito: string[] };
+function contratosDuplicados(): GrupoDuplicado[] {
+  const up = (v?: string) => (v || "").trim().toUpperCase();
+  const celesc = db.itens_despesas.filter(it => it.despesa_id === "1");
+  const meses = new Map<string, string[]>();
+  db.lancamentos.forEach(l => meses.set(l.item_despesa_id, [...(meses.get(l.item_despesa_id) || []), (l.mes_ano || "").substring(0, 7)]));
+  // União por código compartilhado.
+  const pai = new Map<string, string>(celesc.map(it => [it.id, it.id]));
+  const raiz = (id: string): string => (pai.get(id) === id ? id : raiz(pai.get(id)!));
+  const donoDoCodigo = new Map<string, string>();
+  for (const it of celesc) {
+    for (const c of [it.codigo_numero, ...(it.codigos_numero_anteriores || [])].map(up).filter(Boolean)) {
+      const outro = donoDoCodigo.get(c);
+      if (outro) pai.set(raiz(it.id), raiz(outro)); else donoDoCodigo.set(c, it.id);
+    }
+  }
+  const grupos = new Map<string, ItemDespesa[]>();
+  celesc.forEach(it => grupos.set(raiz(it.id), [...(grupos.get(raiz(it.id)) || []), it]));
+  const out: GrupoDuplicado[] = [];
+  for (const membros of grupos.values()) {
+    if (membros.length < 2) continue;
+    const ultimo = (it: ItemDespesa) => (meses.get(it.id) || []).reduce((m, x) => (x > m ? x : m), "");
+    const [destino, ...origens] = [...membros].sort((x, y) => ultimo(y).localeCompare(ultimo(x)) || (meses.get(y.id)?.length || 0) - (meses.get(x.id)?.length || 0));
+    const todos = membros.flatMap(it => meses.get(it.id) || []);
+    const conflito = [...new Set(todos.filter((m, i) => todos.indexOf(m) !== i))].sort();
+    out.push({ destino, origens, conflito });
+  }
+  return out;
+}
+
+function resumoGrupoDuplicado(g: GrupoDuplicado) {
+  const nomeUnidade = (id: string) => { const u = db.unidades.find(x => x.id === id); return u ? `${u.nome} — ${u.endereco}` : ""; };
+  const mesesDe = (it: ItemDespesa) => [...new Set(db.lancamentos.filter(l => l.item_despesa_id === it.id).map(l => (l.mes_ano || "").substring(0, 7)))].sort();
+  return {
+    destino: g.destino.codigo_numero, unidade_destino: nomeUnidade(g.destino.unidade_id), meses_destino: mesesDe(g.destino).length,
+    origens: g.origens.map(o => ({ codigo: o.codigo_numero, medidor: o.medidor, meses: mesesDe(o), unidade: o.unidade_id === g.destino.unidade_id ? "(mesma unidade)" : nomeUnidade(o.unidade_id) })),
+    conflito: g.conflito,
+  };
+}
+
+// Executa a unificação (tudo numa transação só: ou entra inteira no banco, ou nada muda). Roda na
+// inicialização do servidor e pela rota de manutenção.
+async function unificarContratosDuplicados(usuario: string) {
+  const up = (v?: string) => (v || "").trim().toUpperCase();
+  const grupos = contratosDuplicados();
+  const aplicaveis = grupos.filter(g => !g.conflito.length);
+  const com_conflito = grupos.filter(g => g.conflito.length).map(resumoGrupoDuplicado);
+  if (!aplicaveis.length) return { grupos: 0, contratos_excluidos: 0, unidades_excluidas: 0, lancamentos_movidos: 0, unificados: [] as any[], com_conflito };
+  const resumoAntes = new Map(aplicaveis.map(g => [g.destino.id, resumoGrupoDuplicado(g)]));
+  const agora = new Date().toISOString();
+  const idsOrigem = new Set(aplicaveis.flatMap(g => g.origens.map(o => o.id)));
+  const destinoDe = new Map(aplicaveis.flatMap(g => g.origens.map(o => [o.id, g.destino] as const)));
+  const lancs = db.lancamentos.filter(l => idsOrigem.has(l.item_despesa_id));
+  const movidosPorDestino = new Map<string, number>();
+  const antes = {
+    lancs: lancs.map(l => ({ l, id: l.item_despesa_id, em: l.atualizado_em })),
+    destinos: aplicaveis.map(g => ({ d: g.destino, cods: g.destino.codigos_numero_anteriores, em: g.destino.atualizado_em })),
+  };
+  lancs.forEach(l => {
+    const d = destinoDe.get(l.item_despesa_id)!;
+    l.item_despesa_id = d.id; l.atualizado_em = agora;
+    movidosPorDestino.set(d.id, (movidosPorDestino.get(d.id) || 0) + 1);
+  });
+  for (const g of aplicaveis) {
+    const anteriores = new Set((g.destino.codigos_numero_anteriores || []).map(up));
+    g.origens.flatMap(o => [o.codigo_numero, ...(o.codigos_numero_anteriores || [])]).map(up)
+      .filter(c => c && c !== up(g.destino.codigo_numero)).forEach(c => anteriores.add(c));
+    g.destino.codigos_numero_anteriores = [...anteriores];
+    g.destino.atualizado_em = agora;
+  }
+  const idsDestino = new Set(aplicaveis.map(g => g.destino.unidade_id));
+  const unidadesVazias = [...new Set(aplicaveis.flatMap(g => g.origens.map(o => o.unidade_id)))]
+    .filter(id => !idsDestino.has(id) && !db.itens_despesas.some(it => it.unidade_id === id && !idsOrigem.has(it.id)));
+  try {
+    await unificarContratosNoBanco(
+      lancs.map(l => ({ id: l.id, item_despesa_id: l.item_despesa_id, atualizado_em: agora })),
+      aplicaveis.map(g => ({ id: g.destino.id, codigos_numero_anteriores: g.destino.codigos_numero_anteriores || [], atualizado_em: agora })),
+      [...idsOrigem], unidadesVazias);
+  } catch (err) {
+    antes.lancs.forEach(x => { x.l.item_despesa_id = x.id; x.l.atualizado_em = x.em; });
+    antes.destinos.forEach(x => { x.d.codigos_numero_anteriores = x.cods; x.d.atualizado_em = x.em; });
+    throw err;
+  }
+  const origens = db.itens_despesas.filter(it => idsOrigem.has(it.id));
+  const unidades = db.unidades.filter(u => unidadesVazias.includes(u.id));
+  db.itens_despesas = db.itens_despesas.filter(it => !idsOrigem.has(it.id));
+  db.unidades = db.unidades.filter(u => !unidadesVazias.includes(u.id));
+  origens.forEach(o => logAudit("itens_despesas", o.id, "DELETE", usuario, o, null));
+  unidades.forEach(u => logAudit("unidades", u.id, "DELETE", usuario, u, null));
+  aplicaveis.forEach(g => logAudit("itens_despesas", g.destino.id, "UPDATE", usuario, null, g.destino));
+  saveLocalOnly(db);
+  console.log(`[manutenção] Contratos CELESC unificados: ${aplicaveis.length} grupo(s), ${idsOrigem.size} contrato(s) e ${unidadesVazias.length} unidade(s) excluídos, ${lancs.length} lançamento(s) movidos; com conflito (não mexidos): ${com_conflito.length}.`);
+  return {
+    grupos: aplicaveis.length, contratos_excluidos: idsOrigem.size, unidades_excluidas: unidadesVazias.length, lancamentos_movidos: lancs.length,
+    unificados: aplicaveis.map(g => ({ ...resumoAntes.get(g.destino.id), lancamentos_movidos: movidosPorDestino.get(g.destino.id) || 0 })), com_conflito,
+  };
+}
+
+// Sem {"confirmar":"UNIFICAR"} só simula: lista os grupos que seriam unificados.
+app.post("/api/manutencao/unificar-contratos", async (req, res) => {
+  const usuario = req.headers["x-user"] as string || "admin";
+  if (req.body?.confirmar !== "UNIFICAR") {
+    const grupos = contratosDuplicados(), aplicaveis = grupos.filter(g => !g.conflito.length);
+    return res.json({ simulacao: true, grupos: aplicaveis.length, contratos_a_excluir: aplicaveis.reduce((a, g) => a + g.origens.length, 0),
+      com_conflito: grupos.filter(g => g.conflito.length).map(resumoGrupoDuplicado), lista: aplicaveis.map(resumoGrupoDuplicado) });
+  }
+  try {
+    res.json({ simulacao: false, ...(await unificarContratosDuplicados(usuario)) });
+  } catch (err: any) {
+    console.error("[manutenção] Unificação de contratos falhou, nada foi alterado:", err?.message || err);
+    res.status(503).json({ error: "Não foi possível gravar a unificação no banco de dados; nada foi alterado. Tente de novo em alguns segundos." });
+  }
 });
 
 // Tira um contrato de uma unidade agrupada e devolve para uma unidade própria (desfaz um "juntar").

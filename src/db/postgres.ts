@@ -629,6 +629,45 @@ export async function deleteRowFromPostgres(tableName: string, id: string): Prom
   }
 }
 
+// Unificação de contratos duplicados numa transação só (tudo ou nada): os lançamentos mudam de
+// contrato, os contratos que ficam recebem os códigos dos outros, e os contratos e unidades que
+// ficaram vazios saem. Um comando por tabela, para não pagar a latência do banco a cada linha.
+export async function unificarContratosNoBanco(
+  lancamentos: { id: string; item_despesa_id: string; atualizado_em: string }[],
+  destinos: { id: string; codigos_numero_anteriores: string[]; atualizado_em: string }[],
+  itensExcluir: string[],
+  unidadesExcluir: string[],
+): Promise<void> {
+  const p = getPool();
+  if (!p) return;
+  const client = await connectWithRetry(p);
+  try {
+    await client.query('BEGIN');
+    if (lancamentos.length) {
+      await client.query(
+        `UPDATE lancamentos l SET item_despesa_id = v.item, atualizado_em = v.em
+           FROM unnest($1::text[], $2::text[], $3::text[]) AS v(id, item, em) WHERE l.id = v.id`,
+        [lancamentos.map(x => x.id), lancamentos.map(x => x.item_despesa_id), lancamentos.map(x => x.atualizado_em)]);
+    }
+    if (destinos.length) {
+      await client.query(
+        `UPDATE itens_despesas i SET codigos_numero_anteriores = v.cods::jsonb, atualizado_em = v.em
+           FROM unnest($1::text[], $2::text[], $3::text[]) AS v(id, cods, em) WHERE i.id = v.id`,
+        [destinos.map(x => x.id), destinos.map(x => JSON.stringify(x.codigos_numero_anteriores)), destinos.map(x => x.atualizado_em)]);
+    }
+    if (itensExcluir.length) await client.query(`DELETE FROM itens_despesas WHERE id = ANY($1)`, [itensExcluir]);
+    if (unidadesExcluir.length) await client.query(`DELETE FROM unidades WHERE id = ANY($1)`, [unidadesExcluir]);
+    const nova = await marcarAlteracao(client);
+    await client.query('COMMIT');
+    registrarVersaoPropria(nova);
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 // Exclui um pedaço de lançamentos (e os documentos_processados vinculados/alternativos) numa
 // única conexão, em vez de 1 conexão por item — mesmo motivo da grade de upsert em lote: cada
 // ida-e-volta ao banco carrega o custo total da latência até o Neon, então excluir 50 itens de
