@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowDown, ArrowUp, Download, Printer, Sparkles, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Download, Printer, Sparkles, X, SlidersHorizontal } from "lucide-react";
 import { Grupo, GRUPOS_PERDA, NOME_GRUPO, TributosFatura, DemandaDoMes, FaixaDemanda, faixaDemanda, simularDemandaIdeal } from "../utils/analiseCelesc";
 import { compararComHistorico, TEXTO_ALERTA, ResultadoVariacao, Comparacao } from "../utils/variacao";
+import { PREMISSAS, Contrato12, agregarContratos, precoMedioB, candidatosSolar, candidatosCapacitor, candidatosBOptante, mercadoLivre, CandidatoSolar, CandidatoCapacitor, CandidatoBOptante } from "../utils/oportunidades";
 
 type Linha = {
   id: string; mes: string; contrato_id: string; codigo: string; concessionaria: "CASAN" | "CELESC";
@@ -49,9 +50,18 @@ const valorGrupos = (l: Linha, gs: readonly Grupo[]) => (l.grupos ? gs.reduce((a
 const perdasDe = (l: Linha) => valorGrupos(l, GRUPOS_PERDA) + (l.disponibilidade?.valor || 0);
 // As UCs da CELESC vêm todas como "MUNICIPIO DE RIO DO SUL" até serem classificadas: o endereço
 // vai junto em toda lista para dar para reconhecer o local.
-const NomeUnidade = ({ nome, endereco }: { nome: string; endereco: string }) => (
-  <div><div className="text-white">{nome}</div>{endereco && <div className="text-[10px] text-gray-500">{endereco}</div>}</div>
-);
+// Nome genérico ("MUNICIPIO DE RIO DO SUL") não diz qual é o lugar: aí o endereço vira o título.
+const NOME_GENERICO = /^(MUNIC[IÍ]PIO|PREFEITURA MUNICIPAL) DE RIO DO SUL$|^PMRS$/i;
+const nomeDaUnidade = (nome: string, endereco: string) => (NOME_GENERICO.test((nome || "").trim()) && endereco ? endereco : nome);
+const NomeUnidade = ({ nome, endereco }: { nome: string; endereco: string }) => {
+  const generico = NOME_GENERICO.test((nome || "").trim()) && !!endereco;
+  return (
+    <div className="min-w-[11rem]">
+      <div className="text-white">{generico ? endereco : nome}</div>
+      {generico ? <div className="text-[10px] text-amber-500/80">nome da unidade a cadastrar</div> : endereco && <div className="text-[10px] text-gray-500">{endereco}</div>}
+    </div>
+  );
+};
 const RotulosMeses = ({ meses }: { meses: string[] }) => (
   <div className="flex flex-wrap gap-1">{meses.map(m => <span key={m} className="w-11 text-center text-[9px] text-gray-500 normal-case">{rotuloMes(m)}</span>)}</div>
 );
@@ -605,16 +615,129 @@ function PainelUnidade({ unidadeId, todas, deInicial, ateInicial, onClose }: {
 }
 
 // ---------------------------------------------------------------------------------------------
+// "O que fazer": cada ação vira um cartão com andamento (status, responsável, anotação) gravado
+// no banco. O id da ação é estável (tipo + contrato, e o mês nos alertas), então o andamento
+// continua com a ação nos meses seguintes.
+type StatusAcao = "novo" | "em_andamento" | "resolvido" | "descartado";
+type Acompanhamento = { id: string; status: StatusAcao; responsavel?: string; prazo?: string; observacao?: string; atualizado_em?: string; usuario?: string };
+const STATUS_ACAO: [StatusAcao, string, string][] = [
+  ["novo", "Novo", "#fab219"], ["em_andamento", "Em andamento", "#3987e5"], ["resolvido", "Resolvido", "#0ca30c"], ["descartado", "Descartado", "#898781"],
+];
+const fechada = (s?: StatusAcao) => s === "resolvido" || s === "descartado";
+
+type Acao = {
+  id: string; quando: "agora" | "economia"; tipo: string; unidade_id?: string; contrato_id?: string; mes?: string;
+  unidade: string; endereco: string; codigo: string; titulo: string; detalhe: string; valor: number; rotulo_valor: string;
+  investimento?: number; // obra que precisa de verba (usina solar); o resto é pedido, ajuste ou serviço pequeno
+};
+
+function SeletorStatus({ status, onChange }: { status: StatusAcao; onChange: (s: StatusAcao) => void }) {
+  const cor = STATUS_ACAO.find(x => x[0] === status)![2];
+  return (
+    <span className="inline-flex items-center gap-1.5" onClick={ev => ev.stopPropagation()}>
+      <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ background: cor }} />
+      <select value={status} onChange={ev => onChange(ev.target.value as StatusAcao)} className="rounded-md px-2 py-1 text-[11px] font-bold">
+        {STATUS_ACAO.map(([k, t]) => <option key={k} value={k}>{t}</option>)}
+      </select>
+    </span>
+  );
+}
+
+function CartaoAcao({ a, acomp, onSalvar, onAbrir }: {
+  a: Acao; acomp?: Acompanhamento; onSalvar: (a: Acao, patch: Partial<Acompanhamento>) => void; onAbrir: () => void; key?: string;
+}) {
+  const [resp, setResp] = useState(acomp?.responsavel || "");
+  const [obs, setObs] = useState(acomp?.observacao || "");
+  useEffect(() => { setResp(acomp?.responsavel || ""); setObs(acomp?.observacao || ""); }, [acomp?.responsavel, acomp?.observacao]);
+  const status = acomp?.status || "novo";
+  const campo = "bg-[#141414] border border-white/10 rounded-md px-2 py-1 text-[11px] text-white placeholder:text-gray-600";
+  return (
+    <div className={`bg-[#141414] border rounded-xl p-4 flex flex-col gap-2 ${fechada(status) ? "border-white/5 opacity-60" : "border-white/10"}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wider font-bold text-gray-400">
+            <span className="px-1.5 py-0.5 rounded border border-white/15">{a.tipo}</span>{a.mes && <span>{rotuloMes(a.mes)}</span>}
+          </div>
+          <div className="text-white font-bold text-sm mt-1.5 leading-snug">{a.titulo}</div>
+          {a.unidade && (
+            <button type="button" onClick={onAbrir} className="text-left mt-1 text-xs hover:underline">
+              <NomeUnidade nome={a.unidade} endereco={a.endereco} />
+              {a.codigo && <div className="text-[10px] font-mono text-gray-500">{a.codigo}</div>}
+            </button>
+          )}
+        </div>
+        <div className="text-right shrink-0">
+          <div className={`text-lg font-bold font-mono tabular-nums ${a.quando === "agora" ? "text-rose-300" : "text-emerald-300"}`}>{fmtR(a.valor)}</div>
+          <div className="text-[10px] text-gray-500">{a.rotulo_valor}</div>
+          {a.investimento ? <div className="text-[10px] text-amber-400/90">investimento {fmtR(a.investimento)}</div> : null}
+        </div>
+      </div>
+      <p className="text-xs text-gray-400 leading-relaxed">{a.detalhe}</p>
+      <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-white/5 print:hidden">
+        <SeletorStatus status={status} onChange={s => onSalvar(a, { status: s })} />
+        <input value={resp} onChange={ev => setResp(ev.target.value)} onBlur={() => resp !== (acomp?.responsavel || "") && onSalvar(a, { responsavel: resp })}
+          placeholder="Responsável" className={`${campo} w-36`} />
+        <input value={obs} onChange={ev => setObs(ev.target.value)} onBlur={() => obs !== (acomp?.observacao || "") && onSalvar(a, { observacao: obs })}
+          placeholder="Anotação (ex.: vistoria marcada para 10/10)" className={`${campo} flex-1 min-w-[12rem]`} />
+      </div>
+      {acomp?.atualizado_em && <div className="text-[10px] text-gray-600">Atualizado em {new Date(acomp.atualizado_em).toLocaleDateString("pt-BR")}{acomp.usuario ? ` por ${acomp.usuario}` : ""}</div>}
+    </div>
+  );
+}
+
+// Indicador grande com a variação contra os mesmos meses do ano anterior.
+function Kpi({ titulo, valor, detalhe, variacao, comparado }: { titulo: string; valor: string; detalhe?: React.ReactNode; variacao?: number | null; comparado?: string; key?: string }) {
+  const sobe = (variacao ?? 0) > 0;
+  return (
+    <div className="bg-[#141414] border border-white/10 rounded-xl p-4">
+      <div className="text-[11px] uppercase tracking-wider text-gray-400 font-bold">{titulo}</div>
+      <div className="text-xl sm:text-2xl font-bold text-white mt-1 tabular-nums break-words">{valor}</div>
+      {variacao !== undefined && variacao !== null && isFinite(variacao) && (
+        <div className={`text-xs font-bold mt-1 ${sobe ? "text-rose-300" : "text-emerald-300"}`}>
+          {sobe ? "▲" : "▼"} {fmtPct(variacao)} <span className="text-gray-500 font-normal">{comparado}</span>
+        </div>
+      )}
+      {detalhe && <div className="text-[11px] text-gray-400 mt-1">{detalhe}</div>}
+    </div>
+  );
+}
+
+// Compara o período com os mesmos meses do ano anterior, por concessionária e só nos meses que
+// existem nos dois anos (assim um mês sem fatura não vira "queda").
+function comparaAnoAnterior(linhas: Linha[], periodo: string[], f: (l: Linha) => number) {
+  const menos12 = (m: string) => `${Number(m.substring(0, 4)) - 1}${m.substring(4)}`;
+  let atual = 0, anterior = 0, meses = 0;
+  for (const conc of ["CELESC", "CASAN"] as const) {
+    const xs = linhas.filter(l => l.concessionaria === conc);
+    const tem = new Set(xs.map(l => l.mes));
+    for (const m of periodo) {
+      if (!tem.has(m) || !tem.has(menos12(m))) continue;
+      atual += soma(xs.filter(l => l.mes === m), f);
+      anterior += soma(xs.filter(l => l.mes === menos12(m)), f);
+      meses++;
+    }
+  }
+  return { variacao: anterior > 0 ? atual / anterior - 1 : null, meses };
+}
+
 const ABAS = [
-  ["geral", "Visão geral"], ["unidades", "Unidades"], ["perdas", "Perdas e penalidades"], ["demanda", "Demanda (alta tensão)"],
-  ["tributos", "Tributos"], ["secretarias", "Secretarias"], ["alertas", "Alertas"], ["solar", "Energia solar"],
+  ["acoes", "O que fazer"], ["resumo", "Resumo"], ["unidades", "Unidades"], ["alertas", "Alertas"], ["economia", "Economia"],
 ] as const;
 type Aba = typeof ABAS[number][0];
+const SECOES = [
+  ["perdas", "Perdas e penalidades"], ["demanda", "Demanda"], ["solar", "Energia solar"], ["capacitores", "Capacitores"],
+  ["contrato", "B optante e mercado livre"], ["tributos", "Tributos"],
+] as const;
+type Secao = typeof SECOES[number][0];
 
 export default function Relatorios({ versao }: { versao: number }) {
   const [base, setBase] = useState<Base | null>(null);
   const [erro, setErro] = useState("");
-  const [aba, setAba] = useState<Aba>("geral");
+  const [aba, setAba] = useState<Aba>("acoes");
+  const [secao, setSecao] = useState<Secao>("perdas");
+  const [porSecretaria, setPorSecretaria] = useState(false);
+  const [filtrosAbertos, setFiltrosAbertos] = useState(false);
+  const [mostrarConcluidas, setMostrarConcluidas] = useState(false);
   const [de, setDe] = useState("");
   const [ate, setAte] = useState("");
   const [conc, setConc] = useState<"" | "CELESC" | "CASAN">("");
@@ -622,11 +745,32 @@ export default function Relatorios({ versao }: { versao: number }) {
   const [tensao, setTensao] = useState<"" | "A" | "B">("");
   const [busca, setBusca] = useState("");
   const [unidadeAberta, setUnidadeAberta] = useState<string | null>(null);
+  const [acomps, setAcomps] = useState<Record<string, Acompanhamento>>({});
+  const [erroAcomp, setErroAcomp] = useState("");
 
   useEffect(() => {
     fetch("/api/relatorios/base").then(r => r.json()).then((b: Base) => { setBase(b); setErro(""); })
       .catch(() => setErro("Não foi possível carregar os dados dos relatórios."));
+    fetch("/api/acompanhamentos").then(r => (r.ok ? r.json() : [])).then((xs: Acompanhamento[]) => setAcomps(Object.fromEntries(xs.map(x => [x.id, x])))).catch(() => {});
   }, [versao]);
+
+  const salvarAcomp = async (a: Acao, patch: Partial<Acompanhamento>) => {
+    const antes = acomps[a.id];
+    setAcomps(m => ({ ...m, [a.id]: { ...(m[a.id] || { id: a.id, status: "novo" }), ...patch } }));
+    setErroAcomp("");
+    try {
+      const r = await fetch(`/api/acompanhamentos/${encodeURIComponent(a.id)}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...patch, tipo: a.tipo, contrato_id: a.contrato_id, unidade_id: a.unidade_id, mes: a.mes, titulo: a.titulo }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || "Não foi possível gravar.");
+      setAcomps(m => ({ ...m, [a.id]: d }));
+    } catch (e: any) {
+      setAcomps(m => { const n = { ...m }; if (antes) n[a.id] = antes; else delete n[a.id]; return n; });
+      setErroAcomp(e.message);
+    }
+  };
 
   const todas: Linha[] = base?.linhas || [];
   const mesesDisp: string[] = useMemo(() => [...new Set(todas.map(l => l.mes).filter(Boolean))].sort(), [todas]);
@@ -642,7 +786,87 @@ export default function Relatorios({ versao }: { versao: number }) {
   const filtradasTodas: Linha[] = useMemo(() => todas.filter(filtro), [todas, conc, secretariaId, tensao, busca]);
   const ls: Linha[] = useMemo(() => filtradasTodas.filter(l => l.mes >= deSel && l.mes <= ateSel), [filtradasTodas, deSel, ateSel]);
   const resumo: Resumo[] = useMemo(() => resumoPorPeriodo(ls, periodo, "meses"), [ls, periodo]);
-  const recs: Recomendacao[] = useMemo(() => recomendacoes(ls, todas), [ls, todas]);
+  const historicoDe: Map<string, Linha[]> = useMemo(() => {
+    const m = new Map<string, Linha[]>();
+    todas.forEach(l => m.set(l.contrato_id, [...(m.get(l.contrato_id) || []), l]));
+    return m;
+  }, [todas]);
+
+  // Oportunidades recorrentes: sempre nos últimos 12 meses com fatura (independe do período).
+  const ult12: Linha[] = useMemo(() => {
+    const ini = mesesDisp[Math.max(0, mesesDisp.length - 12)] || "";
+    return filtradasTodas.filter(l => l.mes >= ini);
+  }, [filtradasTodas, mesesDisp]);
+  const cs12: Contrato12[] = useMemo(() => agregarContratos(ult12), [ult12]);
+  const precoB: number = useMemo(() => precoMedioB(agregarContratos(todas.filter(l => l.mes >= (mesesDisp[Math.max(0, mesesDisp.length - 12)] || "")))), [todas, mesesDisp]);
+  const solar: CandidatoSolar[] = useMemo(() => candidatosSolar(cs12), [cs12]);
+  const caps: CandidatoCapacitor[] = useMemo(() => candidatosCapacitor(cs12), [cs12]);
+  const bopt: CandidatoBOptante[] = useMemo(() => candidatosBOptante(cs12, precoB), [cs12, precoB]);
+  const ml = useMemo(() => mercadoLivre(cs12), [cs12]);
+  const recs12: Recomendacao[] = useMemo(() => recomendacoes(ult12, todas), [ult12, todas]);
+
+  // Alertas do mês analisado (o último do período).
+  type Avaliado = { l: Linha; faixa: FaixaConsumo; r: ResultadoVariacao };
+  const avaliados: Avaliado[] = useMemo(() => ls.filter(l => l.mes === ateSel)
+    .map(l => ({ l, ...faixaConsumoDoMes(l, historicoDe.get(l.contrato_id) || []) })).filter(x => x.r.alerta)
+    .sort((x, y) => (x.r.alerta === "queda" ? 1 : 0) - (y.r.alerta === "queda" ? 1 : 0) || Math.abs(y.r.impacto_valor) - Math.abs(x.r.impacto_valor)), [ls, ateSel, historicoDe]);
+
+  const acoes: Acao[] = useMemo(() => {
+    const out: Acao[] = [];
+    const un = (l: Linha) => (l.concessionaria === "CASAN" ? "m³" : "kWh");
+    for (const { l, r } of avaliados) {
+      if (r.alerta === "queda") continue;
+      const base = { quando: "agora" as const, unidade_id: l.unidade_id, contrato_id: l.contrato_id, mes: l.mes, unidade: l.unidade_nome, endereco: l.unidade_endereco,
+        codigo: `${l.concessionaria === "CASAN" ? "💧" : "⚡"} ${l.codigo}`, id: `alerta:${l.contrato_id}:${l.mes}` };
+      const comp = [r.mensal && `mês anterior ${fmtN(r.mensal.ref_consumo_30d)} ${un(l)}`, r.anual && `mesmo mês do ano passado ${fmtN(r.anual.ref_consumo_30d)} ${un(l)}`].filter(Boolean).join("; ");
+      const consumo = `Consumo de ${fmtN(l.consumo)} ${un(l)} (${comp || "sem histórico"}).`;
+      if (r.alerta === "zerado") {
+        out.push({ ...base, tipo: "Consumo zerado", titulo: "Verificar o medidor ou se a unidade fechou", valor: Math.abs(r.ref_valor_30d || 0), rotulo_valor: "valor normal por mês",
+          detalhe: `${consumo} Medidor parado gera cobrança retroativa depois; unidade fechada pode ter a ligação encerrada.` });
+      } else if (r.alerta === "valor") {
+        out.push({ ...base, tipo: "Cobrança", titulo: "Conferir a fatura: o valor subiu sem subir o consumo", valor: r.impacto_valor, rotulo_valor: "a mais neste mês",
+          detalhe: `${consumo} Pode ser tarifa, multa, serviço ou obra cobrada na conta — abra os itens da fatura.` });
+      } else if (l.concessionaria === "CASAN" && r.mensal?.alerta === "alta") {
+        out.push({ ...base, tipo: "Possível vazamento", titulo: "Vistoriar: a água subiu de um mês para o outro", valor: r.impacto_valor, rotulo_valor: "a mais neste mês",
+          detalhe: `${consumo} Com o conserto comprovado, dá para pedir à CASAN a revisão da conta pela média.` });
+      } else if (r.mensal?.alerta === "alta") {
+        out.push({ ...base, tipo: "Consumo", titulo: "Verificar o que passou a gastar mais energia neste mês", valor: r.impacto_valor, rotulo_valor: "a mais neste mês",
+          detalhe: `${consumo} Equipamento ligado direto, ar-condicionado novo ou defeito.` });
+      } else {
+        out.push({ ...base, tipo: "Consumo", titulo: "Entender o aumento em relação ao ano passado", valor: r.impacto_valor, rotulo_valor: "a mais neste mês",
+          detalhe: `${consumo} Mudança de uso, ampliação ou ligação nova.` });
+      }
+    }
+    for (const r of recs12) {
+      if (r.tipo === "Energia reativa") continue; // tratado em "capacitores", com o critério de 2 anos
+      const contrato = ult12.find(l => l.codigo === r.codigo)?.contrato_id;
+      out.push({ quando: "economia", id: `${r.tipo}:${contrato || r.codigo}`, tipo: r.tipo, unidade_id: r.unidade_id, contrato_id: contrato, unidade: r.unidade, endereco: r.endereco,
+        codigo: `⚡ ${r.codigo}`, titulo: r.titulo, detalhe: r.detalhe, valor: r.economia, rotulo_valor: "por ano" });
+    }
+    for (const c of caps.filter(c => c.solucao !== "nao_compensa")) {
+      out.push({ quando: "economia", id: `capacitor:${c.contrato_id}`, tipo: "Capacitores", unidade_id: c.unidade_id, contrato_id: c.contrato_id, unidade: c.unidade, endereco: c.endereco,
+        codigo: `⚡ ${c.codigo}`, valor: c.reativo, rotulo_valor: "por ano",
+        titulo: c.solucao === "banco" ? "Instalar banco de capacitores (fator de potência)" : "Conferir se há capacitor ligado à noite (temporizador)",
+        detalhe: `Paga ${fmtR(c.reativo)}/ano de energia reativa. Para se pagar em ${PREMISSAS.capacitor_payback_anos} anos, o serviço pode custar até ${fmtR(c.limite_investimento)}. ` +
+          (c.solucao === "banco" ? `Banco fixo pequeno: ${fmtR(c.custo[0])} a ${fmtR(c.custo[1])} instalado — peça orçamento.` : `Banco novo não se paga nesse prazo; primeiro peça à CELESC a memória de massa e veja se o excesso é à noite (capacitor sobrando): um temporizador (${fmtR(c.custo[0])} a ${fmtR(c.custo[1])}) resolve.`) });
+    }
+    for (const c of bopt) {
+      out.push({ quando: "economia", id: `boptante:${c.contrato_id}`, tipo: "B optante", unidade_id: c.unidade_id, contrato_id: c.contrato_id, unidade: c.unidade, endereco: c.endereco,
+        codigo: `⚡ ${c.codigo}`, valor: c.economia, rotulo_valor: "por ano", titulo: "Pedir faturamento como grupo B (sem demanda contratada)",
+        detalhe: `Paga ${fmtR(c.custo_a)}/ano como alta tensão; pela tarifa média do grupo B (${fmtN(precoB, 4)} R$/kWh) pagaria ${fmtR(c.custo_b)}. Só vale se o transformador for de até 112,5 kVA — vistoriar antes.` });
+    }
+    for (const c of solar.slice(0, 5)) {
+      out.push({ quando: "economia", id: `solar:${c.contrato_id}`, tipo: "Energia solar", unidade_id: c.unidade_id, contrato_id: c.contrato_id, unidade: c.unidade, endereco: c.endereco,
+        codigo: `⚡ ${c.codigo}`, valor: c.economia, rotulo_valor: "por ano", investimento: c.investimento, titulo: `Avaliar usina solar de cerca de ${fmtN(c.kwp, 1)} kWp`,
+        detalhe: `Consome ${fmtN(c.kwh)} kWh/ano${c.limitada ? ` (a usina fica no limite da microgeração, ${PREMISSAS.solar_kwp_max} kWp, e cobre só parte do consumo)` : ""}. Investimento estimado ${fmtR(c.investimento)}, retorno em ${fmtN(c.payback, 1)} anos, precisa de ~${fmtN(c.area_m2)} m² de telhado.` });
+    }
+    if (ml && ml.economia[0] >= 1000) {
+      out.push({ quando: "economia", id: "mercado-livre", tipo: "Mercado livre", unidade: `${ml.ucs} UC(s) de alta tensão`, endereco: "", codigo: "",
+        valor: ml.economia[0], rotulo_valor: `por ano (até ${fmtR(ml.economia[1])})`, titulo: "Comprar a energia do grupo A no mercado livre",
+        detalhe: `${fmtN(ml.kwh)} kWh/ano. A energia (TE) e as bandeiras somam ${fmtR(ml.base)}/ano; com ${fmtN(PREMISSAS.mercado_livre_desconto[0] * 100)}% a ${fmtN(PREMISSAS.mercado_livre_desconto[1] * 100)}% de desconto do varejista, economia de ${fmtR(ml.economia[0])} a ${fmtR(ml.economia[1])}. Exige licitação.` });
+    }
+    return out;
+  }, [avaliados, recs12, caps, bopt, solar, ml, ult12, precoB]);
 
   if (erro) return <div className="bg-[#0f0f0f] p-6 rounded-xl border border-rose-500/30 text-rose-300 text-sm">{erro}</div>;
   if (!base) return <div className="bg-[#0f0f0f] p-6 rounded-xl border border-white/10 text-gray-400 text-sm">Carregando relatórios…</div>;
@@ -652,6 +876,8 @@ export default function Relatorios({ versao }: { versao: number }) {
   const sel = "bg-[#141414] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white";
   const tituloPeriodo = deSel ? `${rotuloMes(deSel)} a ${rotuloMes(ateSel)}` : "";
   const abrir = (id: string) => setUnidadeAberta(id);
+  const un = (l: Linha) => (l.concessionaria === "CASAN" ? "m³" : "kWh");
+  const filtrosAtivos = [conc, secretariaId, tensao, busca].filter(Boolean).length;
 
   const filtros = (
     <div className="space-y-2 print:hidden">
@@ -665,35 +891,88 @@ export default function Relatorios({ versao }: { versao: number }) {
             className={`px-2.5 py-1 rounded-md border text-xs ${deSel.startsWith(an) && ateSel.startsWith(an) ? "border-indigo-500 text-white bg-indigo-600/30" : "border-white/10 text-gray-300 hover:bg-white/5"}`}>{an}</button>
         ))}
         <button type="button" onClick={() => { setDe(mesesDisp[Math.max(0, mesesDisp.length - 12)]); setAte(ultimo); }} className="px-2.5 py-1 rounded-md border border-white/10 text-xs text-gray-300 hover:bg-white/5">Últimos 12 meses</button>
+        <button type="button" onClick={() => setFiltrosAbertos(v => !v)}
+          className={`ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs ${filtrosAtivos ? "border-indigo-500 text-white bg-indigo-600/30" : "border-white/10 text-gray-300 hover:bg-white/5"}`}>
+          <SlidersHorizontal className="h-3.5 w-3.5" /> Filtrar{filtrosAtivos ? ` (${filtrosAtivos})` : ""}
+        </button>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <select value={conc} onChange={ev => setConc(ev.target.value as any)} className={sel}><option value="">Água e energia</option><option value="CELESC">⚡ Só CELESC</option><option value="CASAN">💧 Só CASAN</option></select>
-        <select value={secretariaId} onChange={ev => setSecretariaId(ev.target.value)} className={`${sel} max-w-xs`}>
-          <option value="">Todas as secretarias</option>
-          {base.secretarias.filter(s => todas.some(l => l.secretaria_id === s.id)).sort((x, y) => x.nome.localeCompare(y.nome)).map(s => <option key={s.id} value={s.id}>{s.nome}</option>)}
-        </select>
-        <select value={tensao} onChange={ev => setTensao(ev.target.value as any)} className={sel}><option value="">Alta e baixa tensão</option><option value="A">Só alta tensão (grupo A)</option><option value="B">Só baixa tensão (grupo B)</option></select>
-        <input value={busca} onChange={ev => setBusca(ev.target.value)} placeholder="Buscar unidade, endereço ou código…" className="bg-white/5 border border-white/15 rounded-lg px-3 py-1.5 text-xs text-white w-64" />
-        {(conc || secretariaId || tensao || busca) && <button type="button" onClick={() => { setConc(""); setSecretariaId(""); setTensao(""); setBusca(""); }} className="text-xs text-indigo-300 underline">limpar filtros</button>}
-      </div>
+      {(filtrosAbertos || filtrosAtivos > 0) && (
+        <div className="flex flex-wrap items-center gap-2 bg-black/30 border border-white/10 rounded-lg p-2">
+          <select value={conc} onChange={ev => setConc(ev.target.value as any)} className={sel}><option value="">Água e energia</option><option value="CELESC">⚡ Só energia (CELESC)</option><option value="CASAN">💧 Só água (CASAN)</option></select>
+          <select value={secretariaId} onChange={ev => setSecretariaId(ev.target.value)} className={`${sel} max-w-xs`}>
+            <option value="">Todas as secretarias</option>
+            {base.secretarias.filter(s => todas.some(l => l.secretaria_id === s.id)).sort((x, y) => x.nome.localeCompare(y.nome)).map(s => <option key={s.id} value={s.id}>{s.nome}</option>)}
+          </select>
+          <select value={tensao} onChange={ev => setTensao(ev.target.value as any)} className={sel}><option value="">Alta e baixa tensão</option><option value="A">Só alta tensão (grupo A)</option><option value="B">Só baixa tensão (grupo B)</option></select>
+          <input value={busca} onChange={ev => setBusca(ev.target.value)} placeholder="Buscar unidade, endereço ou código…" className="bg-white/5 border border-white/15 rounded-lg px-3 py-1.5 text-xs text-white w-64" />
+          {filtrosAtivos > 0 && <button type="button" onClick={() => { setConc(""); setSecretariaId(""); setTensao(""); setBusca(""); }} className="text-xs text-indigo-300 underline">limpar filtros</button>}
+        </div>
+      )}
+    </div>
+  );
+
+  // Indicadores do topo (O que fazer e Resumo).
+  const total = soma(ls, l => l.valor_total);
+  const varTotal = comparaAnoAnterior(filtradasTodas, periodo, l => l.valor_total);
+  const varPerdas = comparaAnoAnterior(filtradasTodas.filter(l => l.concessionaria === "CELESC"), periodo, perdasDe);
+  const abertasAgora = acoes.filter(x => x.quando === "agora" && !fechada(acomps[x.id]?.status));
+  // Ações da mesma unidade são alternativas (ex.: ajustar a demanda OU virar grupo B): na soma
+  // entra só a maior de cada unidade.
+  const economiaSemSobrepor = (xs: Acao[]) => {
+    const porContrato = new Map<string, number>();
+    let semContrato = 0;
+    xs.forEach(x => { if (!x.contrato_id) semContrato += x.valor; else porContrato.set(x.contrato_id, Math.max(porContrato.get(x.contrato_id) || 0, x.valor)); });
+    return semContrato + [...porContrato.values()].reduce((s2, v) => s2 + v, 0);
+  };
+  const economiaAberta = acoes.filter(x => x.quando === "economia" && acomps[x.id]?.status !== "descartado");
+  const comparado = (n: number) => `vs. os mesmos ${n === 1 ? "mês" : "meses"} do ano anterior`;
+  const kpis = (
+    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+      <Kpi titulo="Gasto no período" valor={fmtR(total)} variacao={varTotal.variacao} comparado={comparado(varTotal.meses)}
+        detalhe={<>⚡ {fmtR(soma(e, l => l.valor_total))} · 💧 {fmtR(soma(a, l => l.valor_total))}</>} />
+      <Kpi titulo="Perdas e penalidades" valor={fmtR(soma(e, perdasDe))} variacao={varPerdas.variacao} comparado={comparado(varPerdas.meses)}
+        detalhe="ultrapassagem, demanda sem uso, reativo, mínimo sem consumo, multas" />
+      <Kpi titulo="Alertas abertos" valor={String(abertasAgora.length)} detalhe={`de ${rotuloMes(ateSel)} · ${acoes.filter(x => x.quando === "agora" && acomps[x.id]?.status === "em_andamento").length} em andamento`} />
+      <Kpi titulo="Economia possível por ano" valor={fmtR(economiaSemSobrepor(economiaAberta.filter(x => !fechada(acomps[x.id]?.status) && !x.investimento)))}
+        detalhe={<>sem obra: pedidos à CELESC, ajustes e serviços pequenos. Com usinas solares, mais {fmtR(soma(economiaAberta.filter(x => !fechada(acomps[x.id]?.status) && x.investimento), x => x.valor))}/ano (investimento de {fmtR(soma(economiaAberta.filter(x => !fechada(acomps[x.id]?.status) && x.investimento), x => x.investimento || 0))}).</>} />
     </div>
   );
 
   let conteudo: React.ReactNode = null;
 
-  if (aba === "geral") {
-    const totalPerdas = soma(e, perdasDe);
+  if (aba === "acoes") {
+    const lista = (q: "agora" | "economia") => acoes.filter(x => x.quando === q && (mostrarConcluidas || !fechada(acomps[x.id]?.status)))
+      .sort((x, y) => Math.abs(y.valor) - Math.abs(x.valor));
+    const concluidas = acoes.filter(x => fechada(acomps[x.id]?.status)).length;
+    const grade = (xs: Acao[], vazio: string) => xs.length
+      ? <div className="grid md:grid-cols-2 gap-3">{xs.map(x => <CartaoAcao key={x.id} a={x} acomp={acomps[x.id]} onSalvar={salvarAcomp} onAbrir={() => x.unidade_id && abrir(x.unidade_id)} />)}</div>
+      : <div className="text-xs text-gray-500 bg-[#141414] border border-white/10 rounded-lg p-4">{vazio}</div>;
+    conteudo = (
+      <div className="space-y-6">
+        {kpis}
+        {erroAcomp && <div className="text-xs text-rose-300">{erroAcomp}</div>}
+        <div className="flex items-center justify-end">
+          <label className="flex items-center gap-2 text-xs text-gray-400 print:hidden">
+            <input type="checkbox" checked={mostrarConcluidas} onChange={ev => setMostrarConcluidas(ev.target.checked)} /> Mostrar resolvidas e descartadas ({concluidas})
+          </label>
+        </div>
+        <div className="space-y-2">
+          <div className="text-white font-bold text-base">Fazer agora <span className="text-gray-500 font-normal text-sm">— alertas da fatura de {rotuloMes(ateSel)}</span></div>
+          {grade(lista("agora"), "Nenhum alerta aberto neste mês.")}
+        </div>
+        <div className="space-y-2">
+          <div className="text-white font-bold text-base">Para economizar <span className="text-gray-500 font-normal text-sm">— contas sobre os últimos 12 meses de faturas</span></div>
+          {grade(lista("economia"), "Nenhuma oportunidade aberta.")}
+          <p className="text-[11px] text-gray-500">O andamento de cada cartão (status, responsável, anotação) fica gravado para todos. Os valores são estimativas com os preços das próprias faturas; as premissas de solar, capacitores e mercado livre estão na aba Economia.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (aba === "resumo") {
     conteudo = (
       <div className="space-y-5">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Indicador titulo="Total pago" valor={fmtR(soma(ls, l => l.valor_total))} detalhe={`${ls.length} faturas · ${new Set(ls.map(l => l.unidade_id)).size} unidades`} />
-          <Indicador titulo="⚡ CELESC" valor={fmtR(soma(e, l => l.valor_total))} detalhe={`${fmtN(soma(e, l => l.consumo))} kWh`} />
-          <Indicador titulo="💧 CASAN" valor={fmtR(soma(a, l => l.valor_total))} detalhe={`${fmtN(soma(a, l => l.consumo))} m³`} />
-          <Indicador titulo="Perdas e penalidades" cor={MACRO[4].cor} valor={fmtR(totalPerdas)} detalhe={`inclui ${fmtR(soma(e, l => l.disponibilidade?.valor || 0))} de mínimo pago sem consumo`} />
-          {MACRO.filter(m => m.k !== "perdas").map(m => <Indicador key={m.k} titulo={m.nome} cor={m.cor} valor={fmtR(g(m.grupos))} />)}
-          <Indicador titulo="Crédito solar" valor={fmtR(g(["solar"]))} detalhe={`${fmtN(soma(e, l => l.energia_injetada))} kWh injetados`} />
-          <Indicador titulo="Economia possível" valor={fmtR(soma(recs, r => r.economia))} detalhe={`${recs.length} recomendação(ões) no período`} />
-        </div>
+        {kpis}
         <div className="space-y-2">
           <div className="text-white font-bold text-sm">Conta de energia por mês, por grupo de custo (R$)</div>
           <Colunas rotulos={resumo.map(r => r.rotulo)} series={MACRO.map(m => ({ nome: m.nome, cor: m.cor, valores: resumo.map(r => r.macro[m.k]) }))} />
@@ -707,228 +986,119 @@ export default function Relatorios({ versao }: { versao: number }) {
         <div className="space-y-2">
           <div className="text-white font-bold text-sm">Para onde vai o dinheiro da energia</div>
           <Composicao itens={[
-            ...MACRO.map(m => ({ nome: m.nome, cor: m.cor, valor: g(m.grupos) })),
+            ...MACRO.map(m => ({ nome: m.nome, cor: m.cor, valor: g(m.grupos) })).sort((x, y) => y.valor - x.valor),
             ...DEDUCOES.map(d => ({ nome: NOME_GRUPO[d], valor: g([d]) })),
           ]} />
-          <p className="text-[11px] text-gray-500">"Perdas e penalidades" = ultrapassagem de demanda, demanda paga sem uso, energia reativa excedente, multas e juros. Valores negativos reduzem a conta. ICMS e PIS/COFINS estão dentro dos preços — veja a aba Tributos.</p>
+          <p className="text-[11px] text-gray-500">"Perdas e penalidades" = ultrapassagem de demanda, demanda paga sem uso, energia reativa excedente, multas e juros. Valores negativos reduzem a conta.</p>
         </div>
-        <div className="space-y-2">
-          <div className="text-white font-bold text-sm">Maiores economias possíveis</div>
-          <Tabela<Recomendacao> nome={`recomendacoes-${tituloPeriodo}`} linhas={recs.slice(0, 15)} vazio="Nenhuma perda evitável encontrada." onLinha={r => abrir(r.unidade_id)} colunas={[
-            { titulo: "Unidade", valor: r => <NomeUnidade nome={r.unidade} endereco={r.endereco} />, csv: r => `${r.unidade} — ${r.endereco}` }, { titulo: "Código", valor: r => r.codigo }, { titulo: "Tipo", valor: r => r.tipo },
-            { titulo: "O que fazer", valor: r => r.titulo }, { titulo: "Economia (período)", valor: r => fmtR(r.economia), direita: true, csv: r => r.economia.toFixed(2) },
-          ]} />
-          <BotaoIA titulo={`Gastos da prefeitura com água e energia (${tituloPeriodo})`} resumo={() => ({
-            periodo: tituloPeriodo, filtros: { concessionaria: conc || "todas", secretaria: base.secretarias.find(s => s.id === secretariaId)?.nome || "todas", tensao: tensao || "todas", busca },
-            totais: { total: soma(ls, l => l.valor_total), celesc: soma(e, l => l.valor_total), casan: soma(a, l => l.valor_total), kwh: soma(e, l => l.consumo), m3: soma(a, l => l.consumo) },
-            energia_por_grupo: { ...Object.fromEntries(MACRO.map(m => [m.nome, g(m.grupos)])), ...Object.fromEntries(DEDUCOES.map(d => [NOME_GRUPO[d], g([d])])) },
-            perdas_detalhadas: Object.fromEntries([...GRUPOS_PERDA.map(x => [NOME_GRUPO[x], g([x])]), ["Mínimo pago sem consumo (disponibilidade)", soma(e, l => l.disponibilidade?.valor || 0)]]),
-            por_mes: resumo.map(r => ({ mes: r.rotulo, total: r.total, energia_rs: r.energiaTotal, agua_rs: r.agua, kwh: r.kwh, m3: r.m3 })),
-            recomendacoes_do_sistema: recs.slice(0, 20).map(r => ({ unidade: r.unidade, codigo: r.codigo, titulo: r.titulo, detalhe: r.detalhe, economia_estimada: r.economia })),
-          })} />
-        </div>
+        <BotaoIA titulo={`Gastos da prefeitura com água e energia (${tituloPeriodo})`} resumo={() => ({
+          periodo: tituloPeriodo, filtros: { concessionaria: conc || "todas", secretaria: base.secretarias.find(s => s.id === secretariaId)?.nome || "todas", tensao: tensao || "todas", busca },
+          totais: { total, celesc: soma(e, l => l.valor_total), casan: soma(a, l => l.valor_total), kwh: soma(e, l => l.consumo), m3: soma(a, l => l.consumo) },
+          energia_por_grupo: { ...Object.fromEntries(MACRO.map(m => [m.nome, g(m.grupos)])), ...Object.fromEntries(DEDUCOES.map(d => [NOME_GRUPO[d], g([d])])) },
+          perdas_detalhadas: Object.fromEntries([...GRUPOS_PERDA.map(x => [NOME_GRUPO[x], g([x])]), ["Mínimo pago sem consumo (disponibilidade)", soma(e, l => l.disponibilidade?.valor || 0)]]),
+          por_mes: resumo.map(r => ({ mes: r.rotulo, total: r.total, energia_rs: r.energiaTotal, agua_rs: r.agua, kwh: r.kwh, m3: r.m3 })),
+          acoes_do_sistema: acoes.slice(0, 25).map(x => ({ tipo: x.tipo, unidade: nomeDaUnidade(x.unidade, x.endereco), titulo: x.titulo, detalhe: x.detalhe, valor: x.valor, quando: x.quando })),
+        })} />
         <Tabela<Resumo> nome={`resumo-mensal-${tituloPeriodo}`} linhas={resumo} colunas={colunasResumo("meses")} rodape={rodapeResumo(resumo)} />
       </div>
     );
   }
 
   if (aba === "unidades") {
-    const porUnidade = [...new Set(ls.map(l => l.unidade_id))].map(id => {
-      const xs = ls.filter(l => l.unidade_id === id);
-      const ex = xs.filter(l => l.concessionaria === "CELESC"), ax = xs.filter(l => l.concessionaria === "CASAN");
-      return { id, nome: xs[0].unidade_nome, secretaria: xs[0].secretaria_nome, endereco: xs[0].unidade_endereco,
-        kwh: soma(ex, l => l.consumo), m3: soma(ax, l => l.consumo), energia: soma(ex, l => l.valor_total), agua: soma(ax, l => l.valor_total),
-        total: soma(xs, l => l.valor_total), perdas: soma(ex, perdasDe), infra: soma(ex, l => l.grupos?.infraestrutura || 0), meses: new Set(xs.map(l => l.mes)).size };
-    });
-    type U = typeof porUnidade[number];
-    conteudo = (
-      <div className="space-y-2">
-        <p className="text-[11px] text-gray-500">Clique numa unidade para abrir os dados dela (mês a mês ou por ano, gráfico, cores de demanda/consumo, recomendações e itens da fatura). Clique no título da coluna para ordenar.</p>
-        <Tabela<U> nome={`unidades-${tituloPeriodo}`} linhas={porUnidade} onLinha={u => abrir(u.id)} ordemInicial={{ coluna: "Total", desc: true }} colunas={[
-          { titulo: "Unidade Gestora", valor: u => <NomeUnidade nome={u.nome} endereco={u.endereco} />, csv: u => `${u.nome} — ${u.endereco}`, ordem: u => `${u.nome} ${u.endereco}` },
-          { titulo: "Secretaria", valor: u => u.secretaria, ordem: u => u.secretaria },
-          { titulo: "kWh", valor: u => fmtN(u.kwh), direita: true, csv: u => u.kwh, ordem: u => u.kwh },
-          { titulo: "Energia R$", valor: u => fmtR(u.energia), direita: true, csv: u => u.energia.toFixed(2), ordem: u => u.energia },
-          { titulo: "m³", valor: u => fmtN(u.m3), direita: true, csv: u => u.m3, ordem: u => u.m3 },
-          { titulo: "Água R$", valor: u => fmtR(u.agua), direita: true, csv: u => u.agua.toFixed(2), ordem: u => u.agua },
-          { titulo: "Perdas R$", valor: u => (u.perdas > 0 ? <span className="text-rose-300">{fmtR(u.perdas)}</span> : "—"), direita: true, csv: u => u.perdas.toFixed(2), ordem: u => u.perdas },
-          { titulo: "Infraestrutura R$", valor: u => (u.infra ? fmtR(u.infra) : "—"), direita: true, csv: u => u.infra.toFixed(2), ordem: u => u.infra },
-          { titulo: "Total", valor: u => <b className="text-white">{fmtR(u.total)}</b>, direita: true, csv: u => u.total.toFixed(2), ordem: u => u.total },
-        ]} rodape={[`${porUnidade.length} unidades`, "", fmtN(soma(porUnidade, u => u.kwh)), fmtR(soma(porUnidade, u => u.energia)), fmtN(soma(porUnidade, u => u.m3)), fmtR(soma(porUnidade, u => u.agua)), fmtR(soma(porUnidade, u => u.perdas)), fmtR(soma(porUnidade, u => u.infra)), fmtR(soma(porUnidade, u => u.total))]} />
+    const alternar = (
+      <div className="flex gap-1 bg-black/40 p-1 rounded-lg border border-white/10 w-fit print:hidden">
+        {([[false, "Por unidade"], [true, "Por secretaria"]] as const).map(([v, t]) => (
+          <button key={t} type="button" onClick={() => setPorSecretaria(v)} className={`px-3 py-1 rounded-md text-xs font-semibold ${porSecretaria === v ? "bg-indigo-600 text-white" : "text-gray-400 hover:text-white"}`}>{t}</button>
+        ))}
       </div>
     );
-  }
-
-  if (aba === "perdas") {
-    const tipos: { k: string; nome: string; acao: string; valor: (l: Linha) => number }[] = [
-      { k: "ultrapassagem", nome: "Ultrapassagem de demanda", acao: "Usou mais que a demanda contratada (paga cerca de 2× nessa parte): aumentar a contratada.", valor: l => l.grupos?.ultrapassagem || 0 },
-      { k: "demanda_sem_uso", nome: "Demanda paga sem uso", acao: "Demanda contratada maior que a usada: reduzir a contratada.", valor: l => l.grupos?.demanda_sem_uso || 0 },
-      { k: "reativo", nome: "Energia reativa excedente", acao: "Fator de potência abaixo de 0,92 (energia defasada devolvida à rede): banco de capacitores.", valor: l => l.grupos?.reativo || 0 },
-      { k: "disponibilidade", nome: "Mínimo pago sem consumo", acao: "Consumo abaixo do mínimo de 30/50/100 kWh: avaliar desligar ligações ociosas. (Estimativa: kWh pagos e não usados × preço.)", valor: l => l.disponibilidade?.valor || 0 },
-      { k: "multas_juros", nome: "Multas e juros", acao: "Atraso no pagamento.", valor: l => l.grupos?.multas_juros || 0 },
-    ];
-    conteudo = (
-      <div className="space-y-5">
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-          {tipos.map(t => <Indicador key={t.k} titulo={t.nome} valor={fmtR(soma(e, t.valor))} detalhe={`${new Set(e.filter(l => t.valor(l) > 0.004).map(l => l.contrato_id)).size} UC(s)`} />)}
-        </div>
+    if (!porSecretaria) {
+      const porUnidade = [...new Set(ls.map(l => l.unidade_id))].map(id => {
+        const xs = ls.filter(l => l.unidade_id === id);
+        const ex = xs.filter(l => l.concessionaria === "CELESC"), ax = xs.filter(l => l.concessionaria === "CASAN");
+        return { id, nome: xs[0].unidade_nome, secretaria: xs[0].secretaria_nome, endereco: xs[0].unidade_endereco,
+          kwh: soma(ex, l => l.consumo), m3: soma(ax, l => l.consumo), energia: soma(ex, l => l.valor_total), agua: soma(ax, l => l.valor_total),
+          total: soma(xs, l => l.valor_total), perdas: soma(ex, perdasDe), infra: soma(ex, l => l.grupos?.infraestrutura || 0) };
+      });
+      type U = typeof porUnidade[number];
+      conteudo = (
         <div className="space-y-2">
-          <div className="text-white font-bold text-sm">Perdas e penalidades por mês (R$)</div>
-          <Colunas rotulos={resumo.map(r => r.rotulo)} series={tipos.map((t, i) => ({ nome: t.nome, cor: MACRO[i].cor, valores: periodo.map(m => soma(e.filter(l => l.mes === m), t.valor)) }))} />
+          {alternar}
+          <p className="text-[11px] text-gray-500">Clique numa unidade para abrir os dados dela. Clique no título da coluna para ordenar.</p>
+          <Tabela<U> nome={`unidades-${tituloPeriodo}`} linhas={porUnidade} onLinha={u => abrir(u.id)} ordemInicial={{ coluna: "Total", desc: true }} colunas={[
+            { titulo: "Unidade", valor: u => <NomeUnidade nome={u.nome} endereco={u.endereco} />, csv: u => `${nomeDaUnidade(u.nome, u.endereco)} — ${u.endereco}`, ordem: u => nomeDaUnidade(u.nome, u.endereco) },
+            { titulo: "Secretaria", valor: u => u.secretaria, ordem: u => u.secretaria },
+            { titulo: "kWh", valor: u => fmtN(u.kwh), direita: true, csv: u => u.kwh, ordem: u => u.kwh },
+            { titulo: "Energia R$", valor: u => fmtR(u.energia), direita: true, csv: u => u.energia.toFixed(2), ordem: u => u.energia },
+            { titulo: "m³", valor: u => fmtN(u.m3), direita: true, csv: u => u.m3, ordem: u => u.m3 },
+            { titulo: "Água R$", valor: u => fmtR(u.agua), direita: true, csv: u => u.agua.toFixed(2), ordem: u => u.agua },
+            { titulo: "Perdas R$", valor: u => (u.perdas > 0 ? <span className="text-rose-300">{fmtR(u.perdas)}</span> : "—"), direita: true, csv: u => u.perdas.toFixed(2), ordem: u => u.perdas },
+            { titulo: "Total", valor: u => <b className="text-white">{fmtR(u.total)}</b>, direita: true, csv: u => u.total.toFixed(2), ordem: u => u.total },
+          ]} rodape={[`${porUnidade.length} unidades`, "", fmtN(soma(porUnidade, u => u.kwh)), fmtR(soma(porUnidade, u => u.energia)), fmtN(soma(porUnidade, u => u.m3)), fmtR(soma(porUnidade, u => u.agua)), fmtR(soma(porUnidade, u => u.perdas)), fmtR(soma(porUnidade, u => u.total))]} />
         </div>
-        {tipos.map(t => {
-          const porContrato = [...new Set(e.filter(l => t.valor(l) > 0.004).map(l => l.contrato_id))].map(id => {
-            const xs = e.filter(l => l.contrato_id === id);
-            return { id: xs[0].unidade_id, unidade: xs[0].unidade_nome, endereco: xs[0].unidade_endereco, secretaria: xs[0].secretaria_nome, codigo: xs[0].codigo, valor: soma(xs, t.valor), meses: xs.filter(l => t.valor(l) > 0.004).length };
-          });
-          type P = typeof porContrato[number];
-          return (
-            <div key={t.k} className="space-y-1">
-              <div className="text-white font-bold text-sm">{t.nome} — {fmtR(soma(porContrato, p => p.valor))}</div>
-              <p className="text-[11px] text-gray-500">{t.acao}</p>
-              <Tabela<P> nome={`perdas-${t.k}-${tituloPeriodo}`} linhas={porContrato} onLinha={p => abrir(p.id)} ordemInicial={{ coluna: "R$", desc: true }} vazio="Nenhuma no período." colunas={[
-                { titulo: "Unidade", valor: p => <NomeUnidade nome={p.unidade} endereco={p.endereco} />, csv: p => `${p.unidade} — ${p.endereco}`, ordem: p => `${p.unidade} ${p.endereco}` }, { titulo: "Secretaria", valor: p => p.secretaria, ordem: p => p.secretaria },
-                { titulo: "Código", valor: p => p.codigo }, { titulo: "Meses", valor: p => p.meses, direita: true, ordem: p => p.meses },
-                { titulo: "R$", valor: p => fmtR(p.valor), direita: true, csv: p => p.valor.toFixed(2), ordem: p => p.valor },
-              ]} rodape={["Total", "", "", "", fmtR(soma(porContrato, p => p.valor))]} />
-            </div>
-          );
-        })}
-      </div>
-    );
-  }
-
-  if (aba === "demanda") {
-    const contratos = [...new Set(e.filter(l => l.demanda).map(l => l.contrato_id))].map(id => {
-      const doContrato = todas.filter(l => l.contrato_id === id);
-      const noPer = doContrato.filter(l => l.mes >= deSel && l.mes <= ateSel && l.demanda);
-      const contr = contratadaPorMes(doContrato);
-      const atual = contr.get(noPer[noPer.length - 1]?.mes || "") || null;
-      const sim = atual ? simularDemandaIdeal(noPer.map(l => ({ usada: l.demanda!.faturada, preco_kw: l.demanda!.preco_kw, preco_ultrapassagem_kw: l.demanda!.preco_ultrapassagem_kw })), atual) : null;
-      return { id: doContrato[0].unidade_id, unidade: doContrato[0].unidade_nome, endereco: doContrato[0].unidade_endereco, codigo: doContrato[0].codigo, doContrato, contr, atual, sim,
-        perdas: soma(noPer, l => (l.grupos?.ultrapassagem || 0) + (l.grupos?.demanda_sem_uso || 0)) };
-    }).sort((x, y) => y.perdas - x.perdas);
-    conteudo = (
-      <div className="space-y-4">
-        <p className="text-[11px] text-gray-500">Só UCs de alta tensão (grupo A) têm demanda contratada. A fatura não imprime a contratada: ela é calculada das linhas de ultrapassagem ou de "Diferença da Demanda Contratada". Cada quadrado mostra o uso do mês ÷ contratada.</p>
-        <Legenda itens={LEGENDA_FAIXA} cores={COR_FAIXA} />
-        <div className="overflow-x-auto border border-white/10 rounded-lg">
-          <table className="w-full text-xs text-gray-300">
-            <thead className="bg-black/40 text-gray-400 text-[10px] uppercase font-mono">
-              <tr><th className="px-3 py-2 text-left">Unidade</th><th className="px-3 py-2 text-right">Contratada</th><th className="px-3 py-2 text-left"><div>Uso ÷ contratada, mês a mês</div><RotulosMeses meses={periodo} /></th><th className="px-3 py-2 text-right">Maior uso</th><th className="px-3 py-2 text-right">Sugerida</th><th className="px-3 py-2 text-right">Perdas no período</th><th className="px-3 py-2 text-right">Economia estimada</th></tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-              {contratos.length === 0 && <tr><td colSpan={7} className="px-3 py-4 text-gray-500">Nenhuma UC de alta tensão no filtro.</td></tr>}
-              {contratos.map(c => (
-                <tr key={c.codigo} className="hover:bg-white/5 cursor-pointer" onClick={() => abrir(c.id)}>
-                  <td className="px-3 py-1.5"><NomeUnidade nome={c.unidade} endereco={c.endereco} /><div className="text-[10px] font-mono text-gray-500">⚡ {c.codigo}</div></td>
-                  <td className="px-3 py-1.5 text-right font-mono">{c.atual ? `${fmtN(c.atual)} kW` : "?"}</td>
-                  <td className="px-3 py-1.5"><div className="flex flex-wrap gap-1">
-                    {periodo.map(m => {
-                      const l = c.doContrato.find(x => x.mes === m);
-                      if (!l?.demanda) return <Celula key={m} cor="#2c2c2a" texto="—" titulo={`${rotuloMes(m)}: sem fatura`} />;
-                      const ct = c.contr.get(m) || null, f = ct ? faixaDemanda(l.demanda.faturada, ct) : null;
-                      return <Celula key={m} cor={f ? COR_FAIXA[f] : "#898781"} texto={ct ? `${Math.round((l.demanda.faturada / ct) * 100)}%` : "?"} titulo={`${rotuloMes(m)}: usou ${fmtN(l.demanda.faturada, 1)} kW de ${ct ? fmtN(ct) : "?"} kW`} />;
-                    })}
-                  </div></td>
-                  <td className="px-3 py-1.5 text-right font-mono">{c.sim ? `${fmtN(c.sim.maior_uso, 1)} kW` : "—"}</td>
-                  <td className="px-3 py-1.5 text-right font-mono">{c.sim && c.sim.sugerida !== c.sim.contratada_atual ? `${fmtN(c.sim.sugerida)} kW` : "manter"}</td>
-                  <td className="px-3 py-1.5 text-right font-mono text-rose-300">{fmtR(c.perdas)}</td>
-                  <td className="px-3 py-1.5 text-right font-mono text-emerald-300">{c.sim && c.sim.economia > 0 ? fmtR(c.sim.economia) : "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      );
+    } else {
+      const porSec = [...new Set(ls.map(l => l.secretaria_id))].map(id => {
+        const xs = ls.filter(l => l.secretaria_id === id), ex = xs.filter(l => l.concessionaria === "CELESC"), ax = xs.filter(l => l.concessionaria === "CASAN");
+        return { id, nome: xs[0].secretaria_nome, unidades: new Set(xs.map(l => l.unidade_id)).size, kwh: soma(ex, l => l.consumo), energia: soma(ex, l => l.valor_total), m3: soma(ax, l => l.consumo), agua: soma(ax, l => l.valor_total), perdas: soma(ex, perdasDe), total: soma(xs, l => l.valor_total) };
+      });
+      type S = typeof porSec[number];
+      conteudo = (
+        <div className="space-y-3">
+          {alternar}
+          <Composicao itens={[...porSec].sort((x, y) => y.total - x.total).map(s => ({ nome: s.nome, valor: s.total }))} />
+          <Tabela<S> nome={`secretarias-${tituloPeriodo}`} linhas={porSec} ordemInicial={{ coluna: "Total", desc: true }} onLinha={s => { setSecretariaId(s.id); setPorSecretaria(false); }} colunas={[
+            { titulo: "Secretaria", valor: s => <span className="text-white">{s.nome}</span>, csv: s => s.nome, ordem: s => s.nome },
+            { titulo: "Unidades", valor: s => s.unidades, direita: true, ordem: s => s.unidades },
+            { titulo: "kWh", valor: s => fmtN(s.kwh), direita: true, csv: s => s.kwh, ordem: s => s.kwh },
+            { titulo: "Energia R$", valor: s => fmtR(s.energia), direita: true, csv: s => s.energia.toFixed(2), ordem: s => s.energia },
+            { titulo: "m³", valor: s => fmtN(s.m3), direita: true, csv: s => s.m3, ordem: s => s.m3 },
+            { titulo: "Água R$", valor: s => fmtR(s.agua), direita: true, csv: s => s.agua.toFixed(2), ordem: s => s.agua },
+            { titulo: "Perdas R$", valor: s => fmtR(s.perdas), direita: true, csv: s => s.perdas.toFixed(2), ordem: s => s.perdas },
+            { titulo: "Total", valor: s => <b className="text-white">{fmtR(s.total)}</b>, direita: true, csv: s => s.total.toFixed(2), ordem: s => s.total },
+            { titulo: "% do total", valor: s => `${fmtN(total ? (s.total / total) * 100 : 0, 1)}%`, direita: true, ordem: s => s.total },
+          ]} rodape={["Total", soma(porSec, s => s.unidades), fmtN(soma(porSec, s => s.kwh)), fmtR(soma(porSec, s => s.energia)), fmtN(soma(porSec, s => s.m3)), fmtR(soma(porSec, s => s.agua)), fmtR(soma(porSec, s => s.perdas)), fmtR(total), "100%"]} />
+          <p className="text-[11px] text-gray-500">Clique numa secretaria para ver as unidades dela.</p>
         </div>
-        <p className="text-[11px] text-gray-500">Sugerida: a demanda que teria custado menos nos meses do período (mínimo 30 kW), considerando que acima de 105% paga-se a ultrapassagem. É uma estimativa; a alteração segue regras e prazos da CELESC.</p>
-      </div>
-    );
-  }
-
-  if (aba === "tributos") {
-    const t = (k: keyof TributosFatura, xs: Linha[]) => soma(xs, l => l.tributos?.[k] || 0);
-    const linhasT = periodo.map(m => { const xs = e.filter(l => l.mes === m); return { mes: m, icms: t("icms", xs), pc: t("pis_cofins", xs), cosip: t("cosip", xs), irpj: t("irpj_retido", xs), pis: t("pis_retido", xs), cofins: t("cofins_retido", xs), csll: t("csll_retido", xs), conta: soma(xs, l => l.valor_total) }; });
-    type T = typeof linhasT[number];
-    conteudo = (
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Indicador titulo="ICMS" valor={fmtR(t("icms", e))} detalhe="embutido no preço da energia" />
-          <Indicador titulo="PIS/COFINS" valor={fmtR(t("pis_cofins", e))} detalhe="embutido no preço da energia" />
-          <Indicador titulo="COSIP (iluminação pública)" valor={fmtR(t("cosip", e))} detalhe="cobrada como item da fatura" />
-          <Indicador titulo="IRPJ retido" valor={fmtR(t("irpj_retido", e))} detalhe="retido pela prefeitura; abate do pagamento" />
-        </div>
-        <Tabela<T> nome={`tributos-${tituloPeriodo}`} linhas={linhasT} colunas={[
-          { titulo: "Mês", valor: r => rotuloMes(r.mes) },
-          { titulo: "ICMS (embutido)", valor: r => fmtR(r.icms), direita: true, csv: r => r.icms.toFixed(2) },
-          { titulo: "PIS/COFINS (embutido)", valor: r => fmtR(r.pc), direita: true, csv: r => r.pc.toFixed(2) },
-          { titulo: "COSIP", valor: r => fmtR(r.cosip), direita: true, csv: r => r.cosip.toFixed(2) },
-          { titulo: "IRPJ retido", valor: r => fmtR(r.irpj), direita: true, csv: r => r.irpj.toFixed(2) },
-          { titulo: "PIS retido", valor: r => fmtR(r.pis), direita: true, csv: r => r.pis.toFixed(2) },
-          { titulo: "COFINS retido", valor: r => fmtR(r.cofins), direita: true, csv: r => r.cofins.toFixed(2) },
-          { titulo: "CSLL retido", valor: r => fmtR(r.csll), direita: true, csv: r => r.csll.toFixed(2) },
-          { titulo: "Conta de energia", valor: r => fmtR(r.conta), direita: true, csv: r => r.conta.toFixed(2) },
-        ]} rodape={["Total", fmtR(soma(linhasT, r => r.icms)), fmtR(soma(linhasT, r => r.pc)), fmtR(soma(linhasT, r => r.cosip)), fmtR(soma(linhasT, r => r.irpj)), fmtR(soma(linhasT, r => r.pis)), fmtR(soma(linhasT, r => r.cofins)), fmtR(soma(linhasT, r => r.csll)), fmtR(soma(linhasT, r => r.conta))]} />
-        <p className="text-[11px] text-gray-500">ICMS e PIS/COFINS vêm dentro do "preço unitário com tributos" de cada item — já estão somados nos grupos de custo, aqui aparecem só para conhecimento. COSIP e IRPJ retido são linhas próprias da fatura. Só faturas CELESC lidas com itens.</p>
-      </div>
-    );
-  }
-
-  if (aba === "secretarias") {
-    const total = soma(ls, l => l.valor_total);
-    const porSec = [...new Set(ls.map(l => l.secretaria_id))].map(id => {
-      const xs = ls.filter(l => l.secretaria_id === id), ex = xs.filter(l => l.concessionaria === "CELESC"), ax = xs.filter(l => l.concessionaria === "CASAN");
-      return { id, nome: xs[0].secretaria_nome, unidades: new Set(xs.map(l => l.unidade_id)).size, kwh: soma(ex, l => l.consumo), energia: soma(ex, l => l.valor_total), m3: soma(ax, l => l.consumo), agua: soma(ax, l => l.valor_total), perdas: soma(ex, perdasDe), total: soma(xs, l => l.valor_total) };
-    });
-    type S = typeof porSec[number];
-    conteudo = (
-      <div className="space-y-4">
-        <Composicao itens={[...porSec].sort((x, y) => y.total - x.total).map(s => ({ nome: s.nome, valor: s.total }))} />
-        <Tabela<S> nome={`secretarias-${tituloPeriodo}`} linhas={porSec} ordemInicial={{ coluna: "Total", desc: true }} onLinha={s => { setSecretariaId(s.id); setAba("unidades"); }} colunas={[
-          { titulo: "Secretaria", valor: s => <span className="text-white">{s.nome}</span>, csv: s => s.nome, ordem: s => s.nome },
-          { titulo: "Unidades", valor: s => s.unidades, direita: true, ordem: s => s.unidades },
-          { titulo: "kWh", valor: s => fmtN(s.kwh), direita: true, csv: s => s.kwh, ordem: s => s.kwh },
-          { titulo: "Energia R$", valor: s => fmtR(s.energia), direita: true, csv: s => s.energia.toFixed(2), ordem: s => s.energia },
-          { titulo: "m³", valor: s => fmtN(s.m3), direita: true, csv: s => s.m3, ordem: s => s.m3 },
-          { titulo: "Água R$", valor: s => fmtR(s.agua), direita: true, csv: s => s.agua.toFixed(2), ordem: s => s.agua },
-          { titulo: "Perdas R$", valor: s => fmtR(s.perdas), direita: true, csv: s => s.perdas.toFixed(2), ordem: s => s.perdas },
-          { titulo: "Total", valor: s => <b className="text-white">{fmtR(s.total)}</b>, direita: true, csv: s => s.total.toFixed(2), ordem: s => s.total },
-          { titulo: "% do total", valor: s => `${fmtN(total ? (s.total / total) * 100 : 0, 1)}%`, direita: true, ordem: s => s.total },
-        ]} rodape={["Total", soma(porSec, s => s.unidades), fmtN(soma(porSec, s => s.kwh)), fmtR(soma(porSec, s => s.energia)), fmtN(soma(porSec, s => s.m3)), fmtR(soma(porSec, s => s.agua)), fmtR(soma(porSec, s => s.perdas)), fmtR(total), "100%"]} />
-        <p className="text-[11px] text-gray-500">Clique numa secretaria para ver a lista das unidades dela.</p>
-      </div>
-    );
+      );
+    }
   }
 
   if (aba === "alertas") {
     const mes = ateSel;
-    const doMes = ls.filter(l => l.mes === mes);
-    const avaliados = doMes.map(l => ({ l, ...faixaConsumoDoMes(l, todas.filter(h => h.contrato_id === l.contrato_id)) })).filter(x => x.r.alerta)
-      .sort((x, y) => (x.r.alerta === "queda" ? 1 : 0) - (y.r.alerta === "queda" ? 1 : 0) || Math.abs(y.r.impacto_valor) - Math.abs(x.r.impacto_valor));
-    type A = typeof avaliados[number];
+    type A = Avaliado;
     const anterior = intervaloMeses(mesesDisp[0] || mes, mes).slice(-2)[0];
-    const contratosNoMes = new Set(doMes.map(l => l.contrato_id));
+    const contratosNoMes = new Set(ls.filter(l => l.mes === mes).map(l => l.contrato_id));
     const faltando = filtradasTodas.filter(l => l.mes === anterior && anterior !== mes && !contratosNoMes.has(l.contrato_id));
-    const un = (l: Linha) => (l.concessionaria === "CASAN" ? "m³" : "kWh");
+    const acaoDo = (x: A): Acao => acoes.find(y => y.id === `alerta:${x.l.contrato_id}:${x.l.mes}`) || {
+      id: `alerta:${x.l.contrato_id}:${x.l.mes}`, quando: "agora", tipo: TEXTO_ALERTA[x.r.alerta!], unidade_id: x.l.unidade_id, contrato_id: x.l.contrato_id, mes: x.l.mes,
+      unidade: x.l.unidade_nome, endereco: x.l.unidade_endereco, codigo: x.l.codigo, titulo: TEXTO_ALERTA[x.r.alerta!], detalhe: x.r.motivo, valor: x.r.impacto_valor, rotulo_valor: "",
+    };
     conteudo = (
       <div className="space-y-5">
         <div className="text-xs text-gray-400">Mês analisado: <b className="text-white">{rotuloMes(mes)}</b> (o último mês do período escolhido).</div>
+        {erroAcomp && <div className="text-xs text-rose-300">{erroAcomp}</div>}
         <div className="space-y-2">
           <div className="text-white font-bold text-sm flex items-center gap-2"><AlertTriangle className="h-4 w-4 text-amber-400" /> Variação acima de 20% ({avaliados.length})</div>
           <p className="text-[11px] text-gray-500">Duas comparações: com o <b className="text-gray-300">mês anterior</b> (salto de um mês para o outro — na água, costuma ser vazamento) e com o <b className="text-gray-300">mesmo mês do ano anterior</b> (tira a sazonalidade e mostra mudança de uso, cobrança nova ou tarifa). Consumo levado a 30 dias; só entra com mais de 20% e diferença de pelo menos 100 kWh / 5 m³ (ou R$ 100 no valor).</p>
           <Tabela<A> nome={`alertas-variacao-${mes}`} linhas={avaliados} onLinha={x => abrir(x.l.unidade_id)} vazio="Nenhuma variação fora do normal neste mês." colunas={[
-            { titulo: "Unidade", valor: x => <NomeUnidade nome={x.l.unidade_nome} endereco={x.l.unidade_endereco} />, csv: x => `${x.l.unidade_nome} — ${x.l.unidade_endereco}` }, { titulo: "Código", valor: x => <span className="whitespace-nowrap">{x.l.concessionaria === "CASAN" ? "💧" : "⚡"} {x.l.codigo}</span>, csv: x => x.l.codigo },
-            { titulo: "Alerta", valor: x => <div className="min-w-[190px]"><span className={x.r.alerta === "queda" ? "text-sky-300" : "text-rose-300"}>{TEXTO_ALERTA[x.r.alerta!]}</span><div className="text-[10px] text-gray-500 min-w-[190px] max-w-[260px] leading-tight">{x.r.motivo.split(" · ").map(m => <div key={m}>{m}</div>)}</div></div>, csv: x => `${TEXTO_ALERTA[x.r.alerta!]} — ${x.r.motivo}` },
+            { titulo: "Unidade", valor: x => <NomeUnidade nome={x.l.unidade_nome} endereco={x.l.unidade_endereco} />, csv: x => `${nomeDaUnidade(x.l.unidade_nome, x.l.unidade_endereco)} — ${x.l.unidade_endereco}` },
+            { titulo: "Código", valor: x => <span className="whitespace-nowrap">{x.l.concessionaria === "CASAN" ? "💧" : "⚡"} {x.l.codigo}</span>, csv: x => x.l.codigo },
+            { titulo: "Alerta", valor: x => <div className="min-w-[190px]"><span className={x.r.alerta === "queda" ? "text-sky-300" : "text-rose-300"}>{TEXTO_ALERTA[x.r.alerta!]}</span><div className="text-[10px] text-gray-500 max-w-[260px] leading-tight">{x.r.motivo.split(" · ").map(m => <div key={m}>{m}</div>)}</div></div>, csv: x => `${TEXTO_ALERTA[x.r.alerta!]} — ${x.r.motivo}` },
             { titulo: "Consumo", valor: x => `${fmtN(x.l.consumo)} ${un(x.l)}`, direita: true, csv: x => x.l.consumo },
             { titulo: "vs mês anterior", valor: x => <CelulaComparacao c={x.r.mensal} un={un(x.l)} />, csv: x => textoComparacao(x.r.mensal, un(x.l)), ordem: x => x.r.mensal?.var_consumo ?? -Infinity },
             { titulo: "vs mesmo mês ano anterior", valor: x => <CelulaComparacao c={x.r.anual} un={un(x.l)} />, csv: x => textoComparacao(x.r.anual, un(x.l)), ordem: x => x.r.anual?.var_consumo ?? -Infinity },
             { titulo: "Impacto R$", valor: x => fmtR(x.r.impacto_valor), direita: true, csv: x => x.r.impacto_valor.toFixed(2), ordem: x => x.r.impacto_valor },
+            { titulo: "Andamento", valor: x => { const ac = acaoDo(x); return <SeletorStatus status={acomps[ac.id]?.status || "novo"} onChange={s => salvarAcomp(ac, { status: s })} />; },
+              csv: x => STATUS_ACAO.find(s => s[0] === (acomps[acaoDo(x).id]?.status || "novo"))![1] },
           ]} />
         </div>
         <div className="space-y-2">
           <div className="text-white font-bold text-sm flex items-center gap-2"><AlertTriangle className="h-4 w-4 text-amber-400" /> Faturado em {rotuloMes(anterior)} e sem fatura em {rotuloMes(mes)} ({faltando.length})</div>
           <p className="text-[11px] text-gray-500">Fatura não importada, contrato encerrado ou cobrança em outra conta.</p>
           <Tabela<Linha> nome={`alertas-faltando-${mes}`} linhas={faltando} onLinha={l => abrir(l.unidade_id)} vazio="Nenhuma fatura faltando." colunas={[
-            { titulo: "Unidade", valor: l => <NomeUnidade nome={l.unidade_nome} endereco={l.unidade_endereco} />, csv: l => `${l.unidade_nome} — ${l.unidade_endereco}` }, { titulo: "Código", valor: l => `${l.concessionaria === "CASAN" ? "💧" : "⚡"} ${l.codigo}` },
+            { titulo: "Unidade", valor: l => <NomeUnidade nome={l.unidade_nome} endereco={l.unidade_endereco} />, csv: l => `${nomeDaUnidade(l.unidade_nome, l.unidade_endereco)} — ${l.unidade_endereco}` },
+            { titulo: "Código", valor: l => `${l.concessionaria === "CASAN" ? "💧" : "⚡"} ${l.codigo}` },
             { titulo: "Valor no mês anterior", valor: l => fmtR(l.valor_total), direita: true, csv: l => l.valor_total.toFixed(2) },
           ]} />
         </div>
@@ -936,35 +1106,225 @@ export default function Relatorios({ versao }: { versao: number }) {
     );
   }
 
-  if (aba === "solar") {
-    const comInjecao = e.filter(l => l.energia_injetada > 0 || (l.grupos?.solar || 0) !== 0);
-    const porUnidade = [...new Set(comInjecao.map(l => l.unidade_id))].map(id => {
-      const xs = comInjecao.filter(l => l.unidade_id === id);
-      return { id, nome: xs[0].unidade_nome, endereco: xs[0].unidade_endereco, kwh: soma(xs, l => l.energia_injetada), credito: -soma(xs, l => l.grupos?.solar || 0), fiob: soma(xs, l => (l.grupos?.infraestrutura || 0)), meses: new Set(xs.map(l => l.mes)).size };
-    });
-    type So = typeof porUnidade[number];
-    conteudo = (
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-          <Indicador titulo="Energia injetada" valor={`${fmtN(soma(porUnidade, u => u.kwh))} kWh`} />
-          <Indicador titulo="Crédito na fatura" valor={fmtR(soma(porUnidade, u => u.credito))} detalhe="itens de energia injetada" />
-          <Indicador titulo="Unidades com geração" valor={String(porUnidade.length)} />
-        </div>
-        <div className="text-white font-bold text-sm">Crédito solar por mês (R$)</div>
-        <Colunas rotulos={resumo.map(r => r.rotulo)} series={[{ nome: "Crédito solar", cor: COR_UNICA, valores: resumo.map(r => -r.solar) }]} altura={180} />
-        <Tabela<So> nome={`solar-${tituloPeriodo}`} linhas={porUnidade} onLinha={u => abrir(u.id)} ordemInicial={{ coluna: "Crédito R$", desc: true }} vazio="Nenhuma energia injetada no período." colunas={[
-          { titulo: "Unidade", valor: u => <NomeUnidade nome={u.nome} endereco={u.endereco} />, csv: u => `${u.nome} — ${u.endereco}`, ordem: u => `${u.nome} ${u.endereco}` },
-          { titulo: "Injetada kWh", valor: u => fmtN(u.kwh), direita: true, csv: u => u.kwh, ordem: u => u.kwh },
-          { titulo: "Crédito R$", valor: u => fmtR(u.credito), direita: true, csv: u => u.credito.toFixed(2), ordem: u => u.credito },
-          { titulo: "Meses com injeção", valor: u => u.meses, direita: true, ordem: u => u.meses },
-        ]} rodape={["Total", fmtN(soma(porUnidade, u => u.kwh)), fmtR(soma(porUnidade, u => u.credito)), ""]} />
+  if (aba === "economia") {
+    const subnav = (
+      <div className="flex flex-wrap gap-1.5 print:hidden">
+        {SECOES.map(([k, t]) => (
+          <button key={k} type="button" onClick={() => setSecao(k)}
+            className={`px-3 py-1 rounded-full border text-xs font-semibold ${secao === k ? "border-indigo-500 bg-indigo-600/30 text-white" : "border-white/10 text-gray-400 hover:text-white"}`}>{t}</button>
+        ))}
       </div>
     );
+    let corpo: React.ReactNode = null;
+    const nota = (t: React.ReactNode) => <p className="text-[11px] text-gray-500 leading-relaxed">{t}</p>;
+
+    if (secao === "perdas") {
+      const tipos: { k: string; nome: string; acao: string; valor: (l: Linha) => number }[] = [
+        { k: "ultrapassagem", nome: "Ultrapassagem de demanda", acao: "Usou mais que a demanda contratada (paga em dobro nessa parte): aumentar a contratada.", valor: l => l.grupos?.ultrapassagem || 0 },
+        { k: "demanda_sem_uso", nome: "Demanda paga sem uso", acao: "Demanda contratada maior que a usada: reduzir a contratada.", valor: l => l.grupos?.demanda_sem_uso || 0 },
+        { k: "reativo", nome: "Energia reativa excedente", acao: "Fator de potência abaixo de 0,92: veja a seção Capacitores.", valor: l => l.grupos?.reativo || 0 },
+        { k: "disponibilidade", nome: "Mínimo pago sem consumo", acao: "Consumo abaixo do mínimo de 30/50/100 kWh: avaliar desligar ligações sem uso.", valor: l => l.disponibilidade?.valor || 0 },
+        { k: "multas_juros", nome: "Multas e juros", acao: "Atraso no pagamento.", valor: l => l.grupos?.multas_juros || 0 },
+      ];
+      corpo = (
+        <div className="space-y-5">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            {tipos.map(t => <Indicador key={t.k} titulo={t.nome} valor={fmtR(soma(e, t.valor))} detalhe={`${new Set(e.filter(l => t.valor(l) > 0.004).map(l => l.contrato_id)).size} UC(s)`} />)}
+          </div>
+          {tipos.map(t => {
+            const porContrato = [...new Set(e.filter(l => t.valor(l) > 0.004).map(l => l.contrato_id))].map(id => {
+              const xs = e.filter(l => l.contrato_id === id);
+              return { id: xs[0].unidade_id, unidade: xs[0].unidade_nome, endereco: xs[0].unidade_endereco, secretaria: xs[0].secretaria_nome, codigo: xs[0].codigo, valor: soma(xs, t.valor), meses: xs.filter(l => t.valor(l) > 0.004).length };
+            });
+            type P = typeof porContrato[number];
+            if (!porContrato.length) return null;
+            return (
+              <div key={t.k} className="space-y-1">
+                <div className="text-white font-bold text-sm">{t.nome} — {fmtR(soma(porContrato, p => p.valor))}</div>
+                {nota(t.acao)}
+                <Tabela<P> nome={`perdas-${t.k}-${tituloPeriodo}`} linhas={porContrato} onLinha={p => abrir(p.id)} ordemInicial={{ coluna: "R$", desc: true }} colunas={[
+                  { titulo: "Unidade", valor: p => <NomeUnidade nome={p.unidade} endereco={p.endereco} />, csv: p => `${nomeDaUnidade(p.unidade, p.endereco)} — ${p.endereco}`, ordem: p => nomeDaUnidade(p.unidade, p.endereco) },
+                  { titulo: "Código", valor: p => p.codigo }, { titulo: "Meses", valor: p => p.meses, direita: true, ordem: p => p.meses },
+                  { titulo: "R$", valor: p => fmtR(p.valor), direita: true, csv: p => p.valor.toFixed(2), ordem: p => p.valor },
+                ]} rodape={["Total", "", "", fmtR(soma(porContrato, p => p.valor))]} />
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    if (secao === "demanda") {
+      const contratos = [...new Set(e.filter(l => l.demanda).map(l => l.contrato_id))].map(id => {
+        const doContrato = historicoDe.get(id) || [];
+        const noPer = doContrato.filter(l => l.mes >= deSel && l.mes <= ateSel && l.demanda);
+        const contr = contratadaPorMes(doContrato);
+        const atual = contr.get(noPer[noPer.length - 1]?.mes || "") || null;
+        const sim = atual ? simularDemandaIdeal(noPer.map(l => ({ usada: l.demanda!.faturada, preco_kw: l.demanda!.preco_kw, preco_ultrapassagem_kw: l.demanda!.preco_ultrapassagem_kw })), atual) : null;
+        return { id: doContrato[0].unidade_id, unidade: doContrato[0].unidade_nome, endereco: doContrato[0].unidade_endereco, codigo: doContrato[0].codigo, doContrato, contr, atual, sim,
+          perdas: soma(noPer, l => (l.grupos?.ultrapassagem || 0) + (l.grupos?.demanda_sem_uso || 0)) };
+      }).sort((x, y) => y.perdas - x.perdas);
+      corpo = (
+        <div className="space-y-4">
+          {nota("Só UCs de alta tensão (grupo A) têm demanda contratada. Cada quadrado mostra o uso do mês ÷ contratada.")}
+          <Legenda itens={LEGENDA_FAIXA} cores={COR_FAIXA} />
+          <div className="overflow-x-auto border border-white/10 rounded-lg">
+            <table className="w-full text-xs text-gray-300">
+              <thead className="bg-black/40 text-gray-400 text-[10px] uppercase font-mono">
+                <tr><th className="px-3 py-2 text-left">Unidade</th><th className="px-3 py-2 text-right">Contratada</th><th className="px-3 py-2 text-left"><div>Uso ÷ contratada, mês a mês</div><RotulosMeses meses={periodo} /></th><th className="px-3 py-2 text-right">Maior uso</th><th className="px-3 py-2 text-right">Sugerida</th><th className="px-3 py-2 text-right">Perdas no período</th><th className="px-3 py-2 text-right">Economia estimada</th></tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {contratos.length === 0 && <tr><td colSpan={7} className="px-3 py-4 text-gray-500">Nenhuma UC de alta tensão no filtro.</td></tr>}
+                {contratos.map(c => (
+                  <tr key={c.codigo} className="hover:bg-white/5 cursor-pointer" onClick={() => abrir(c.id)}>
+                    <td className="px-3 py-1.5"><NomeUnidade nome={c.unidade} endereco={c.endereco} /><div className="text-[10px] font-mono text-gray-500">⚡ {c.codigo}</div></td>
+                    <td className="px-3 py-1.5 text-right font-mono">{c.atual ? `${fmtN(c.atual)} kW` : "?"}</td>
+                    <td className="px-3 py-1.5"><div className="flex flex-wrap gap-1">
+                      {periodo.map(m => {
+                        const l = c.doContrato.find(x => x.mes === m);
+                        if (!l?.demanda) return <Celula key={m} cor="#2c2c2a" texto="—" titulo={`${rotuloMes(m)}: sem fatura`} />;
+                        const ct = c.contr.get(m) || null, f = ct ? faixaDemanda(l.demanda.faturada, ct) : null;
+                        return <Celula key={m} cor={f ? COR_FAIXA[f] : "#898781"} texto={ct ? `${Math.round((l.demanda.faturada / ct) * 100)}%` : "?"} titulo={`${rotuloMes(m)}: usou ${fmtN(l.demanda.faturada, 1)} kW de ${ct ? fmtN(ct) : "?"} kW`} />;
+                      })}
+                    </div></td>
+                    <td className="px-3 py-1.5 text-right font-mono">{c.sim ? `${fmtN(c.sim.maior_uso, 1)} kW` : "—"}</td>
+                    <td className="px-3 py-1.5 text-right font-mono">{c.sim && c.sim.sugerida !== c.sim.contratada_atual ? `${fmtN(c.sim.sugerida)} kW` : "manter"}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-rose-300">{fmtR(c.perdas)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-emerald-300">{c.sim && c.sim.economia > 0 ? fmtR(c.sim.economia) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {nota("Sugerida: a demanda que teria custado menos nos meses do período (mínimo 30 kW), considerando que acima de 105% paga-se a ultrapassagem em dobro. Aumento vale na hora; redução segue o aviso do contrato com a CELESC (em geral 180 dias).")}
+        </div>
+      );
+    }
+
+    if (secao === "solar") {
+      const comInjecao = e.filter(l => l.energia_injetada > 0 || (l.grupos?.solar || 0) !== 0);
+      const geradoras = [...new Set(comInjecao.map(l => l.unidade_id))].map(id => {
+        const xs = comInjecao.filter(l => l.unidade_id === id);
+        return { id, nome: xs[0].unidade_nome, endereco: xs[0].unidade_endereco, kwh: soma(xs, l => l.energia_injetada), credito: -soma(xs, l => l.grupos?.solar || 0), meses: new Set(xs.map(l => l.mes)).size };
+      });
+      type So = typeof geradoras[number];
+      corpo = (
+        <div className="space-y-5">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <Indicador titulo="Unidades com geração" valor={String(geradoras.length)} />
+            <Indicador titulo="Crédito na fatura (período)" valor={fmtR(soma(geradoras, u => u.credito))} detalhe={`${fmtN(soma(geradoras, u => u.kwh))} kWh injetados`} />
+            <Indicador titulo="Candidatas a nova usina" valor={String(solar.length)} detalhe={`economia de ${fmtR(soma(solar, c => c.economia))}/ano`} />
+            <Indicador titulo="Investimento estimado" valor={fmtR(soma(solar, c => c.investimento))} detalhe={`${fmtN(soma(solar, c => c.kwp), 1)} kWp no total`} />
+          </div>
+          <div className="space-y-2">
+            <div className="text-white font-bold text-sm">Onde uma usina solar se paga (últimos 12 meses)</div>
+            <Tabela<CandidatoSolar> nome="candidatas-solar" linhas={solar} onLinha={c => abrir(c.unidade_id)} ordemInicial={{ coluna: "Economia/ano", desc: true }} vazio="Nenhuma UC sem geração com economia acima do mínimo." colunas={[
+              { titulo: "Unidade", valor: c => <NomeUnidade nome={c.unidade} endereco={c.endereco} />, csv: c => `${nomeDaUnidade(c.unidade, c.endereco)} — ${c.endereco}` },
+              { titulo: "Grupo", valor: c => c.grupo },
+              { titulo: "kWh/ano", valor: c => fmtN(c.kwh), direita: true, csv: c => Math.round(c.kwh), ordem: c => c.kwh },
+              { titulo: "R$/kWh hoje", valor: c => fmtN(c.preco_kwh, 3), direita: true, csv: c => c.preco_kwh, ordem: c => c.preco_kwh },
+              { titulo: "Usina", valor: c => `${fmtN(c.kwp, 1)} kWp${c.limitada ? "*" : ""}`, direita: true, csv: c => c.kwp, ordem: c => c.kwp },
+              { titulo: "Telhado", valor: c => `${fmtN(c.area_m2)} m²`, direita: true, csv: c => c.area_m2, ordem: c => c.area_m2 },
+              { titulo: "Investimento", valor: c => fmtR(c.investimento), direita: true, csv: c => c.investimento.toFixed(2), ordem: c => c.investimento },
+              { titulo: "Economia/ano", valor: c => <span className="text-emerald-300">{fmtR(c.economia)}</span>, direita: true, csv: c => c.economia.toFixed(2), ordem: c => c.economia },
+              { titulo: "Retorno", valor: c => `${fmtN(c.payback, 1)} anos`, direita: true, csv: c => c.payback, ordem: c => c.payback },
+            ]} rodape={["Total", "", "", "", `${fmtN(soma(solar, c => c.kwp), 1)} kWp`, `${fmtN(soma(solar, c => c.area_m2))} m²`, fmtR(soma(solar, c => c.investimento)), fmtR(soma(solar, c => c.economia)), ""]} />
+            {nota(<>Premissas: usina instalada a {fmtR(PREMISSAS.solar_custo_kwp)}/kWp (média nacional de R$ 2,45/Wp no 1º tri/2026, +20% para projeto, estrutura e licitação); {fmtN(PREMISSAS.solar_geracao_kwh_kwp_ano)} kWh por kWp ao ano no Alto Vale; a usina evita {fmtN(PREMISSAS.solar_aproveitamento * 100)}% do preço que a UC paga hoje por kWh (o fio B — 60% em 2026, 75% em 2027 e 90% em 2028 — não é compensado na energia injetada); no grupo B continua o mínimo de 100 kWh/mês; usina limitada a {PREMISSAS.solar_kwp_max} kWp (microgeração — * = cobre só parte do consumo). No grupo A a usina abate a energia, não a demanda. Precisa de telhado em bom estado e voltado para o norte; o retorno real sai do orçamento.</>)}
+          </div>
+          <div className="space-y-2">
+            <div className="text-white font-bold text-sm">Unidades que já geram (período escolhido)</div>
+            <Tabela<So> nome={`solar-${tituloPeriodo}`} linhas={geradoras} onLinha={u => abrir(u.id)} ordemInicial={{ coluna: "Crédito R$", desc: true }} vazio="Nenhuma energia injetada no período." colunas={[
+              { titulo: "Unidade", valor: u => <NomeUnidade nome={u.nome} endereco={u.endereco} />, csv: u => `${nomeDaUnidade(u.nome, u.endereco)} — ${u.endereco}`, ordem: u => nomeDaUnidade(u.nome, u.endereco) },
+              { titulo: "Injetada kWh", valor: u => fmtN(u.kwh), direita: true, csv: u => u.kwh, ordem: u => u.kwh },
+              { titulo: "Crédito R$", valor: u => fmtR(u.credito), direita: true, csv: u => u.credito.toFixed(2), ordem: u => u.credito },
+              { titulo: "Meses com injeção", valor: u => u.meses, direita: true, ordem: u => u.meses },
+            ]} rodape={["Total", fmtN(soma(geradoras, u => u.kwh)), fmtR(soma(geradoras, u => u.credito)), ""]} />
+          </div>
+        </div>
+      );
+    }
+
+    if (secao === "capacitores") {
+      const nome = { banco: "Banco de capacitores fixo", temporizador: "Temporizador no capacitor existente", nao_compensa: "Não compensa investir" } as const;
+      corpo = (
+        <div className="space-y-4">
+          {nota(<>A CELESC cobra energia reativa quando o fator de potência fica abaixo de 0,92 (REN ANEEL 1.000/2021). Critério daqui: só vale o que <b className="text-gray-300">se paga em até {PREMISSAS.capacitor_payback_anos} anos</b>. Antes de comprar, peça à CELESC a <b className="text-gray-300">memória de massa</b> (medição hora a hora): se o excesso for à noite (reativo capacitivo, entre 23h30 e 6h30), há capacitor sobrando ligado e a solução é um temporizador, muito mais barato que um banco novo.</>)}
+          <Tabela<CandidatoCapacitor> nome="capacitores" linhas={caps} onLinha={c => abrir(c.unidade_id)} vazio="Nenhuma UC pagou energia reativa nos últimos 12 meses." colunas={[
+            { titulo: "Unidade", valor: c => <NomeUnidade nome={c.unidade} endereco={c.endereco} />, csv: c => `${nomeDaUnidade(c.unidade, c.endereco)} — ${c.endereco}` },
+            { titulo: "Reativo/ano", valor: c => fmtR(c.reativo), direita: true, csv: c => c.reativo.toFixed(2), ordem: c => c.reativo },
+            { titulo: `Pode custar até (${PREMISSAS.capacitor_payback_anos} anos)`, valor: c => fmtR(c.limite_investimento), direita: true, csv: c => c.limite_investimento.toFixed(2), ordem: c => c.limite_investimento },
+            { titulo: "Solução indicada", valor: c => <span className={c.solucao === "nao_compensa" ? "text-gray-500" : "text-white"}>{nome[c.solucao]}</span>, csv: c => nome[c.solucao] },
+            { titulo: "Custo estimado", valor: c => (c.solucao === "nao_compensa" ? "—" : `${fmtR(c.custo[0])} a ${fmtR(c.custo[1])}`), direita: true, csv: c => (c.solucao === "nao_compensa" ? "" : `${c.custo[0]}-${c.custo[1]}`) },
+            { titulo: "Retorno", valor: c => (isFinite(c.payback) ? `${fmtN(c.payback, 1)} anos` : "—"), direita: true, csv: c => (isFinite(c.payback) ? c.payback : ""), ordem: c => (isFinite(c.payback) ? c.payback : 99) },
+          ]} />
+          {nota(<>Custos de referência (instalado): temporizador/contator {fmtR(PREMISSAS.capacitor_temporizador[0])} a {fmtR(PREMISSAS.capacitor_temporizador[1])}; banco fixo pequeno (5 a 15 kvar) {fmtR(PREMISSAS.capacitor_banco_fixo[0])} a {fmtR(PREMISSAS.capacitor_banco_fixo[1])}; banco automático (acima de 20 kvar) custa bem mais e só compensa onde o reativo passa de R$ 5 mil por ano. O retorno usa o meio da faixa; o número certo sai do orçamento do eletricista.</>)}
+        </div>
+      );
+    }
+
+    if (secao === "contrato") {
+      corpo = (
+        <div className="space-y-5">
+          <div className="space-y-2">
+            <div className="text-white font-bold text-sm">Mercado livre de energia (grupo A)</div>
+            {ml ? (
+              <>
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  <Indicador titulo="UCs de alta tensão" valor={String(ml.ucs)} detalhe={`${fmtN(ml.kwh)} kWh/ano`} />
+                  <Indicador titulo="Energia (TE) + bandeiras" valor={fmtR(ml.base)} detalhe="o que muda de fornecedor, por ano" />
+                  <Indicador titulo="Economia estimada" valor={`${fmtR(ml.economia[0])} a ${fmtR(ml.economia[1])}`} detalhe={`${fmtN(PREMISSAS.mercado_livre_desconto[0] * 100)}% a ${fmtN(PREMISSAS.mercado_livre_desconto[1] * 100)}% de desconto, por ano`} />
+                </div>
+                {nota("Desde 2024 todo o grupo A pode comprar energia no mercado livre (Portaria MME 50/2022); abaixo de 500 kW, por um comercializador varejista. A rede (TUSD) e a demanda continuam pagas à CELESC; bandeiras deixam de existir para essa energia. Exige licitação, contrato de 3 a 5 anos e aviso à CELESC.")}
+              </>
+            ) : nota("Nenhuma UC de alta tensão no filtro.")}
+          </div>
+          <div className="space-y-2">
+            <div className="text-white font-bold text-sm">Faturar como grupo B ("B optante")</div>
+            <Tabela<CandidatoBOptante> nome="b-optante" linhas={bopt} onLinha={c => abrir(c.unidade_id)} vazio="Nenhuma UC de alta tensão pagaria menos como grupo B." colunas={[
+              { titulo: "Unidade", valor: c => <NomeUnidade nome={c.unidade} endereco={c.endereco} />, csv: c => `${nomeDaUnidade(c.unidade, c.endereco)} — ${c.endereco}` },
+              { titulo: "kWh/ano", valor: c => fmtN(c.kwh), direita: true, csv: c => Math.round(c.kwh) },
+              { titulo: "Hoje (grupo A)", valor: c => fmtR(c.custo_a), direita: true, csv: c => c.custo_a.toFixed(2) },
+              { titulo: "Como grupo B", valor: c => fmtR(c.custo_b), direita: true, csv: c => c.custo_b.toFixed(2) },
+              { titulo: "Economia/ano", valor: c => <span className="text-emerald-300">{fmtR(c.economia)}</span>, direita: true, csv: c => c.economia.toFixed(2), ordem: c => c.economia },
+            ]} />
+            {nota(<>Compara energia + rede + bandeira + demanda + sobra + ultrapassagem + reativo de hoje com o consumo × tarifa média do grupo B da própria Prefeitura ({fmtN(precoB, 4)} R$/kWh). Só é permitido com transformador de até 112,5 kVA (REN ANEEL 1.000/2021, art. 292) — confirmar em vistoria antes de pedir.</>)}
+          </div>
+        </div>
+      );
+    }
+
+    if (secao === "tributos") {
+      const t = (k: keyof TributosFatura, xs: Linha[]) => soma(xs, l => l.tributos?.[k] || 0);
+      corpo = (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            <div className="bg-[#141414] border border-emerald-500/30 rounded-xl p-4 space-y-1">
+              <div className="text-[11px] uppercase tracking-wider text-emerald-300 font-bold">IR retido na energia — fica com o Município</div>
+              <div className="text-2xl font-bold text-white">{fmtR(-t("irpj_retido", e))}</div>
+              <p className="text-[11px] text-gray-400">A Prefeitura desconta o IR da CELESC (1,2% na energia, 4,8% na demanda) e o valor é receita do Município (STF, Tema 1.130). Na água, a CASAN já desconta 4,8% na própria conta ("Valor Serviço"). Confira se toda fatura tem a retenção.</p>
+            </div>
+            <div className="bg-[#141414] border border-white/10 rounded-xl p-4 space-y-1">
+              <div className="text-[11px] uppercase tracking-wider text-gray-400 font-bold">COSIP — o Município paga a si mesmo</div>
+              <div className="text-2xl font-bold text-white">{fmtR(t("cosip", e))}</div>
+              <p className="text-[11px] text-gray-400">Contribuição de iluminação pública cobrada em prédios da própria Prefeitura. Vale ver se a lei municipal isenta os imóveis do Município.</p>
+            </div>
+            <div className="bg-[#141414] border border-white/10 rounded-xl p-4 space-y-1">
+              <div className="text-[11px] uppercase tracking-wider text-gray-400 font-bold">ICMS e PIS/COFINS — só para conhecimento</div>
+              <div className="text-2xl font-bold text-white">{fmtR(t("icms", e) + t("pis_cofins", e))}</div>
+              <p className="text-[11px] text-gray-400">Vêm dentro do preço. Não dá para recuperar: o Município é só quem paga no fim, não o contribuinte (STF, Tema 342). O ICMS da demanda não usada já sai da conta (Súmula 391 do STJ).</p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    conteudo = <div className="space-y-4">{subnav}{corpo}</div>;
   }
 
   const naoClassificados = [...new Set(ls.flatMap(l => l.nao_classificados))];
+  const tituloAba = aba === "economia" ? `Economia — ${SECOES.find(([k]) => k === secao)?.[1]}` : ABAS.find(([k]) => k === aba)?.[1];
   return (
-    <div className="bg-[#0f0f0f] p-6 rounded-xl border border-white/10 shadow-lg space-y-4 w-full" id="relatorios">
+    <div className="bg-[#0f0f0f] p-4 sm:p-6 rounded-xl border border-white/10 shadow-lg space-y-4 w-full" id="relatorios">
       <div className="flex items-center justify-between border-b border-white/10 pb-3 gap-3">
         <h4 className="font-bold text-white text-xl">Relatórios</h4>
         <span className="text-[11px] text-gray-500">{ls.length} faturas no filtro · {tituloPeriodo}</span>
@@ -973,10 +1333,12 @@ export default function Relatorios({ versao }: { versao: number }) {
         <div className="flex flex-wrap gap-1 bg-black/40 p-1 rounded-lg border border-white/10">
           {ABAS.map(([k, t]) => (
             <button key={k} type="button" onClick={() => setAba(k)}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition ${aba === k ? "bg-indigo-600 text-white" : "text-gray-400 hover:text-white hover:bg-white/5"}`}>{t}</button>
+              className={`px-3.5 py-1.5 rounded-md text-sm font-semibold transition ${aba === k ? "bg-indigo-600 text-white" : "text-gray-400 hover:text-white hover:bg-white/5"}`}>
+              {t}{k === "acoes" && abertasAgora.length > 0 && <span className="ml-1.5 px-1.5 rounded-full bg-rose-500/80 text-white text-[10px]">{abertasAgora.length}</span>}
+            </button>
           ))}
         </div>
-        <button type="button" onClick={() => imprimir(`SisPu.JP — ${ABAS.find(([k]) => k === aba)?.[1]} ${tituloPeriodo}`, "relatorios-conteudo")} className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-gray-300 hover:bg-white/5 text-xs">
+        <button type="button" onClick={() => imprimir(`SisPu.JP — ${tituloAba} ${tituloPeriodo}`, "relatorios-conteudo")} className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-gray-300 hover:bg-white/5 text-xs">
           <Printer className="h-3.5 w-3.5" /> Imprimir / PDF
         </button>
       </div>
@@ -985,7 +1347,7 @@ export default function Relatorios({ versao }: { versao: number }) {
         <div className="text-[11px] text-amber-300 bg-amber-500/5 border border-amber-500/30 rounded-lg p-2">⚠️ Itens de fatura que o sistema ainda não sabe classificar (entram em "Outros"): {naoClassificados.join(", ")}</div>
       )}
       <div id="relatorios-conteudo" className="space-y-4">
-        <div className="hidden print-titulo text-sm font-bold">{ABAS.find(([k]) => k === aba)?.[1]} — {tituloPeriodo}</div>
+        <div className="hidden print-titulo text-sm font-bold">{tituloAba} — {tituloPeriodo}</div>
         {conteudo}
       </div>
       {unidadeAberta && <PainelUnidade unidadeId={unidadeAberta} todas={todas} deInicial={deSel} ateInicial={ateSel} onClose={() => setUnidadeAberta(null)} />}

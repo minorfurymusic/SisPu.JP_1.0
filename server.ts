@@ -72,6 +72,14 @@ interface DatabaseState {
   auditoria_registros: AuditoriaRegistro[];
   documentos_processados: DocumentoProcessado[];
   cadastro_mestre_ucs: CadastroMestreUC[];
+  acompanhamentos: Acompanhamento[];
+}
+
+// Andamento de uma ação/alerta dos relatórios. O id é a chave da ação, montada no relatório.
+interface Acompanhamento {
+  id: string; tipo?: string; contrato_id?: string; unidade_id?: string; mes?: string; titulo?: string;
+  status: "novo" | "em_andamento" | "resolvido" | "descartado";
+  responsavel?: string; prazo?: string; observacao?: string; usuario?: string; criado_em: string; atualizado_em: string;
 }
 
 // Initial Seed Data — genuinely empty. No fake/example users, secretarias, UCs, etc.: this app
@@ -89,7 +97,8 @@ const initialDBState: DatabaseState = {
   logs_erros: [],
   auditoria_registros: [],
   documentos_processados: [],
-  cadastro_mestre_ucs: []
+  cadastro_mestre_ucs: [],
+  acompanhamentos: []
 };
 
 // Database utility functions with automatic write persistence (PostgreSQL + Local Cache)
@@ -294,6 +303,7 @@ function aplicarEstado(pgState: any) {
     auditoria_registros: pgState.auditoria_registros || [],
     documentos_processados: pgState.documentos_processados || [],
     cadastro_mestre_ucs: pgState.cadastro_mestre_ucs || [],
+    acompanhamentos: pgState.acompanhamentos || [],
   };
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
@@ -1705,6 +1715,56 @@ app.get("/api/relatorios/fatura", (req, res) => {
     codigo: item.codigo_numero, mes, valor_total: lanc.valor_total, consumo: lanc.consumo, dias: diasDoDoc(doc),
     arquivo: doc?.nome_arquivo || "", itens: itens.map(i => ({ ...i, grupo: grupoDoItem(i.descricao) })),
   });
+});
+
+// Andamento das ações e alertas dos relatórios.
+app.get("/api/acompanhamentos", (req, res) => {
+  res.json(db.acompanhamentos || []);
+});
+
+// Gravações do mesmo acompanhamento em fila: dois campos salvos quase juntos (responsável e
+// anotação) não podem se sobrescrever no banco.
+const filaAcompanhamento = new Map<string, Promise<unknown>>();
+app.put("/api/acompanhamentos/:id", async (req, res) => {
+  const id = String(req.params.id || "").slice(0, 200);
+  const usuario = req.headers["x-user"] as string || "admin";
+  const STATUS = ["novo", "em_andamento", "resolvido", "descartado"];
+  const b = req.body || {};
+  if (!id) return res.status(400).json({ error: "Ação sem identificação." });
+  if (b.status !== undefined && !STATUS.includes(b.status)) return res.status(400).json({ error: "Status inválido." });
+  const texto = (v: any, max = 500) => (typeof v === "string" ? v.trim().slice(0, max) : undefined);
+  const campos: Partial<Acompanhamento> = {};
+  if (b.tipo !== undefined) campos.tipo = texto(b.tipo, 60);
+  if (b.contrato_id !== undefined) campos.contrato_id = texto(b.contrato_id, 80);
+  if (b.unidade_id !== undefined) campos.unidade_id = texto(b.unidade_id, 80);
+  if (b.mes !== undefined) campos.mes = texto(b.mes, 10);
+  if (b.titulo !== undefined) campos.titulo = texto(b.titulo, 300);
+  if (b.status !== undefined) campos.status = b.status;
+  if (b.responsavel !== undefined) campos.responsavel = texto(b.responsavel, 120);
+  if (b.prazo !== undefined) campos.prazo = texto(b.prazo, 10);
+  if (b.observacao !== undefined) campos.observacao = texto(b.observacao, 2000);
+
+  const anterior = filaAcompanhamento.get(id) || Promise.resolve();
+  const vez = anterior.catch(() => {}).then(async () => {
+    db.acompanhamentos = db.acompanhamentos || [];
+    const agora = new Date().toISOString();
+    const atual = db.acompanhamentos.find(x => x.id === id);
+    const antes = atual ? { ...atual } : null;
+    const novo: Acompanhamento = { ...(atual || { id, status: "novo", criado_em: agora }), ...campos, usuario, atualizado_em: agora } as Acompanhamento;
+    await saveDBTargeted(db, [{ table: "acompanhamentos", row: novo }]);
+    if (atual) Object.assign(atual, novo); else db.acompanhamentos.push(novo);
+    saveLocalOnly(db);
+    logAudit("acompanhamentos", id, antes ? "UPDATE" : "INSERT", usuario, antes, novo);
+    return novo;
+  });
+  filaAcompanhamento.set(id, vez);
+  try {
+    res.json(await vez);
+  } catch (err: any) {
+    res.status(503).json({ error: "Não foi possível gravar no banco de dados. Tente de novo em alguns segundos." });
+  } finally {
+    if (filaAcompanhamento.get(id) === vez) filaAcompanhamento.delete(id);
+  }
 });
 
 // Variação de faturas novas (ainda não salvas) em relação ao histórico do mesmo contrato.

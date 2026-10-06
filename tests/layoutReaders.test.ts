@@ -6,6 +6,7 @@ import { splitReportIntoFaturas, avisoItensNaoFecham } from "../src/utils/docume
 import { lerPlanilhaClassificacao } from "../src/utils/planilhaClassificacao";
 import { categorizarItens, GRUPOS, grupoDoItem, demandaDoMes, faixaDemanda, simularDemandaIdeal, consumoMedidoDoTexto, custoDisponibilidade, grupoTensaoDoTexto } from "../src/utils/analiseCelesc";
 import { compararComHistorico } from "../src/utils/variacao";
+import { agregarContratos, precoMedioB, candidatosSolar, candidatosCapacitor, candidatosBOptante, mercadoLivre, PREMISSAS } from "../src/utils/oportunidades";
 import { lerCelescAgrupadora } from "../src/utils/leitorCelescAgrupadora";
 
 const fixture = (nome: string) => fs.readFileSync(path.join(import.meta.dirname, "fixtures", nome), "utf8");
@@ -174,6 +175,50 @@ teste("Relatórios: mínimo pago sem consumo (custo de disponibilidade)", () => 
 
 teste("Itens migrados do sistema antigo da CELESC entram em ajustes", () => {
   for (const d of ["Pag. Duplicidade - Migrado", "Item Migrado", "Dev. Cred. Fatura Cancelada"]) assert.equal(grupoDoItem(d), "ajustes");
+});
+
+teste("Oportunidades: B optante, capacitor, solar e mercado livre com os números de Dom Bosco 820", () => {
+  const G = (o: Partial<Record<string, number>>) => Object.fromEntries(GRUPOS.map(g => [g, 0])) as any as Record<string, number> & typeof o;
+  const meses = Array.from({ length: 12 }, (_, i) => `2025-${String(i + 1).padStart(2, "0")}`);
+  // Dom Bosco 820 (A4) em 12 meses, dividido igualmente por mês.
+  const dom = meses.map(mes => ({ contrato_id: "dom", unidade_id: "u1", unidade_nome: "MUNICIPIO DE RIO DO SUL", unidade_endereco: "DOM BOSCO 820", codigo: "1.616.994.011-54",
+    concessionaria: "CELESC" as const, mes, consumo: 14165 / 12, energia_injetada: 0, grupo_tensao: "A4", demanda: { faturada: 41 },
+    grupos: { ...G({}), energia: 5105 / 12, rede: (9427 - 5105) / 12, demanda: 3953 / 12, ultrapassagem: 1314 / 12, demanda_sem_uso: 4269 / 12, reativo: 734 / 12 } as any }));
+  // Uma UC B3 sem geração define o preço médio do grupo B: R$ 0,8901/kWh.
+  const b3 = meses.map(mes => ({ ...dom[0], contrato_id: "b3", unidade_id: "u2", codigo: "B3", mes, grupo_tensao: "B3", consumo: 10000 / 12,
+    grupos: { ...G({}), energia: 4500 / 12, rede: 4401 / 12, bandeira: 0 } as any }));
+  const cs = agregarContratos([...dom, ...b3]);
+  assert.equal(cs.length, 2);
+  const preco = precoMedioB(cs);
+  assert.equal(Math.round(preco * 10000), 8901);
+  const b = candidatosBOptante(cs, preco);
+  assert.equal(b.length, 1);
+  assert.equal(Math.round(b[0].custo_a), 19697);
+  assert.equal(Math.round(b[0].economia), 7089);
+  // Reativo de R$ 734/ano: para se pagar em 2 anos o serviço pode custar até R$ 1.468 — temporizador, não banco novo.
+  const cap = candidatosCapacitor(cs);
+  assert.equal(cap[0].limite_investimento, 1468);
+  assert.equal(cap[0].solucao, "temporizador");
+  assert.ok(cap[0].vale);
+  // Solar na B3: gera 10.000 − 1.200 kWh; 7,3 kWp; economia = 8.800 × 0,8901 × 0,85.
+  const sol = candidatosSolar(cs).find(c => c.contrato_id === "b3")!;
+  assert.equal(sol.gerar_kwh, 8800);
+  assert.equal(sol.kwp, 7.3);
+  assert.equal(Math.round(sol.economia), Math.round(8800 * 0.8901 * PREMISSAS.solar_aproveitamento));
+  // UC que já usou 112 kW não cabe em transformador de 112,5 kVA: fora do B optante.
+  assert.equal(candidatosBOptante(agregarContratos([...dom.map(l => ({ ...l, demanda: { faturada: 112 } })), ...b3]), preco).length, 0);
+  // Nem a que usa pouco mas tem 200 kW contratados (a instalação é grande).
+  assert.equal(candidatosBOptante(agregarContratos([...dom.map(l => ({ ...l, demanda: { faturada: 60, contratada: 200 } })), ...b3]), preco).length, 0);
+  // Solar limitada à microgeração (75 kWp): uma UC de 200 mil kWh/ano não ganha usina de 167 kWp.
+  const grande = candidatosSolar(agregarContratos(b3.map(l => ({ ...l, consumo: 200000 / 12, grupos: { ...l.grupos, energia: 4500 * 20 / 12, rede: 4401 * 20 / 12 } }))))[0];
+  assert.equal(grande.kwp, 75);
+  assert.ok(grande.limitada);
+  // Mercado livre: só o grupo A; base = energia + bandeira.
+  const ml = mercadoLivre(cs)!;
+  assert.equal(ml.ucs, 1);
+  assert.equal(Math.round(ml.base), 5105);
+  // Com menos de 6 meses de faturas o contrato não entra (não dá para levar a 12 meses).
+  assert.equal(agregarContratos(dom.slice(0, 5)).length, 0);
 });
 
 teste("Alerta de variação: compara com o mês anterior E com o mesmo mês do ano anterior", () => {
