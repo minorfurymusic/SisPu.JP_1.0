@@ -35,9 +35,16 @@ const titulo = (s: string) => espacos(s).toLowerCase().replace(/(^|\s)(\p{L})/gu
 const SEMPRE_POSITIVO = /COSIP|DESLIGA|RELIGA|DISJUNTOR|ILUMIN/i;
 const SEMPRE_NEGATIVO = /INJETAD/i;
 
+// Muda quando a leitura dos itens muda; o servidor relê as faturas antigas gravadas com versão menor.
+// 2: "DEMANDA ISENTA ICMS" é a parte contratada e não usada (sem ICMS, Súmula 391 do STJ).
+export const VERSAO_LEITOR_AGRUPADORA = 2;
+
 function nomeDoItem(desc: string): string {
   const d = espacos(desc).toUpperCase();
   if (/^DEMANDA\s+ULTRAP/.test(d)) return `Demanda de Ultrapassagem ${espacos(desc).replace(/^DEMANDA\s+ULTRAP\.?\s*/i, "")}`.trim();
+  // A demanda contratada vem em duas linhas: a usada ("DEMANDA", com ICMS) e a sobra ("DEMANDA ISENTA
+  // ICMS", sem ICMS) — a mesma "Diferença da Demanda Contratada" do layout novo.
+  if (/ISENTA/.test(d)) return `Diferença da Demanda Contratada${/FORA\s+PONTA/.test(d) ? " Fora Ponta" : /PONTA/.test(d) ? " Ponta" : ""}`;
   if (/^DEMANDA\s+FORA\s+PONTA/.test(d)) return "Demanda Fora Ponta";
   if (/^DEMANDA\s+PONTA/.test(d)) return "Demanda Ponta";
   if (/^DEMANDA/.test(d)) return "Demanda";

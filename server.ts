@@ -13,6 +13,7 @@ import {
 import { runDeterministicParser } from "./src/utils/documentParser";
 import { chaveVinculoDoBloco } from "./src/utils/layoutReaders";
 import { ParserCelesc, VERSAO_LEITOR_CELESC } from "./src/utils/ParserCelesc";
+import { lerCelescAgrupadora, VERSAO_LEITOR_AGRUPADORA } from "./src/utils/leitorCelescAgrupadora";
 import { categorizarItens, grupoDoItem, demandaDoMes, custoDisponibilidade, consumoMedidoDoTexto, grupoTensaoDoTexto, diasFaturadosDoTexto } from "./src/utils/analiseCelesc";
 import { compararComHistorico } from "./src/utils/variacao";
 import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres, deleteLancamentosLote, versaoDoBanco, versaoCarregada } from "./src/db/postgres";
@@ -406,7 +407,17 @@ async function reprocessarFaturasCelesc() {
   for (const doc of db.documentos_processados || []) {
     const d: any = doc?.dados_extraidos;
     if (!d || (doc.layout || "").includes("CASAN") || !/^\s*UC:\s/m.test(doc.origem_conteudo || "")) continue;
-    if (/Valores\s+Faturados/.test(doc.origem_conteudo || "")) continue; // layout antigo (agrupadora): outro leitor
+    if (/Valores\s+Faturados/.test(doc.origem_conteudo || "")) {
+      // Layout antigo (agrupadora), com leitor próprio. Só os itens mudam: valor, consumo e COSIP ficam.
+      if ((Number(d.versao_leitor_agrupadora) || 0) >= VERSAO_LEITOR_AGRUPADORA) continue;
+      const bloco = lerCelescAgrupadora(doc.origem_conteudo).blocos[0];
+      if (!bloco?.itens.length) continue;
+      d.itens_fatura = bloco.itens;
+      d.versao_leitor_agrupadora = VERSAO_LEITOR_AGRUPADORA;
+      rows.push({ table: "documentos_processados", row: doc });
+      faturas++;
+      continue;
+    }
     if ((Number(d.versao_leitor_celesc) || 0) >= VERSAO_LEITOR_CELESC) continue;
     const novo: any = ParserCelesc.parse(doc.origem_conteudo);
     const antes = { consumo: d.consumo, valor_credito: d.valor_credito, valor_diversos: d.valor_diversos };
@@ -448,7 +459,7 @@ async function reprocessarFaturasCelesc() {
   for (let i = 0; i < rows.length; i += 50) {
     await saveDBTargeted(db, rows.slice(i, i + 50));
   }
-  console.log(`[DB] Faturas CELESC relidas com o leitor ${VERSAO_LEITOR_CELESC}: ${faturas} fatura(s), ${lancamentos} lançamento(s) corrigido(s)${avisos ? `, ${avisos} com itens que não fecham com o valor` : ""}.`);
+  console.log(`[DB] Faturas CELESC relidas (leitor ${VERSAO_LEITOR_CELESC}, agrupadora ${VERSAO_LEITOR_AGRUPADORA}): ${faturas} fatura(s), ${lancamentos} lançamento(s) corrigido(s)${avisos ? `, ${avisos} com itens que não fecham com o valor` : ""}.`);
 }
 
 

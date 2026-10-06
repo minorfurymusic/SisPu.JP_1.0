@@ -231,6 +231,18 @@ teste("CELESC layout antigo (agrupadora 01/2024): 148 UCs, total da capa, sinal 
   for (const s of segs) assert.deepEqual(categorizarItens((s.dados_extraidos as any).itens_fatura).naoClassificados, [], s.dados_extraidos.codigo_numero);
 });
 
+teste("CELESC layout antigo: \"DEMANDA ISENTA ICMS\" é a demanda contratada sem uso (contratada = usada + isenta)", () => {
+  const { blocos } = lerCelescAgrupadora(fixture("celesc-agrupadora-2024-01.txt"));
+  const dem = (uc: string) => demandaDoMes(blocos.find(b => b.uc === uc)!.itens as any)!;
+  // Praça Isabel: DEMANDA 17 + DEMANDA ISENTA ICMS 18 = 35 kW contratados.
+  assert.deepEqual([dem("0025232470").faturada, dem("0025232470").sem_uso, dem("0025232470").contratada], [17, 18, 35]);
+  // Centro de Eventos: 52 + 148 = 200 kW.
+  assert.equal(dem("0027966314").contratada, 200);
+  assert.ok(blocos.every(b => !b.itens.some(i => /ISENTA/i.test(i.descricao))));
+  // O servidor relê cada fatura antiga a partir do texto do seu bloco: tem que dar o mesmo resultado.
+  for (const b of blocos) assert.deepEqual(lerCelescAgrupadora(b.texto).blocos[0].itens, b.itens);
+});
+
 teste("Planilha de classificação CASAN: CSV e texto colado (tab) dão as mesmas 108 matrículas e 12 secretarias", () => {
   const csv = fixture("classificacao-casan-2026-09.csv");
   const r = lerPlanilhaClassificacao(csv);

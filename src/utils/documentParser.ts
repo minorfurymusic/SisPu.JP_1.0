@@ -7,7 +7,7 @@ import { DocumentoPagina, convertTextToPaginas } from "./pdfExtractor";
 import { ParserCelesc } from "./ParserCelesc";
 import { ParserCasan } from "./ParserCasan";
 import { detectarLayout, lerCelescColetiva } from "./layoutReaders";
-import { lerCelescAgrupadora } from "./leitorCelescAgrupadora";
+import { lerCelescAgrupadora, VERSAO_LEITOR_AGRUPADORA } from "./leitorCelescAgrupadora";
 import { VERSAO_LEITOR_CELESC } from "./ParserCelesc";
 
 export type DocumentLayoutType = 'CELESC_FATURA' | 'CELESC_RELATORIO' | 'CASAN_FATURA' | 'CASAN_RELATORIO' | 'DESCONHECIDO';
@@ -455,6 +455,7 @@ const segmentarCelescAgrupadora = (text: string, fileName: string): SegmentedFat
       grupo_subgrupo_tensao: b.grupo,
       itens_fatura: b.itens as any,
       versao_leitor_celesc: VERSAO_LEITOR_CELESC,
+      versao_leitor_agrupadora: VERSAO_LEITOR_AGRUPADORA,
     } as any,
     numero_pagina: 1,
     posicao_na_pagina: 1,
