@@ -68,7 +68,7 @@ export async function connectWithRetry(p: pg.Pool, maxRetries = 3, initialDelayM
   throw lastError;
 }
 
-export async function initPostgresSchema(): Promise<boolean> {
+export async function initPostgresSchema(tentativa = 1): Promise<boolean> {
   const p = getPool();
   if (!p) {
     console.log("[DB] DATABASE_URL não informada. Operando em modo de memória local.");
@@ -209,6 +209,14 @@ export async function initPostgresSchema(): Promise<boolean> {
           atualizado_em TEXT
         );
 
+        -- Contador de alterações: sobe a cada gravação. Cada cópia do servidor guarda a versão que
+        -- carregou e, quando o contador muda (outra cópia gravou), recarrega antes de responder.
+        CREATE TABLE IF NOT EXISTS sync_versao (
+          id INT PRIMARY KEY,
+          versao BIGINT NOT NULL
+        );
+        INSERT INTO sync_versao (id, versao) VALUES (1, 0) ON CONFLICT (id) DO NOTHING;
+
         CREATE TABLE IF NOT EXISTS cadastro_mestre_ucs (
           id TEXT PRIMARY KEY,
           uc TEXT UNIQUE NOT NULL,
@@ -270,9 +278,37 @@ export async function initPostgresSchema(): Promise<boolean> {
       client.release();
     }
   } catch (err: any) {
+    // Duas cópias do servidor ligando juntas podem criar a mesma tabela ao mesmo tempo; a que
+    // perde a corrida recebe "duplicate key"/"already exists" — basta tentar de novo.
+    if (tentativa < 3 && (err?.code === '23505' || err?.code === '42P07')) {
+      await new Promise(r => setTimeout(r, 500 * tentativa));
+      return initPostgresSchema(tentativa + 1);
+    }
     console.error("[DB] Falha ao conectar/inicializar PostgreSQL:", err.message || err);
     return false;
   }
+}
+
+// Versão do banco que está na memória deste servidor (null = ainda não carregou).
+let versaoLocal: number | null = null;
+export const versaoCarregada = () => versaoLocal;
+
+export async function versaoDoBanco(): Promise<number | null> {
+  const p = getPool();
+  if (!p) return null;
+  const r = await p.query(`SELECT versao FROM sync_versao WHERE id = 1`);
+  return r.rows[0] ? Number(r.rows[0].versao) : null;
+}
+
+// Chamado dentro da transação de cada gravação. Se o contador só andou 1 (só esta cópia gravou
+// desde o último carregamento), a memória continua atual; se pulou, outra cópia gravou no meio e
+// a próxima conferência recarrega.
+async function marcarAlteracao(client: pg.PoolClient): Promise<number | null> {
+  const r = await client.query(`UPDATE sync_versao SET versao = versao + 1 WHERE id = 1 RETURNING versao`);
+  return r.rows[0] ? Number(r.rows[0].versao) : null;
+}
+function registrarVersaoPropria(nova: number | null) {
+  if (nova !== null && versaoLocal !== null && nova === versaoLocal + 1) versaoLocal = nova;
 }
 
 export async function loadStateFromPostgres(): Promise<any | null> {
@@ -282,6 +318,10 @@ export async function loadStateFromPostgres(): Promise<any | null> {
   try {
     const client = await connectWithRetry(p);
     try {
+      // Lida ANTES dos dados: se alguém gravar durante a leitura, a versão fica para trás e a
+      // próxima conferência recarrega de novo — nunca o contrário.
+      const resVersao = await client.query(`SELECT versao FROM sync_versao WHERE id = 1`).catch(() => ({ rows: [] as any[] }));
+      const versaoLida = resVersao.rows[0] ? Number(resVersao.rows[0].versao) : null;
       const resUsuarios = await client.query(`SELECT * FROM usuarios ORDER BY id`);
       const resSecretarias = await client.query(`SELECT * FROM secretarias ORDER BY id`);
       const resUnidades = await client.query(`SELECT * FROM unidades ORDER BY id`);
@@ -294,6 +334,7 @@ export async function loadStateFromPostgres(): Promise<any | null> {
       const resAuditoria = await client.query(`SELECT * FROM auditoria_registros ORDER BY id DESC`);
       const resDocumentos = await client.query(`SELECT * FROM documentos_processados ORDER BY id DESC`);
       const resCadastroMestreUcs = await client.query(`SELECT * FROM cadastro_mestre_ucs ORDER BY uc`);
+      versaoLocal = versaoLida;
 
       return {
         usuarios: resUsuarios.rows,
@@ -532,7 +573,9 @@ export async function upsertRowsToPostgres(rows: { table: string; row: any }[]):
         await client.query(text, values);
       }
     }
+    const nova = await marcarAlteracao(client);
     await client.query('COMMIT');
+    registrarVersaoPropria(nova);
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -573,7 +616,14 @@ export async function deleteRowFromPostgres(tableName: string, id: string): Prom
 
   const client = await connectWithRetry(p);
   try {
+    await client.query('BEGIN');
     await client.query(`DELETE FROM ${tableName} WHERE id = $1`, [id]);
+    const nova = await marcarAlteracao(client);
+    await client.query('COMMIT');
+    registrarVersaoPropria(nova);
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally {
     client.release();
   }
@@ -614,6 +664,7 @@ export async function deleteLancamentosLote(ids: string[]): Promise<{
       deletedDocumentosFallback = resDocFallback.rows.map(r => r.id);
     }
 
+    registrarVersaoPropria(await marcarAlteracao(client));
     return { deletedLancamentos, deletedDocumentosVinculados, deletedDocumentosFallback };
   } finally {
     client.release();

@@ -14,7 +14,7 @@ import { chaveVinculoDoBloco } from "./src/utils/layoutReaders";
 import { ParserCelesc, VERSAO_LEITOR_CELESC } from "./src/utils/ParserCelesc";
 import { categorizarItens, grupoDoItem, demandaDoMes, custoDisponibilidade, consumoMedidoDoTexto, grupoTensaoDoTexto, diasFaturadosDoTexto } from "./src/utils/analiseCelesc";
 import { compararComHistorico } from "./src/utils/variacao";
-import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres, deleteLancamentosLote } from "./src/db/postgres";
+import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres, deleteLancamentosLote, versaoDoBanco, versaoCarregada } from "./src/db/postgres";
 
 dotenv.config();
 
@@ -33,6 +33,9 @@ const ai = new GoogleGenAI({
 
 // JSON Middleware
 app.use(express.json({ limit: '10mb' }));
+app.use("/api", (req, _res, next) => {
+  garantirEstadoAtual(req.method !== "GET").then(() => next(), () => next());
+});
 
 // In-Memory/JSON File Database State (Simulating PostgreSQL with triggers)
 const DB_FILE = path.join(process.cwd(), "sispu_db.json");
@@ -258,6 +261,62 @@ function scheduleHydrationRetry() {
   }, 15000);
 }
 
+function aplicarEstado(pgState: any) {
+  db = {
+    usuarios: pgState.usuarios || [],
+    secretarias: pgState.secretarias || [],
+    unidades: pgState.unidades || [],
+    despesas: pgState.despesas || [],
+    itens_despesas: pgState.itens_despesas || [],
+    lancamentos: pgState.lancamentos || [],
+    pessoas: pgState.pessoas || [],
+    contatos_email: pgState.contatos_email || [],
+    logs_erros: pgState.logs_erros || [],
+    auditoria_registros: pgState.auditoria_registros || [],
+    documentos_processados: pgState.documentos_processados || [],
+    cadastro_mestre_ucs: pgState.cadastro_mestre_ucs || [],
+  };
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error saving DB file:", err);
+  }
+}
+
+// Mais de uma cópia do servidor pode estar no ar ao mesmo tempo (instâncias do Cloud Run, prévia
+// do AI Studio). Cada uma guarda o banco na memória, carregado ao ligar — sem isto, uma cópia
+// ligada antes de uma importação feita em outra continuava mostrando os dados velhos até ser
+// republicada, e podia regravar por cima informações mais novas. Antes de responder, a cópia
+// confere o contador de alterações do banco (a cada 5 s nas leituras, sempre antes de gravar) e
+// recarrega se outra cópia gravou.
+let checagemEmCurso: Promise<void> | null = null;
+let ultimaChecagemVersao = 0;
+async function garantirEstadoAtual(antesDeGravar: boolean): Promise<void> {
+  if (!postgresHydrated || !getDbUrl()) return;
+  if (!antesDeGravar && Date.now() - ultimaChecagemVersao < 5000) return;
+  if (checagemEmCurso) return checagemEmCurso;
+  checagemEmCurso = (async () => {
+    try {
+      ultimaChecagemVersao = Date.now();
+      const v = await versaoDoBanco();
+      if (v === null || v === versaoCarregada()) return;
+      // Uma sincronização completa em andamento grava o objeto antigo da memória; espera ela
+      // terminar antes de trocar a memória pelo que está no banco.
+      for (let i = 0; i < 60 && (isSavingToPostgres || pendingStateToSave); i++) await delay(250);
+      const pgState = await loadStateFromPostgres();
+      if (pgState) {
+        aplicarEstado(pgState);
+        console.log(`[DB] O banco foi alterado por outra cópia do servidor (versão ${v}) — dados recarregados.`);
+      }
+    } catch (err: any) {
+      console.warn("[DB] Não foi possível conferir a versão do banco:", err?.message || err);
+    } finally {
+      checagemEmCurso = null;
+    }
+  })();
+  return checagemEmCurso;
+}
+
 async function initDatabasePersistence() {
   try {
     const configuredUrl = getDbUrl();
@@ -283,21 +342,7 @@ async function initDatabasePersistence() {
     }
     const pgState = await loadStateFromPostgres();
     if (pgState && (pgState.secretarias?.length > 0 || pgState.documentos_processados?.length > 0)) {
-      db = {
-        usuarios: pgState.usuarios || [],
-        secretarias: pgState.secretarias || [],
-        unidades: pgState.unidades || [],
-        despesas: pgState.despesas || [],
-        itens_despesas: pgState.itens_despesas || [],
-        lancamentos: pgState.lancamentos || [],
-        pessoas: pgState.pessoas || [],
-        contatos_email: pgState.contatos_email || [],
-        logs_erros: pgState.logs_erros || [],
-        auditoria_registros: pgState.auditoria_registros || [],
-        documentos_processados: pgState.documentos_processados || [],
-        cadastro_mestre_ucs: pgState.cadastro_mestre_ucs || [],
-      };
-      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
+      aplicarEstado(pgState);
       console.log("[DB] Estado restaurado com sucesso diretamente do PostgreSQL!");
       // Only now does `db` provably match Postgres — safe to let saves sync/delete by diff.
       postgresHydrated = true;
