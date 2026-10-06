@@ -7,6 +7,8 @@ import { DocumentoPagina, convertTextToPaginas } from "./pdfExtractor";
 import { ParserCelesc } from "./ParserCelesc";
 import { ParserCasan } from "./ParserCasan";
 import { detectarLayout, lerCelescColetiva } from "./layoutReaders";
+import { lerCelescAgrupadora } from "./leitorCelescAgrupadora";
+import { VERSAO_LEITOR_CELESC } from "./ParserCelesc";
 
 export type DocumentLayoutType = 'CELESC_FATURA' | 'CELESC_RELATORIO' | 'CASAN_FATURA' | 'CASAN_RELATORIO' | 'DESCONHECIDO';
 
@@ -427,6 +429,44 @@ export const avisoItensNaoFecham = (itens: { valor: number }[], valorImpresso: n
   return `⚠️ Itens da fatura somam R$ ${reais(soma)}, mas o Valor da UC é R$ ${reais(valorImpresso)} (diferença de R$ ${reais(dif)}). Algum item não foi lido — confira no PDF.`;
 };
 
+// Layout antigo da CELESC (até abr/2024). Já vem com versao_leitor_celesc atual para a releitura
+// automática do servidor (feita para o layout novo) não tocar nesses documentos.
+const segmentarCelescAgrupadora = (text: string, fileName: string): SegmentedFatura[] => {
+  const { blocos } = lerCelescAgrupadora(text);
+  return blocos.map((b, idx) => ({
+    id: `DOC-SEG-CELESC_AGRUPADORA-${Date.now()}-${idx + 1}`,
+    nome_arquivo: `${fileName} (UC ${b.uc})`,
+    layout: "CELESC_FATURA",
+    tamanho: b.texto.length,
+    origem_conteudo: b.texto,
+    dados_extraidos: {
+      mes_ano: b.referencia,
+      codigo_numero: b.uc,
+      valor_total: b.valor ?? 0,
+      consumo: b.consumo,
+      energia_injetada: b.injetada || undefined,
+      valor_imposto: 0,
+      valor_diversos: b.itens.filter(i => /COSIP/i.test(i.descricao)).reduce((a, i) => a + i.valor, 0),
+      valor_credito: 0,
+      medidor: b.medidor || "N/A",
+      unidade_nome: "MUNICIPIO DE RIO DO SUL",
+      endereco: b.endereco,
+      dias_faturados: b.dias || undefined,
+      grupo_subgrupo_tensao: b.grupo,
+      itens_fatura: b.itens as any,
+      versao_leitor_celesc: VERSAO_LEITOR_CELESC,
+    } as any,
+    numero_pagina: 1,
+    posicao_na_pagina: 1,
+    total_na_pagina: 1,
+    posicao_no_lote: idx + 1,
+    total_no_lote: blocos.length,
+    score: 100,
+    scoreLogs: ["Leitor fixo CELESC (relação de faturas agrupadoras, layout antigo)"],
+    avisos: b.avisos,
+  }));
+};
+
 const segmentarCelescColetiva = (text: string, fileName: string): SegmentedFatura[] => {
   const { blocos } = lerCelescColetiva(text);
   return blocos.map((b, idx) => {
@@ -475,6 +515,9 @@ export const splitReportIntoFaturas = (text: string, fileName: string): Segmente
   
   if (detectarLayout(text) === "CELESC_COLETIVA") {
     return segmentarCelescColetiva(text, fileName);
+  }
+  if (detectarLayout(text) === "CELESC_AGRUPADORA") {
+    return segmentarCelescAgrupadora(text, fileName);
   }
 
   if (docType === "CELESC_RELATORIO") {

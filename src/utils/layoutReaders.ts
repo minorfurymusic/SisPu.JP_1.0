@@ -2,7 +2,7 @@
 // O texto de entrada é o mesmo que o app monta a partir do PDF: páginas separadas por "\f",
 // linhas reconstruídas de cima para baixo (ver pdfExtractor.ts).
 
-export type LayoutReconhecido = "CASAN_SCI8095" | "CELESC_COLETIVA";
+export type LayoutReconhecido = "CASAN_SCI8095" | "CELESC_COLETIVA" | "CELESC_AGRUPADORA";
 
 export interface GrupoConferencia {
   rotulo: string;
@@ -24,6 +24,7 @@ export interface ConferenciaLeitura {
 export function detectarLayout(text: string): LayoutReconhecido | null {
   if (/Relat[óo]rio\s*:\s*SCI8095/i.test(text) && /CONTAS QUE COMP[ÕO]EM/i.test(text)) return "CASAN_SCI8095";
   if (/RELA[ÇC][ÃA]O DE UCs DA COLETIVA/i.test(text)) return "CELESC_COLETIVA";
+  if (/CFERAGP0|RELA[ÇC][ÃA]O DE FATURAS AGRUPADORAS/i.test(text)) return "CELESC_AGRUPADORA";
   return null;
 }
 

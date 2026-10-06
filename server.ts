@@ -388,6 +388,7 @@ async function reprocessarFaturasCelesc() {
   for (const doc of db.documentos_processados || []) {
     const d: any = doc?.dados_extraidos;
     if (!d || (doc.layout || "").includes("CASAN") || !/^\s*UC:\s/m.test(doc.origem_conteudo || "")) continue;
+    if (/Valores\s+Faturados/.test(doc.origem_conteudo || "")) continue; // layout antigo (agrupadora): outro leitor
     if ((Number(d.versao_leitor_celesc) || 0) >= VERSAO_LEITOR_CELESC) continue;
     const novo: any = ParserCelesc.parse(doc.origem_conteudo);
     const antes = { consumo: d.consumo, valor_credito: d.valor_credito, valor_diversos: d.valor_diversos };

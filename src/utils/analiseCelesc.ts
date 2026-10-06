@@ -58,9 +58,11 @@ export function grupoDoItem(descricao: string): Grupo {
   if (/MULTA|JUROS/.test(d)) return "multas_juros";
   if (/COSIP|ILUMINACAO PUBLICA/.test(d)) return "cosip";
   if (/TRIBUTO.* RETIDO|IRPJ/.test(d)) return "irpj_retido";
-  if (/FIO ?B|PARTICIPACAO FINANCEIRA|VISTORIA|RELIGA|DESLIGA|LIGACAO|AFERICAO|SERVICO|OBRA|EXTENSAO DE REDE|TAXA/.test(d)) return "infraestrutura";
+  if (/FIO ?B|PARTICIPACAO FINANCEIRA|VISTORIA|RELIGA|DESLIGA|LIGACAO|AFERICAO|SERVICO|OBRA|EXTENSAO DE REDE|TAXA|DISJUNTOR/.test(d)) return "infraestrutura";
   if (/BANDEIRA/.test(d)) return "bandeira";
-  if (/CREDITO|^DIC|^DMIC|^FIC|DEVOLUCAO|DESCONTO|BONUS|ANULACAO|COMPENSACAO|ESTORNO|AJUSTE/.test(d)) return "ajustes";
+  // Layout antigo (até abr/2024): "DEVOL.PAGA DUPLICIDADE", "DEV SDO CTA ANT", "DIF.NDEVOLV/SALDO
+  // NEGATIVO", "CRED VIOL PRAZO", "COMP VIOL META CONTINUIDADE".
+  if (/CREDITO|^DIC|^DMIC|^FIC|DEVOLUCAO|^DEV|^DIF\.|^CRED |^COMP |DESCONTO|BONUS|ANULACAO|COMPENSACAO|ESTORNO|AJUSTE/.test(d)) return "ajustes";
   if (/TUSD/.test(d)) return "rede";
   if (/CONSUMO|\bTE\b/.test(d)) return "energia";
   return "outros";
@@ -117,7 +119,8 @@ export function demandaDoMes(itens: ItemFatura[]): DemandaDoMes | null {
   const qtd = (xs: ItemFatura[]) => xs.reduce((a, i) => a + (Number(i.quantidade) || 0), 0);
   const faturada = Math.max(...dem.map(i => Number(i.quantidade) || 0));
   const ult = de(/ULTRAPASSAGEM/), dif = de(/DIFERENCA DA DEMANDA CONTRATAD/);
-  const ultrapassagem = qtd(ult), sem_uso = qtd(dif);
+  // No layout antigo vem uma linha de ultrapassagem por ocorrência; vale a maior.
+  const ultrapassagem = ult.length ? Math.max(...ult.map(i => Number(i.quantidade) || 0)) : 0, sem_uso = qtd(dif);
   const contratada = ultrapassagem > 0 ? faturada - ultrapassagem : sem_uso > 0 ? faturada + sem_uso : null;
   const preco_kw = Number(dem[0].valor_unitario) || 0;
   const preco_ultrapassagem_kw = Number(ult[0]?.valor_unitario) || preco_kw * 2;
@@ -149,7 +152,9 @@ export function consumoMedidoDoTexto(texto: string): number | null {
 }
 
 // "Grupo / Subgrupo Tensão: A - A4" → "A4"
-export const grupoTensaoDoTexto = (texto: string) => (texto || "").match(/Tens[ãa]o:\s+[AB]\s*-\s*([AB]\w*)/)?.[1] || "";
+// Layout antigo: "... MUNICIPAL A-4 TR-TRIFASICO ..." → "A4"
+export const grupoTensaoDoTexto = (texto: string) => (texto || "").match(/Tens[ãa]o:\s+[AB]\s*-\s*([AB]\w*)/)?.[1] ||
+  ((m => (m ? m[1] + m[2] : ""))((texto || "").match(/\s([AB])-(\d\w*)\s+[A-Z]{2}-[A-Z]+\s+\d{2}\/\d{2}\/\d{4}/)));
 export const diasFaturadosDoTexto = (texto: string) => Number((texto || "").match(/Dias Faturados:\s+(\d+)/)?.[1]) || 0;
 
 // Custo de disponibilidade (grupo B): quem consome menos que o mínimo (30, 50 ou 100 kWh) paga o

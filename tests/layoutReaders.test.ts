@@ -6,6 +6,7 @@ import { splitReportIntoFaturas, avisoItensNaoFecham } from "../src/utils/docume
 import { lerPlanilhaClassificacao } from "../src/utils/planilhaClassificacao";
 import { categorizarItens, GRUPOS, grupoDoItem, demandaDoMes, faixaDemanda, simularDemandaIdeal, consumoMedidoDoTexto, custoDisponibilidade, grupoTensaoDoTexto } from "../src/utils/analiseCelesc";
 import { compararComHistorico } from "../src/utils/variacao";
+import { lerCelescAgrupadora } from "../src/utils/leitorCelescAgrupadora";
 
 const fixture = (nome: string) => fs.readFileSync(path.join(import.meta.dirname, "fixtures", nome), "utf8");
 let falhas = 0;
@@ -208,6 +209,26 @@ teste("CASAN: linha sem leitura anterior e total com o último dígito cortado",
   assert.equal(r.contas[0].leitura_atual, 2447);
   assert.equal(r.contas[1].leitura_anterior, 205);
   assert.equal(r.conferencia.ok, true, JSON.stringify(r.conferencia));
+});
+
+teste("CELESC layout antigo (agrupadora 01/2024): 148 UCs, total da capa, sinal dos créditos e TE/TUSD separados", () => {
+  const txt = fixture("celesc-agrupadora-2024-01.txt");
+  assert.equal(detectarLayout(txt), "CELESC_AGRUPADORA");
+  const r = lerCelescAgrupadora(txt);
+  assert.equal(r.blocos.length, 148);
+  assert.equal(r.conferencia.ok, true, JSON.stringify(r.conferencia.grupos) + r.conferencia.avisos.join(" | "));
+  // Cada UC: itens (com os créditos no sinal certo) − IRPJ retido = Valor impresso.
+  for (const b of r.blocos) assert.ok(Math.abs(b.itens.reduce((a, i) => a + i.valor, 0) - (b.valor || 0)) < 0.015, b.uc);
+  const verdao = r.blocos.find(b => b.uc === "0025509315")!;
+  assert.equal(verdao.valor, 20749.12);
+  assert.equal(verdao.grupo, "A4");
+  assert.ok(verdao.itens.some(i => i.descricao === "Consumo Fora Ponta TUSD" && i.quantidade === 24135));
+  const praca = r.blocos.find(b => b.uc === "0028501714")!; // custo de disponibilidade + devolução sem sinal no PDF
+  assert.ok(praca.itens.some(i => /Devol/.test(i.descricao) && i.valor === -3.63));
+  const segs = splitReportIntoFaturas(txt, "jan2024.pdf");
+  assert.equal(segs.length, 148);
+  assert.equal(segs[0].dados_extraidos.mes_ano, "2024-01-01");
+  for (const s of segs) assert.deepEqual(categorizarItens((s.dados_extraidos as any).itens_fatura).naoClassificados, [], s.dados_extraidos.codigo_numero);
 });
 
 teste("Planilha de classificação CASAN: CSV e texto colado (tab) dão as mesmas 108 matrículas e 12 secretarias", () => {
