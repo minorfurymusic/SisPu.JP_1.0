@@ -105,7 +105,14 @@ function recomendacoes(ls: Linha[], todas: Linha[]): Recomendacao[] {
       if (sim && sim.economia >= 50 && sim.sugerida !== sim.contratada_atual) {
         out.push({ ...base, tipo: "Demanda", economia: sim.economia,
           titulo: `${sim.sugerida > sim.contratada_atual ? "Aumentar" : "Reduzir"} a demanda contratada de ${fmtN(sim.contratada_atual)} para ${fmtN(sim.sugerida)} kW`,
-          detalhe: `Maior uso nos ${sim.meses} meses: ${fmtN(sim.maior_uso, 1)} kW. Com ${fmtN(sim.sugerida)} kW esses meses teriam custado ${fmtR(sim.custo_sugerido)} em demanda, em vez de ${fmtR(sim.custo_atual)}. A mudança segue regras e prazos da CELESC.` });
+          detalhe: (() => {
+            const usos = comDemanda.map(l => l.demanda!.faturada);
+            const acima = usos.filter(u => u > sim.sugerida * 1.05).length;
+            const tipico = [...usos].sort((x, y) => x - y)[Math.floor(usos.length / 2)];
+            return `Uso típico ${fmtN(tipico, 1)} kW, maior uso ${fmtN(sim.maior_uso, 1)} kW (${sim.meses} meses). ` +
+              `Com ${fmtN(sim.sugerida)} kW, ${acima ? `em ${acima} mês(es) haveria ultrapassagem (já incluída na conta) e ` : ""}` +
+              `esses meses teriam custado ${fmtR(sim.custo_sugerido)} em demanda, em vez de ${fmtR(sim.custo_atual)}. A mudança segue regras e prazos da CELESC.`;
+          })() });
       }
     }
     const reat = soma(xs, l => l.grupos?.reativo || 0);

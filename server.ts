@@ -1738,18 +1738,29 @@ FORMATO (markdown simples, sem tabelas):
 
 DADOS (JSON):
 ${JSON.stringify(resumo).slice(0, 60000)}`;
-  const modelos = ["gemini-pro-latest", "gemini-3.6-flash", "gemini-flash-latest"];
+  // "Alta demanda" (503) e limite de uso (429) do Gemini são passageiros: tenta de novo com
+  // espera e passa para o próximo modelo. Só desiste depois de todos.
+  const modelos = ["gemini-pro-latest", "gemini-flash-latest", "gemini-3.6-flash", "gemini-3.1-flash-lite"];
   let ultimoErro: any = null;
   for (const model of modelos) {
-    try {
-      const r = await ai.models.generateContent({ model, contents: prompt, config: { temperature: 0.2 } });
-      const texto = (r as any).text || "";
-      if (texto.trim()) return res.json({ texto, modelo: model });
-    } catch (err: any) {
-      ultimoErro = err;
+    for (let tentativa = 0; tentativa < 2; tentativa++) {
+      try {
+        const r = await ai.models.generateContent({ model, contents: prompt, config: { temperature: 0.2 } });
+        const texto = (r as any).text || "";
+        if (texto.trim()) return res.json({ texto, modelo: model });
+        break;
+      } catch (err: any) {
+        ultimoErro = err;
+        const passageiro = /\b(503|429)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand/i.test(String(err?.message || err));
+        if (!passageiro) break;
+        await delay(2000 * (tentativa + 1));
+      }
     }
   }
-  res.status(502).json({ error: `Não foi possível gerar a análise com o Gemini agora: ${ultimoErro?.message || "sem resposta"}` });
+  const ocupado = /\b(503|429)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|high demand/i.test(String(ultimoErro?.message || ""));
+  res.status(502).json({ error: ocupado
+    ? "O Gemini está sobrecarregado agora (alta demanda no Google). Tente de novo em alguns minutos. As recomendações acima são calculadas pelo próprio sistema e não dependem da IA."
+    : `Não foi possível gerar a análise com o Gemini agora: ${ultimoErro?.message || "sem resposta"}` });
 });
 
 // --- Unidade Gestora como local físico: juntar e separar contratos -------------------------

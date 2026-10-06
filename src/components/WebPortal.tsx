@@ -12,6 +12,13 @@ import FaturasTreeView from "./FaturasTreeView";
 import EditFaturaModal from "./EditFaturaModal";
 import { SugestoesAgrupamento, JuntarContratosModal } from "./UnidadesAgrupamento";
 import Relatorios from "./Relatorios";
+import { categorizarItens, GRUPOS_PERDA } from "../utils/analiseCelesc";
+
+const valorPerdasDosItens = (itens: any[]) => {
+  if (!itens?.length) return 0;
+  const { grupos } = categorizarItens(itens);
+  return GRUPOS_PERDA.reduce((a, g) => a + (grupos[g] || 0), 0);
+};
 import { ImportarClassificacaoModal } from "./ImportarClassificacao";
 
 interface WebPortalProps {
@@ -1037,7 +1044,11 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
       const valor_total = listToUse.reduce((acc, l) => acc + Number(l.valor_total || 0), 0);
       const valor_imposto = listToUse.reduce((acc, l) => acc + Number(l.valor_imposto || 0), 0);
       const energia_injetada = chartMode === 'energia' ? listToUse.reduce((acc, l) => acc + Number(l.energia_injetada || 0), 0) : 0;
-      const desperdicio = 0;
+      // Perdas e penalidades (R$) tiradas dos itens da fatura: ultrapassagem, demanda paga sem uso,
+      // energia reativa excedente, multas e juros. Antes ficava fixo em zero.
+      const desperdicio = chartMode === 'energia'
+        ? Math.round(listToUse.reduce((acc, l) => acc + valorPerdasDosItens(l.itens_fatura || []), 0) * 100) / 100
+        : 0;
 
       return {
         monthIndex: idx,
@@ -1351,7 +1362,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     </div>
                     <div className="flex items-center gap-1.5">
                       <span className="w-3 h-3 rounded-sm bg-rose-400 inline-block shadow-sm"></span>
-                      <span>Desperdício</span>
+                      <span>Perdas e penalidades (R$)</span>
                     </div>
                   </>
                 )}
@@ -1370,7 +1381,8 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     const hValor = d.valor_total > 0 ? Math.max(6, (d.valor_total / chartMaxes.maxValor) * 100) : 0;
                     const hImposto = d.valor_imposto > 0 ? Math.max(6, (d.valor_imposto / chartMaxes.maxImposto) * 100) : 0;
                     const hInjetada = d.energia_injetada > 0 ? Math.max(6, (d.energia_injetada / chartMaxes.maxInjetada) * 100) : 0;
-                    const hDesperdicio = d.desperdicio > 0 ? Math.max(6, d.desperdicio) : 0;
+                    // Mesma escala do Valor Total (os dois são R$), para dar para comparar.
+                    const hDesperdicio = d.desperdicio > 0 ? Math.max(3, (d.desperdicio / chartMaxes.maxValor) * 100) : 0;
 
                     const unitStr = chartMode === 'energia' ? 'kWh' : 'm³';
 
@@ -1402,7 +1414,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                                 </div>
                                 <div className="flex justify-between gap-2 text-rose-300">
                                   <span>Desperdício:</span>
-                                  <span className="font-bold font-mono">{d.desperdicio} kWh</span>
+                                  <span className="font-bold font-mono">{d.desperdicio.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span>
                                 </div>
                               </>
                             )}
@@ -1446,7 +1458,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                               <div
                                 style={{ height: `${hDesperdicio}%` }}
                                 className={`flex-1 rounded-t-sm transition-all duration-300 ${d.desperdicio > 0 ? 'bg-rose-400 hover:bg-rose-300' : 'bg-white/5'}`}
-                                title={`Desperdício: ${d.desperdicio}`}
+                                title={`Perdas e penalidades: ${d.desperdicio.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`}
                               />
                             </>
                           )}
