@@ -2,7 +2,8 @@
 **Prefeitura Municipal de Rio do Sul/SC · SisPu.JP 2.0 · outubro de 2026**
 
 > Todos os números deste estudo saem das faturas importadas no SisPu.JP e podem ser conferidos no
-> próprio sistema (Relatórios → abas Perdas, Demanda, Tributos, Alertas, Energia solar).
+> próprio sistema (Relatórios → abas "O que fazer", "Alertas" e "Economia": perdas, demanda, solar,
+> capacitores, B optante e mercado livre, tributos).
 >
 > **Períodos analisados:**
 > - Principal: últimos 12 meses fechados, **set/2025 a ago/2026**.
@@ -33,37 +34,139 @@
 |---|---|---:|---:|---|---|
 | 1 | Ajustar a demanda contratada de 6 UCs de alta tensão | R$ 56.000 | R$ 67.000 | 3–6 meses | baixo (pedido à CELESC) |
 | 2 | Levar as 12 UCs do grupo A ao mercado livre (comercializador varejista) | R$ 64.000 | R$ 106.000 | 6–12 meses | médio (licitação) |
-| 3 | Faturar 2 UCs pequenas do grupo A como grupo B ("B optante") | R$ 9.900 | R$ 9.900 | 2–4 meses | baixo, se o transformador permitir |
+| 3 | Faturar 2 a 4 UCs pequenas do grupo A como grupo B ("B optante") | R$ 14.100 | R$ 18.500 | 2–4 meses | baixo, se o transformador permitir |
 | 4 | Água: tratar vazamento no mês em que aparece (alerta mensal + revisão da fatura) | R$ 60.000 | R$ 124.000 | imediato | baixo |
 | 5 | Água: uso eficiente nos 15 maiores consumidores (5% a 10% do volume) | R$ 57.000 | R$ 114.000 | 6–12 meses | médio |
 | 6 | Encerrar ligações paradas (energia e água) | R$ 7.000 | R$ 14.700 | 1–3 meses | baixo |
-| 7 | Corrigir fator de potência (reativo) em 2 UCs | R$ 1.700 | R$ 2.200 | 3 meses | baixo |
-| | **Total** | **≈ R$ 256.000** | **≈ R$ 438.000** | | |
+| 7 | Energia reativa: temporizador ou banco pequeno de capacitores em 2 a 3 UCs (só o que se paga em 2 anos) | R$ 1.700 | R$ 1.900 | 3 meses | baixo |
+| | **Total** | **≈ R$ 260.000** | **≈ R$ 446.000** | | |
 
-- O total equivale a **7,8% a 13,4%** do gasto anual com água e energia. Na prática, ele compensa o reajuste da CELESC de agosto/2026.
-- Fora da conta acima (valores únicos, a recuperar):
+- O total equivale a **7,9% a 13,6%** do gasto anual com água e energia. Na prática, ele compensa o reajuste da CELESC de agosto/2026.
+- **Com investimento (obra):** usinas solares nas UCs onde se pagam (seção 4.7).
+  - As 5 melhores: **R$ 291 mil/ano** por R$ 1,07 milhão (retorno de 3,2 a 4,1 anos).
+  - Programa completo (48 UCs, 1.121 kWp): R$ 928 mil/ano por R$ 3,36 milhões.
+  - Não somar com o mercado livre nas mesmas UCs do grupo A: as duas medidas reduzem a mesma energia.
+- Fora da conta acima (a apurar ou a recuperar):
+  - **contas de prédios usados por terceiros**: Associação dos Funcionários, SENAI, IBAMA e Automóvel Clube, até **R$ 115 mil/ano** (seção 4.11);
   - pagamentos em duplicidade e faturas divergentes a conferir (seção 4.6);
   - R$ 37.093 de "Participação Financeira" a validar (seção 4.9).
 
-**As 5 ações para começar já:**
-1. Pedir à CELESC a nova demanda contratada:
-   - Centro de Eventos: 200 → 100 kW;
-   - Praça Isabel: 35 → 100 kW;
-   - CAIC: 34 → 74 kW;
-   - Posto Verdão: 80 → 131 kW;
-   - Das Madeiras 3000: 91 → 52 kW;
-   - UPA: 50 → 46 kW.
+**Cada ação está explicada passo a passo na seção 0.1.** No sistema, elas aparecem como cartões na aba **"O que fazer"**, cada um com status, responsável e anotação.
 
-   Aumentos valem de imediato. Reduções seguem o aviso do contrato.
-2. Mandar vistoria de vazamento, hoje:
-   - Complexo do Estádio (233724-0, 888556-7 e Cancha de Bocha 850410-5);
-   - Escola Modelo Ella Kurth (2021937-7);
-   - CE Anibal de Barba (2021938-5).
-3. Verificar a **Policlínica (919792-3)**. O consumo caiu de ~900 m³/mês para **0 m³** desde jan/2026: ou o medidor parou (risco de cobrança retroativa), ou a unidade mudou.
-4. Abrir o processo de **mercado livre** para o grupo A:
-   - estudo de carga, termo de referência e licitação de comercializador varejista;
-   - aviso à CELESC.
-5. Usar todo mês o relatório de **Alertas** do sistema, que compara com o mês anterior e com o mesmo mês do ano anterior. Cada alerta tem responsável e prazo.
+---
+
+## 0.1 O que fazer agora — cada ação explicada
+
+### Ação 1 — Ajustar a demanda contratada (6 UCs de alta tensão)
+
+- **O que é.** Os prédios ligados em alta tensão (grupo A) reservam no contrato com a CELESC uma potência em kW, a "demanda contratada".
+  - Se usam menos, pagam a reserva inteira mesmo assim (demanda sem uso).
+  - Se passam de 5% acima, a parte de cima custa o dobro (ultrapassagem).
+- **Por que agir.** Em 12 meses foram **R$ 64 mil de demanda sem uso** e **R$ 50 mil de ultrapassagem**.
+  - Centro de Eventos: contrata 200 kW e usa em média 65 kW.
+  - Praça Isabel: contrata 35 kW e usa de 82 a 112 kW.
+- **Prova.** A fatura de ago/2026 da Praça Isabel refeita item a item (seção 3.1): só a ultrapassagem custou R$ 1.428,40 naquele mês.
+- **Passo a passo:**
+  1. O Planejamento confirma com cada secretaria se há mudança prevista: equipamento novo, ampliação ou fechamento.
+  2. Pegar o contrato de cada UC com a CELESC, para ver a demanda atual e as regras de alteração.
+  3. Protocolar na CELESC o pedido com os valores da tabela 4.1.
+     - Aumento vale no ciclo seguinte.
+     - Redução costuma exigir aviso de 180 dias e só pode ser feita uma vez por ano.
+  4. Nas faturas seguintes, conferir na aba Economia → Demanda: os quadrados devem ficar verdes (uso de 90% a 100% da contratada).
+- **Quem.** Planejamento (pedido), secretarias (informação de uso) e Fazenda (contrato).
+- **Quanto.** **R$ 56 mil/ano**: proposta equilibrada, com no máximo 1 a 3 meses de ultrapassagem.
+- **Cuidado.** Não cortar demais onde há eventos. O Centro de Eventos chegou a 193 kW em set/2025; por isso a proposta é 100 kW, e não os 68 kW da conta mínima.
+
+### Ação 2 — Vistoriar vazamentos de água (Estádio, Escola Modelo, Anibal de Barba)
+
+- **O que é.** Quando a água sobe de um mês para o outro sem motivo, quase sempre é vazamento: boia da caixa d'água, descarga, cano enterrado ou irrigação.
+- **Por que agir já.** Acima de 10 m³, cada m³ custa **R$ 19,14**, e **R$ 38,28** onde há esgoto.
+  - O vazamento da CE Anibal de Barba em 2025 custou **mais de R$ 95 mil em 3 meses**.
+  - Hoje há três casos subindo:
+    - o complexo do Estádio sobe desde jun/2026;
+    - a Escola Modelo teve picos de 362 a 506 m³ (o normal é ~100);
+    - a Anibal de Barba dobrou desde fev/2026.
+- **Passo a passo:**
+  1. **Teste do hidrômetro.** Fechar todas as torneiras e registros do prédio, anotar a leitura e esperar 1 hora sem uso. Se o número mudou, há vazamento.
+  2. **Procurar a causa:** caixa d'água transbordando, descargas, torneiras, piso úmido ou grama verde demais em cima de cano, irrigação.
+  3. **Consertar** e guardar nota fiscal e fotos.
+  4. **Pedir à CASAN a revisão da conta** por vazamento oculto, com os comprovantes. A conta volta para a média.
+  5. **Registrar** no cartão do alerta, no sistema: status, responsável e anotação.
+- **Quem.** Obras/Manutenção, com a direção de cada unidade.
+- **Quanto.** De R$ 60 mil a R$ 124 mil por ano em picos evitados (seção 6.1).
+
+### Ação 3 — Policlínica (919792-3): consumo de água zerado
+
+- **O que é.** A matrícula consumia de 800 a 1.100 m³ por mês (R$ 16 a 18 mil) e desde jan/2026 marca **0 m³**.
+- **Por que importa.** Há duas explicações possíveis:
+  - **O medidor parou.** A CASAN pode cobrar depois o consumo não medido, pela média: até **~R$ 150 mil** acumulados em 2026.
+  - **A Policlínica mudou de endereço.** Então a água dela está sendo paga em outra matrícula.
+- **Passo a passo:**
+  1. A Saúde confirma se a Policlínica ainda funciona na R. Tuiuti, 104.
+  2. Ler o hidrômetro com uma torneira aberta e ver se o número se mexe.
+  3. **Se não se mexe:** abrir chamado escrito na CASAN para trocar o medidor. Pedir que o período parado seja cobrado pela média e parcelado.
+  4. **Se a unidade mudou:** pedir o encerramento da matrícula.
+- **Quem.** Saúde e Planejamento.
+
+### Ação 4 — Mercado livre de energia para as UCs de alta tensão
+
+- **O que é.** Desde 2024, prédios em alta tensão podem comprar a energia de outro fornecedor, um comercializador varejista.
+  - À CELESC continuam indo só a rede e a demanda.
+  - O preço da energia fica fechado em contrato, normalmente mais barato, e **sem bandeiras tarifárias**.
+- **Por que.** As 12 UCs do grupo A gastam **R$ 426 mil/ano** com energia (TE) e bandeiras (seção 4.2). Com 15% a 25% de desconto, a economia é de **R$ 64 mil a R$ 106 mil por ano**.
+- **Passo a passo:**
+  1. **Levantar a carga.** O consumo mensal, na ponta e fora da ponta, das 12 UCs já está no sistema.
+  2. **Pedir propostas** a 3 ou mais comercializadores varejistas, só para estimar o preço.
+  3. **Preparar a licitação** (Lei 14.133/2021): estudo técnico preliminar e termo de referência. Prever:
+     - as UCs atendidas;
+     - prazo de 3 a 5 anos;
+     - flexibilidade de volume;
+     - preço reajustado por índice.
+  4. **Licitar** (pregão).
+  5. **Avisar a CELESC** da saída do mercado cativo, no prazo do contrato, e adequar o medidor, se ela pedir.
+  6. **Migrar** e acompanhar as faturas.
+- **Quem.** Planejamento, Licitações e Procuradoria.
+- **Cuidado.** O contrato é longo. Escolha um fornecedor sólido e preço com reajuste definido.
+
+### Ação 5 — Pagamentos em duplicidade e faturas com dois valores
+
+- **O que é:**
+  - Duas UCs de iluminação pública recebem crédito de "Pagamento em duplicidade": a Prefeitura pagou duas vezes, e a CELESC devolve aos poucos.
+  - 9 faturas aparecem com dois valores diferentes para o mesmo mês: CEI Moacir Tonon, Escola Modelo, Anibal de Barba e Luiz Adelar Soldatelli (tabela em 4.6).
+- **Passo a passo:**
+  1. A Fazenda lista o que foi efetivamente pago à CELESC nessas UCs e meses.
+  2. Compara com o valor correto de cada fatura.
+  3. Se pagou a mais: pedir por escrito a devolução ou o crédito. Pelo CDC (art. 42), a devolução é em dobro, salvo engano justificável.
+  4. Para os créditos que já estão vindo: pedir o extrato do saldo e conferir se fecha.
+- **Quem.** Fazenda.
+
+### Ação 6 — Contas de prédios usados por terceiros (achado novo)
+
+- **O que é.** A Prefeitura paga contas de imóveis que aparecem em nome de outras entidades, ou que estão cedidos a elas (seção 4.11):
+  - **Associação dos Funcionários** (energia): R$ 31 mil/ano;
+  - **prédio da Estrada da Madeira 3000, classificado como "SENAI"** (água): R$ 39 mil/ano, mais energia de até R$ 44 mil/ano;
+  - **IBAMA** e **Automóvel Clube** (água).
+- **Por que.** Se o termo de cessão ou o convênio não diz que a Prefeitura paga as contas, quem usa o prédio deve pagar ou reembolsar.
+- **Passo a passo:**
+  1. Patrimônio/Procuradoria localiza o termo de cessão ou convênio de cada imóvel.
+  2. **Se o termo não prevê o pagamento:** pedir a troca de titularidade da conta (CELESC/CASAN) para a entidade, ou cobrar reembolso.
+  3. **Se prevê:** classificar no sistema na secretaria responsável pelo convênio.
+- **Quanto.** Até **~R$ 115 mil/ano**.
+
+### Ação 7 — Rotina mensal com a aba "O que fazer"
+
+- **O que é.** Todo mês, depois de importar as faturas, a aba "O que fazer" lista:
+  - os alertas do mês: possível vazamento, consumo zerado, valor que subiu sem o consumo subir;
+  - as economias recorrentes: demanda, B optante, capacitores, solar e mercado livre.
+
+  Cada cartão tem status (novo, em andamento, resolvido, descartado), responsável e anotação, gravados para todos.
+- **Rotina sugerida:**
+
+  | Prazo | O que fazer |
+  |---|---|
+  | Dia da importação | O Planejamento distribui os cartões. |
+  | Em até 5 dias | Vistoria. |
+  | Em até 30 dias | Cartão resolvido, ou descartado com explicação. |
 
 ---
 
@@ -196,10 +299,20 @@ Grupo A4, modalidade horária verde, **demanda contratada de 35 kW**. Valor da f
   - base: STF, RE 1.293.453, **Tema 1.130**, que garante ao Município o IR retido nos pagamentos que faz, pelas regras da Receita Federal (IN RFB 1.234/2012, depois IN RFB 2.145/2023).
 - **CASAN:** a coluna "Valor Serviço" é **−4,8%** do valor de água + esgoto em 2.918 das 3.058 contas lidas. É a mesma retenção de IR: R$ 55.789 em 12 meses.
 - **Achado — UC sem retenção:** em 12 meses, **1 UC não teve nenhuma retenção**: **1.565.118.011-49 (Mafalda Lingner Porto)**, com R$ 31.130/ano.
-  - Pela taxa efetiva das demais (1,6%), são ~R$ 500/ano que deixaram de ficar com o Município.
-  - Conferir se essa UC está em outro CNPJ (fundo, autarquia) ou se é falha de cadastro.
+  - Ela está em nome da **"Associação dos Funcionários e/ou Servidores Públicos Municipais"**, não da Prefeitura. Por isso a CELESC não aplica a retenção de órgão público.
+  - A pergunta de fundo é outra: por que a Prefeitura paga essa conta? (seção 4.11)
 
-### 3.4 Reajustes da CELESC
+### 3.4 Tributos: o que vale para a Prefeitura
+
+| Tributo | Valor em 12 meses | Dá para fazer algo? |
+|---|---:|---|
+| **ICMS** (17%) e **PIS/COFINS** | R$ 364 mil + PIS/COFINS, embutidos | **Não.** O Município é só "contribuinte de fato": paga no preço, mas quem deve o imposto é a CELESC. A imunidade entre entes públicos (CF, art. 150, VI, "a") não se aplica nesse caso (STF, RE 608.872, Tema 342). A única redução possível, o ICMS sobre a demanda não usada, já é aplicada pela CELESC (seção 3.2). |
+| **IR retido** (1,2% na energia, 4,8% na demanda; 4,8% na água) | R$ 34 mil (CELESC) + R$ 56 mil (CASAN) | **Sim, é receita.** Pelo Tema 1.130 do STF, o IR retido fica com o Município. A Fazenda deve contabilizá-lo como receita e conferir se toda fatura tem a retenção. |
+| **COSIP** | R$ 46 mil, em 13 UCs | **Talvez.** É tributo municipal cobrado de prédios do próprio Município (seção 4.8). |
+
+No sistema, a seção **Tributos** da aba Economia mostra só esses três blocos, com essa explicação.
+
+### 3.5 Reajustes da CELESC
 
 | Vigência | Evento | Efeito médio | Alta tensão | Baixa tensão |
 |---|---|---:|---:|---:|
@@ -250,7 +363,7 @@ Grupo A4, modalidade horária verde, **demanda contratada de 35 kW**. Valor da f
 - **Aumentos** (Praça Isabel, CAIC, Posto Verdão): pedir já. Cada mês com contrato baixo custa ultrapassagem em dobro.
 - **Reduções** (Centro de Eventos, Das Madeiras 3000, UPA): o contrato de uso do sistema de distribuição costuma exigir **aviso de 180 dias** e no máximo **uma redução a cada 12 meses**. Confirme no contrato de cada UC e protocole já, para que a redução valha no início de 2027.
 - **Antes de fechar o número**: perguntar a cada secretaria se vem equipamento novo (ar-condicionado, ampliação). Uma ampliação justifica contratar mais, não menos.
-- **No sistema**: a aba Demanda mostra, para cada UC, a faixa de uso mês a mês e a sugestão. Repetir a análise a cada 12 meses.
+- **No sistema**: Relatórios → Economia → Demanda mostra, para cada UC, a faixa de uso mês a mês e a sugestão. Repetir a análise a cada 12 meses.
 
 ### 4.2 Mercado livre de energia para o grupo A — R$ 64 a 106 mil/ano
 
@@ -299,19 +412,28 @@ Grupo A4, modalidade horária verde, **demanda contratada de 35 kW**. Valor da f
 | Elevado | 95.875 |
 | CAIC | 92.089 |
 
-### 4.3 Faturar pequenas UCs do grupo A como grupo B ("B optante") — R$ 9,9 mil/ano
+### 4.3 Faturar pequenas UCs do grupo A como grupo B ("B optante") — R$ 14 a 18,5 mil/ano
 
-- **Regra:** a REN 1.000/2021 (art. 292) permite à UC do grupo A ser faturada pela tarifa do grupo B quando a **potência dos transformadores não passa de 112,5 kVA**, entre outros casos. Sem demanda contratada, a UC deixa de pagar demanda, sobra e ultrapassagem.
-- **Comparação:** quanto a UC paga hoje contra o que pagaria pela tarifa média do grupo B da própria Prefeitura (energia + rede + bandeira = **R$ 0,8901/kWh**, 106 UCs B sem geração, 12 meses).
+- **Regra.** A REN 1.000/2021 (art. 292) permite que a UC do grupo A seja faturada pela tarifa do grupo B quando a **potência dos transformadores não passa de 112,5 kVA**.
+  - Sem demanda contratada, a UC deixa de pagar demanda, sobra, ultrapassagem e **energia reativa**.
+- **Quem pode.** Só UCs que nunca usaram nem contrataram mais de **90 kW**, o que cabe com folga num transformador de 112,5 kVA. Ficam de fora:
+  - Praça Isabel e Centro de Eventos (usam ou contratam mais);
+  - Das Madeiras 3000 (contrata 91 kW).
+- **Comparação.** O que a UC paga hoje contra o que pagaria pela tarifa média do grupo B da própria Prefeitura: energia + rede + bandeira = **R$ 0,8900/kWh**, média de 12 meses das UCs B sem geração.
 
-| UC | kWh/ano | Hoje (energia + rede + demanda + sobra + ultrapassagem + reativo) | Como B (kWh × 0,8901) | Economia |
-|---|---:|---:|---:|---:|
-| 1.616.994.011-54 Dom Bosco 820 | 14.165 | R$ 19.697 | R$ 12.608 | **R$ 7.089** |
-| 4.165.914.011-94 Pref. Wenceslau Borini | 6.191 | R$ 8.353 | R$ 5.511 | **R$ 2.842** |
+| UC | kWh/ano | Hoje (grupo A) | Como grupo B | Economia/ano | Observação |
+|---|---:|---:|---:|---:|---|
+| 1.616.994.011-54 Dom Bosco 820 | 14.165 | R$ 19.696 | R$ 12.607 | **R$ 7.089** | também acaba o reativo (R$ 734) |
+| 2.711.752.011-68 Escola Modelo | 38.578 | R$ 41.390 | R$ 34.334 | **R$ 7.056** | também acaba o reativo (R$ 985) |
+| 1.005.139.011-46 Ginásio Praça Isabel | 69.384 | R$ 64.126 | R$ 61.752 | R$ 2.374 | |
+| 2.183.046.011-72 Elevado | 95.875 | R$ 87.321 | R$ 85.328 | R$ 1.992 | |
+| 1.056.230.011-34 CAIC | 92.089 | R$ 86.050 | R$ 81.959 | R$ 4.091 | ajustar a demanda (4.1) rende mais: R$ 7.703 |
 
-- **Condição:** confirmar a potência do transformador (vistoria ou cadastro CELESC).
-- **Geração solar:** Dom Bosco 820 tem geração solar. A opção pelo grupo B com geração na própria UC é permitida (Lei 14.300/2022).
-- **Grandes UCs:** nas UCs do grupo A de maior consumo a tarifa A4 é mais barata (R$ 0,64 a R$ 0,80/kWh contra R$ 0,89). Para elas, o B optante **não** compensa.
+- **Conservadora:** Dom Bosco + Escola Modelo = **R$ 14,1 mil/ano**.
+- **Máxima:** mais Ginásio e Elevado = **R$ 18,5 mil/ano**. O CAIC fica com o ajuste de demanda.
+- **Condição.** Confirmar a potência do transformador, por vistoria ou no cadastro da CELESC, antes de pedir.
+- **Geração solar.** Dom Bosco 820 e Escola Modelo têm geração solar. A opção pelo grupo B com geração na própria UC é permitida (Lei 14.300/2022).
+- **Grandes UCs.** Nas UCs do grupo A de maior consumo, a tarifa A4 é mais barata (R$ 0,65 a R$ 0,80/kWh contra R$ 0,89). Para elas o B optante **não** compensa.
 
 ### 4.4 Ligações paradas — R$ 7 a 14,7 mil/ano (energia + água)
 
@@ -345,13 +467,27 @@ Grupo A4, modalidade horária verde, **demanda contratada de 35 kW**. Valor da f
 - Se não for, pedir o **encerramento contratual**: na energia acaba o custo de disponibilidade, na água a tarifa fixa.
 - Semáforos e iluminação pública zerados merecem vistoria: pode ser medidor parado com consumo real.
 
-### 4.5 Energia reativa (fator de potência) — R$ 1,7 a 2,2 mil/ano
+### 4.5 Energia reativa e capacitores — só o que se paga em até 2 anos
 
-- **Regra:** o grupo A paga energia reativa excedente quando o fator de potência fica abaixo de **0,92** (REN 1.000/2021, apurado hora a hora).
-- **Quem pagou:** R$ 2.248 em 12 meses, quase tudo em duas UCs:
-  - **Escola Modelo** (2.711.752.011-68): R$ 985;
-  - **Dom Bosco 820** (1.616.994.011-54): R$ 734.
-- **Ação:** pedir a um eletricista a verificação ou instalação de banco de capacitores nessas duas UCs. É barato e se paga em 1 a 3 anos.
+- **Regra.** O grupo A paga energia reativa excedente quando o fator de potência fica abaixo de **0,92**, apurado hora a hora (REN 1.000/2021). Há dois casos diferentes:
+  - **De dia** (reativo indutivo): falta capacitor. Motores, ar-condicionado e reatores puxam energia "defasada".
+  - **À noite**, das 23h30 às 6h30 (reativo capacitivo): **sobra** capacitor. Um banco fica ligado com o prédio vazio. A solução é um **temporizador**, bem mais barato que um banco novo.
+- **Critério.** O serviço precisa se pagar em até 2 anos, ou seja, custar até 2 × o reativo pago por ano.
+
+| UC | Reativo/ano | Pode custar até (2 anos) | Solução indicada | Custo estimado (instalado) | Retorno |
+|---|---:|---:|---|---:|---:|
+| 2.711.752.011-68 Escola Modelo | R$ 985 | R$ 1.970 | banco fixo pequeno (5 a 15 kvar) | R$ 1.500 a 4.000 | 1,5 a 4,1 anos |
+| 1.616.994.011-54 Dom Bosco 820 | R$ 734 | R$ 1.467 | conferir capacitor ligado à noite → temporizador | R$ 300 a 800 | 0,4 a 1,1 ano |
+| 1.005.139.011-46 Ginásio Praça Isabel | R$ 186 | R$ 371 | só se for capacitor à noite (temporizador barato) | R$ 300 a 800 | 1,6 a 4,3 anos |
+| Outras 8 UCs | menos de R$ 110 cada | — | **não compensa investir** | — | — |
+
+- **Passo a passo:**
+  1. Pedir à CELESC a **memória de massa** da UC: o registro hora a hora da medição.
+  2. Um eletricista identifica se o excesso é de dia (falta capacitor) ou à noite (sobra capacitor).
+  3. Pedir dois orçamentos. Só executar se o custo ficar abaixo do limite de 2 anos da tabela.
+- **Alternativa.** Se Dom Bosco ou Escola Modelo virarem B optante (4.3), a cobrança de reativo acaba e não precisa de capacitor.
+- **Custos de referência.** Uma célula de capacitor WEG de 5 a 12,5 kvar custa US$ 95 a 147 (preço de lista internacional). Um banco automático Schneider de 25 kvar custa ~£ 3.100. No Brasil, um banco fixo pequeno instalado sai por R$ 1.500 a 4.000. O número certo vem do orçamento.
+- **Economia:** R$ 1.700/ano (Escola Modelo + Dom Bosco) a R$ 1.900/ano (+ Ginásio).
 
 ### 4.6 Cobranças em duplicidade e faturas divergentes (valores a recuperar)
 
@@ -393,6 +529,43 @@ Grupo A4, modalidade horária verde, **demanda contratada de 35 kW**. Valor da f
 - **Ação 2:** novas usinas só valem a pena onde o consumo é **diurno e alto** (escolas, Adm 25 de Julho, Posto Verdão), para usar a energia na hora e depender menos da compensação.
 - **Grupo A:** o crédito compensa energia, **não** demanda. Antes de pôr usina numa UC do grupo A, ajustar a demanda (4.1).
 
+**Onde uma nova usina se paga** (UCs sem geração, set/2025–ago/2026):
+- **Tamanho:** a usina cobre o consumo da UC menos o mínimo de 100 kWh/mês do grupo B, limitada a **75 kWp** (teto da microgeração na Lei 14.300/2022).
+- **Premissas:**
+  - **Custo:** R$ 3.000/kWp instalado. A média nacional foi R$ 2,45/Wp no 1º trimestre de 2026; somamos 20% para projeto, estrutura, homologação e licitação em prédio público.
+  - **Geração:** 1.200 kWh/kWp/ano, no Alto Vale do Itajaí.
+  - **Aproveitamento:** a usina evita 85% do preço que a UC paga hoje por kWh, porque o fio B (60% em 2026, 75% em 2027 e 90% em 2028) não é compensado na energia injetada.
+  - **Telhado:** ~6,5 m² por kWp.
+
+| UC | Local | Grupo | kWh/ano | R$/kWh hoje | Usina | Telhado | Investimento | Economia/ano | Retorno |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 1.216.665.011-03 | Das Madeiras 2170 | B3 | 95.425 | 0,902 | 75 kWp* | 488 m² | R$ 225.000 | R$ 68.984 | 3,3 anos |
+| 2.183.046.011-72 | Elevado | A4 | 95.875 | 0,797 | 75 kWp* | 488 m² | R$ 225.000 | R$ 60.956 | 3,7 anos |
+| 3.180.517.011-23 | UPA (Lote 20) | A4 | 108.192 | 0,730 | 75 kWp* | 488 m² | R$ 225.000 | R$ 55.857 | 4,0 anos |
+| 1.788.984.011-25 | Centro de Eventos | A4 | 102.208 | 0,711 | 75 kWp* | 488 m² | R$ 225.000 | R$ 54.426 | 4,1 anos |
+| 1.836.993.011-65 | João Ledra | B3 | 67.227 | 0,906 | 55 kWp | 358 m² | R$ 165.068 | R$ 50.864 | 3,2 anos |
+| 1.598.029.011-07 | Posto de Saúde Verdão | A4 | 256.960 | 0,662 | 75 kWp* | 488 m² | R$ 225.000 | R$ 50.673 | 4,4 anos |
+| 1.005.136.011-70 | Adm 25 de Julho | A4 | 155.213 | 0,652 | 75 kWp* | 488 m² | R$ 225.000 | R$ 49.897 | 4,5 anos |
+| 1.005.139.011-46 | Ginásio Praça Isabel | A4 | 69.384 | 0,755 | 57,8 kWp | 376 m² | R$ 173.460 | R$ 44.543 | 3,9 anos |
+| 1.004.748.011-07 | Das Madeiras 3000 | A4 | 68.432 | 0,656 | 57 kWp | 371 m² | R$ 171.080 | R$ 38.184 | 4,5 anos |
+| 1.005.089.011-87 | Ruy Barbosa 204 | B3 | 32.683 | 0,915 | 26,2 kWp | 171 m² | R$ 78.708 | R$ 24.492 | 3,2 anos |
+| 1.005.277.011-60 | Centro de Convivência dos Idosos | B3 | 31.968 | 0,905 | 25,6 kWp | 167 m² | R$ 76.920 | R$ 23.666 | 3,3 anos |
+| 3.518.044.011-40 | UBS Brehmer | B3 | 30.520 | 0,902 | 24,4 kWp | 159 m² | R$ 73.300 | R$ 22.470 | 3,3 anos |
+| 1.004.892.011-41 | Ana Nery | B3 | 28.570 | 0,899 | 22,8 kWp | 148 m² | R$ 68.425 | R$ 20.912 | 3,3 anos |
+| 1.834.171.011-06 | CEI Canta Galo | B3 | 26.301 | 0,897 | 20,9 kWp | 136 m² | R$ 62.753 | R$ 19.137 | 3,3 anos |
+
+\* limitada a 75 kWp: cobre só parte do consumo.
+
+- **Programa completo:** 48 UCs, 1.121 kWp, **R$ 3,36 milhões** de investimento, **R$ 928 mil/ano** de economia.
+- A lista inteira, com telhado e retorno de cada UC, está no sistema: Economia → Energia solar.
+- A UC 1.565.118.011-49 (Associação dos Funcionários) também aparece na lista do sistema, mas antes é preciso resolver a questão da seção 4.11.
+- **Como fazer:**
+  1. **Vistoria dos telhados:** área, estado, orientação para o norte e sombra.
+  2. **Começar pelas que usam energia de dia:** escolas, UBS, administração. Assim a energia é usada na hora e depende menos do fio B.
+  3. **Projeto e homologação na CELESC.**
+  4. **Licitação por lote de prédios.** O preço por kWp cai em lote.
+- **Cuidado:** nas UCs do grupo A, a usina e o mercado livre (4.2) reduzem a mesma energia. Fazer o estudo das duas juntas.
+
 ### 4.8 COSIP cobrada de prédios municipais — R$ 46.373/ano (13 UCs)
 
 - **O que é:** a Contribuição para Custeio da Iluminação Pública (CF, art. 149-A) é um tributo **municipal** cobrado na fatura da CELESC.
@@ -416,6 +589,26 @@ Grupo A4, modalidade horária verde, **demanda contratada de 35 kW**. Valor da f
   - reduzir consumo nos meses de bandeira vermelha (ar-condicionado e iluminação);
   - geração solar;
   - mercado livre (4.2), que elimina bandeiras para o grupo A.
+
+### 4.11 Contas de prédios usados por terceiros — até R$ 115 mil/ano a apurar
+
+A Prefeitura paga contas de imóveis que aparecem em nome de outras entidades, ou que estão cedidos a elas:
+
+| Conta | Onde | Em nome de / classificado como | R$ em 12 meses |
+|---|---|---|---:|
+| ⚡ 1.565.118.011-49 | Mafalda Lingner Porto | **Associação dos Funcionários e/ou Servidores Públicos Municipais** | 31.130 |
+| 💧 2075897-9 | Estrada da Madeira, 3000 | **"SENAI – Educação"** | 39.013 |
+| ⚡ 1.004.748.011-07 | Das Madeiras, 3000 | sem nome (endereço igual ao do "SENAI": confirmar se é o mesmo prédio) | 43.814 |
+| 💧 233761-4 | R. Ademar Ohf, 138 | Prédio IBAMA — cessão de uso | 688 |
+| 💧 901546-9 | Estrada da Madeira, 2000 | Automóvel Clube | 305 |
+| | | **Total** | **≈ 114.950** |
+
+- **Por que conferir.** Se o termo de cessão ou o convênio não prevê que a Prefeitura pague água e luz, quem usa o prédio deve pagar ou reembolsar.
+- **Passo a passo:**
+  1. Patrimônio/Procuradoria localiza o termo de cada imóvel.
+  2. **Se o termo não prevê o pagamento:** pedir a troca de titularidade da conta na CELESC/CASAN, ou cobrar o reembolso.
+  3. **Se prevê:** classificar no sistema na secretaria que responde pelo convênio, para o gasto ficar explicado.
+- O "SENAI" da Estrada da Madeira 3000 consome cada vez mais água: 87 m³ em fev/2025 e 154 a 243 m³/mês em 2026, a **R$ 20,48/m³**.
 
 ---
 
@@ -589,15 +782,17 @@ Esses 15 somam **R$ 653 mil**, 57% da conta de água.
 | **Já** | Pedir aumento de demanda: Praça Isabel (100), CAIC (74), Posto Verdão (131) | Planejamento → CELESC | R$ 24,7 mil |
 | 30 dias | Protocolar redução de demanda: Centro de Eventos (100), Das Madeiras 3000 (52), UPA (46) | Planejamento → CELESC | R$ 31,4 mil |
 | 30 dias | Fazenda cruza as faturas divergentes e duplicadas (4.6) com os pagamentos | Fazenda | a apurar |
-| 30 dias | Conferir a Participação Financeira de R$ 37.093 e a UC sem IR retido | Fazenda / Planejamento | R$ 37 mil (único) + R$ 500/ano |
-| 60 dias | Vistoriar transformador de Dom Bosco 820 e Wenceslau Borini; pedir B optante | Obras → CELESC | R$ 9,9 mil |
+| 30 dias | Conferir a Participação Financeira de R$ 37.093 | Fazenda / Planejamento | R$ 37 mil (único) |
+| 30 dias | Contas de prédios usados por terceiros: localizar os termos de cessão/convênio (4.11) | Patrimônio / Procuradoria | até R$ 115 mil |
+| 60 dias | Vistoriar transformador de Dom Bosco 820, Escola Modelo, Ginásio Praça Isabel e Elevado; pedir B optante | Obras → CELESC | R$ 14 a 18,5 mil |
 | 60 dias | Encerrar ligações sem uso (lista 4.4) | Secretarias | R$ 7 a 14,7 mil |
-| 90 dias | Capacitores na Escola Modelo e Dom Bosco 820 | Obras | R$ 1,7 mil |
+| 90 dias | Reativo: memória de massa e orçamento em Escola Modelo e Dom Bosco 820 (só se não virarem B optante) | Obras | R$ 1,7 mil |
 | 90 dias | COSIP sobre prédios municipais: parecer jurídico | Procuradoria | (R$ 46 mil de despesa) |
 | 90 dias | Confirmar ligação de esgoto das 3 matrículas que pagam esgoto | Planejamento → CASAN | a apurar |
 | 6–12 meses | Mercado livre para o grupo A: estudo, licitação e migração | Planejamento / Licitações | R$ 64 a 106 mil |
 | 6–12 meses | Programa de uso eficiente de água nas escolas e cisternas no Estádio e Cemitério | Educação / Obras | R$ 57 a 114 mil |
-| Todo mês | Revisar a aba Alertas: mês anterior e mesmo mês do ano anterior | Planejamento | (sustenta tudo acima) |
+| 6–12 meses | Programa solar: vistoria de telhados, projeto e licitação por lote (começar pelas 5 melhores) | Obras / Licitações | R$ 291 mil (com R$ 1,07 mi de investimento) |
+| Todo mês | Aba "O que fazer": distribuir os cartões, vistoriar em 5 dias e resolver em 30 | Planejamento | (sustenta tudo acima) |
 
 ---
 
@@ -612,7 +807,20 @@ Esses 15 somam **R$ 653 mil**, 57% da conta de água.
 - **Demanda:** para cada UC do grupo A, faixa de uso mês a mês e sugestão de contratada.
 - **Correção do layout antigo da CELESC (até abr/2024):** "DEMANDA ISENTA ICMS" passou a ser lida como demanda sem uso. A demanda contratada de 2024 estava dobrada em algumas UCs.
 - **Itens "Pag. Duplicidade - Migrado" e "Item Migrado"** agora entram em "ajustes", não em "outros".
-- **Pendência de cadastro:** 113 contratos CELESC antigos (código de 10 dígitos) duplicam UCs que já existem com o código novo. Eles guardam só jan–abr/2024. Precisam ser fundidos ao contrato novo para que o histórico de cada UC fique num lugar só ("quem manda é a matrícula").
+- **Contratos duplicados resolvidos.** A importação de 2024 tinha criado 117 contratos CELESC repetidos (93 UCs), porque o layout antigo traz outro número de medidor.
+  - Agora a CELESC tem um contrato por UC; a troca de medidor não cria outro contrato.
+  - Os duplicados são unificados automaticamente: lançamentos e códigos passam para o contrato atual, o resto sai, numa transação só.
+  - O histórico de cada UC fica num lugar só ("quem manda é a matrícula").
+- **Relatórios reorganizados**, de 8 abas para 5:
+  - **O que fazer:** cartões de ação com status, responsável e anotação.
+  - **Resumo**.
+  - **Unidades**, com visão por secretaria.
+  - **Alertas**, com andamento.
+  - **Economia:** perdas, demanda, solar, capacitores, B optante e mercado livre, tributos.
+- **Outras mudanças nos relatórios:**
+  - indicadores com a variação contra os mesmos meses do ano anterior;
+  - unidade sem nome cadastrado mostra o endereço como título;
+  - filtros secundários recolhidos no botão "Filtrar".
 
 ---
 
@@ -638,6 +846,10 @@ Esses 15 somam **R$ 653 mil**, 57% da conta de água.
   - https://canalsolar.com.br/tarifacao-fio-b-lei-14-300/
 - B optante: https://canalsolar.com.br/consumidores-do-grupo-a-faturados-como-grupo-b/ · https://brasilenergia.com.br/energia/as-novas-regras-de-faturamento-para-consumidores-b-optante-uma-visao-juridica-das-resolucoes-aneel-e-a-lei-14-300
 - Código de Defesa do Consumidor, Lei 8.078/1990, art. 42, parágrafo único: https://www.planalto.gov.br/ccivil_03/leis/l8078compilado.htm
+- STF — RE 608.872, Tema 342: a imunidade recíproca não alcança o ente público como contribuinte de fato do ICMS na conta de energia:
+  - https://www.estrategiaconcursos.com.br/blog/a-imunidade-tributaria-reciproca-e-a-jurisprudencia/amp/
+  - https://jus.com.br/artigos/30314/anotacoes-sobre-imunidade-reciproca-no-icms-incidente-na-distribuicao-de-energia-eletrica-por-autarquia-no-estado-do-rio-grande-do-sul/2
+- Reativo capacitivo à noite e fator de potência 0,92: https://www.osetoreletrico.com.br/?p=29268 · https://blog.esferaenergia.com.br/gestao-empresarial/energia-reativa?amp=1
 - ARESC — Resolução nº 389/2026, reajuste CASAN de 5,80%: https://www.legisweb.com.br/legislacao/?id=490808
 - ARESC — Resolução nº 321/2025, reajuste CASAN de 5,56%: https://www.legisweb.com.br/legislacao/?id=472607
 - ARESC — Resolução nº 046/2016, condições gerais de água e esgoto, revisão por vazamento oculto. Confirmar o texto vigente em aresc.sc.gov.br.
@@ -651,6 +863,14 @@ Esses 15 somam **R$ 653 mil**, 57% da conta de água.
   - https://timesbrasil.com.br/empresas-e-negocios/energia/aneel-aprova-reajuste-de-1082-na-celesc-alta-sera-de-926-para-baixa-tensao/
 - CASAN, redução de 4,2% (out/2025): https://seucreditodigital.com.br/tarifa-agua-2026-reducao-afeta-conta/
 - CASAN, reajustes anuais: https://condominiosc.com.br/radar/5825-casan-reajusta-tarifa-anual
+
+**Preços de referência (solar e capacitores):**
+- Sistema fotovoltaico, média nacional de R$ 2,45/Wp no 1º tri/2026 (Greener):
+  - https://olhardigital.com.br/2026/05/17/curiosidades/quanto-custa-instalar-energia-solar-em-casa/
+  - https://canalsolar.com.br/valor-da-energia-solar/
+- Capacitores (preço de lista internacional, só como ordem de grandeza):
+  - WEG UCWT 10 kvar: https://www.mrosupply.com/products/2524329/as-markdown/
+  - Schneider PFC 25 kvar: https://uk.rs-online.com/web/p/power-factor-correction-capacitors/0432705
 
 **Dados do Município:**
 - Faturas CELESC e CASAN importadas no SisPu.JP 2.0, conferidas contra os totais impressos.
