@@ -1,6 +1,8 @@
+import { buscaBate } from "../utils/busca";
 import React, { useEffect, useMemo, useState } from "react";
 import { Building2, Droplet, Zap, Search, Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react";
 import GraficoComparativo from "./GraficoComparativo";
+import EdificiosPainel from "./EdificiosPainel";
 import type { EdificioResumo, Ligacao, TipoLigacao } from "../utils/edificios";
 
 // Edifícios: prédios/locais com as ligações de água (CASAN) e luz (CELESC) que estão neles.
@@ -14,17 +16,11 @@ type Filtro = "todos" | "agua2" | "luz2" | "ambos" | "sem";
 const brl = (v: number) => (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const num = (v: number) => (v || 0).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
 const mesBR = (m: string) => (m ? `${m.substring(5, 7)}/${m.substring(0, 4)}` : "—");
-const norm = (s: string) => (s || "").toUpperCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
-const digitos = (s: string) => (s || "").replace(/\D/g, "");
 const MESES_CURTOS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
 
 // Busca por nome, endereço, observação, matrícula/UC (atual ou antiga, com ou sem pontuação),
 // unidade gestora e secretaria. Várias palavras: todas precisam aparecer.
-function bate(texto: string, busca: string) {
-  const termos = norm(busca).split(/\s+/).filter(Boolean);
-  const alvo = norm(texto), alvoDig = digitos(texto);
-  return termos.every(t => alvo.includes(t) || (digitos(t).length >= 4 && digitos(t) === t.replace(/[^\d]/g, "") && alvoDig.includes(digitos(t))));
-}
+const bate = buscaBate;
 const textoLigacao = (l: Ligacao) => [l.codigo, ...l.codigos_antigos, l.unidade, l.secretaria, l.endereco].join(" ");
 const textoEdificio = (e: EdificioResumo) => [e.nome, e.endereco, e.observacao, ...e.ligacoes.map(textoLigacao)].join(" ");
 
@@ -42,6 +38,7 @@ export default function Edificios({ versao }: { versao?: number }) {
   const [aberto, setAberto] = useState<string | null>(null);
   const [editando, setEditando] = useState<EdificioResumo | "novo" | null>(null);
   const [ligacoesNovo, setLigacoesNovo] = useState<string[]>([]);
+  const [visao, setVisao] = useState<"lista" | "painel">("lista");
 
   const carregar = async () => {
     try {
@@ -88,9 +85,16 @@ export default function Edificios({ versao }: { versao?: number }) {
             <h2 className="text-lg font-bold flex items-center gap-2"><Building2 className="h-5 w-5 text-indigo-300" />Edifícios</h2>
             <p className="text-xs text-gray-400">Prédios e locais com as ligações de água e luz de cada um. Últimos 12 meses até {mesBR(dados.ultimo.AGUA)} (água) e {mesBR(dados.ultimo.LUZ)} (luz).</p>
           </div>
-          <button onClick={() => { setLigacoesNovo([]); setEditando("novo"); }} className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-lg flex items-center gap-2">
-            <Plus className="h-4 w-4" />Novo edifício
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <div className="flex bg-black/40 border border-white/10 rounded-lg p-1 text-xs font-semibold">
+              {([["lista", "Lista"], ["painel", "Painel"]] as const).map(([v, t]) => (
+                <button key={v} onClick={() => setVisao(v)} className={`px-3 py-1.5 rounded-md ${visao === v ? "bg-indigo-600 text-white" : "text-gray-300 hover:bg-white/5"}`}>{t}</button>
+              ))}
+            </div>
+            <button onClick={() => { setLigacoesNovo([]); setEditando("novo"); }} className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-lg flex items-center gap-2">
+              <Plus className="h-4 w-4" />Novo edifício
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -101,7 +105,7 @@ export default function Edificios({ versao }: { versao?: number }) {
           <Kpi titulo="Custo fixo das ligações extras" valor={`${brl(kpi.economia)}/ano`} dica="Estimativa: para cada ligação além da mais cara, a menor fatura do ano × 12." />
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        {visao === "lista" && <div className="flex flex-wrap items-center gap-2">
           <div className="relative flex-1 min-w-[240px]">
             <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
             <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar por prédio, endereço, matrícula/UC, unidade ou secretaria"
@@ -113,10 +117,13 @@ export default function Edificios({ versao }: { versao?: number }) {
               {rotulo} <span className="opacity-70">({contagem[f]})</span>
             </button>
           ))}
-        </div>
+        </div>}
       </div>
 
-      {filtro === "sem" ? (
+      {visao === "painel" ? (
+        <EdificiosPainel meses={dados.meses} ultimo={dados.ultimo} edificios={todos} semEdificio={dados.sem_edificio}
+          onAbrir={id => { setVisao("lista"); setFiltro("todos"); setBusca(""); setAberto(id); setTimeout(() => document.getElementById(`edificio-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); }} />
+      ) : filtro === "sem" ? (
         <SemEdificio ligacoes={semEdificio} edificios={todos} onCriar={ids => { setLigacoesNovo(ids); setEditando("novo"); }} onMudou={carregar} />
       ) : (
         <div className="bg-[#0f0f0f] border border-white/10 rounded-2xl overflow-hidden">
@@ -125,7 +132,7 @@ export default function Edificios({ versao }: { versao?: number }) {
           </div>
           {lista.length === 0 && <div className="p-6 text-sm text-gray-400">Nenhum edifício encontrado.</div>}
           {lista.map(e => (
-            <div key={e.id} className="border-b border-white/5 last:border-0">
+            <div key={e.id} id={`edificio-${e.id}`} className="border-b border-white/5 last:border-0 scroll-mt-4">
               <button onClick={() => setAberto(aberto === e.id ? null : e.id)} className="w-full text-left px-4 py-3 hover:bg-white/[0.03] grid grid-cols-1 md:grid-cols-[minmax(0,2.2fr)_repeat(4,minmax(0,1fr))] gap-2 items-center">
                 <div className="flex items-start gap-2 min-w-0">
                   {aberto === e.id ? <ChevronDown className="h-4 w-4 mt-0.5 shrink-0" /> : <ChevronRight className="h-4 w-4 mt-0.5 shrink-0" />}

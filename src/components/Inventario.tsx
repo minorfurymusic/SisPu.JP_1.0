@@ -1,6 +1,7 @@
+import { buscaBate } from "../utils/busca";
 import React, { useEffect, useMemo, useState } from "react";
 import { ClipboardList, Droplet, Zap, Search, Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, AlertTriangle, Download, Upload } from "lucide-react";
-import { COLUNAS_INVENTARIO, normTexto, type CampoInventario, type ItemInventarioResumo } from "../utils/inventario";
+import { COLUNAS_INVENTARIO, type CampoInventario, type ItemInventarioResumo } from "../utils/inventario";
 
 // Inventário de unidades: dados complementares dos locais e setores (responsáveis, contato,
 // classificação, situação, matrícula CASAN e UC CELESC). Edita aqui ou pela planilha (.xlsx):
@@ -19,11 +20,7 @@ const textoItem = (i: ItemInventarioResumo) => [
   ...COLUNAS_INVENTARIO.map(c => i[c.campo] || ""), i.edificio || "",
   ...i.ligacoes.flatMap(l => [l.codigo, l.codigo_sistema || "", l.unidade || ""]),
 ].join(" ");
-const digitos = (s: string) => (s || "").replace(/\D/g, "");
-function bate(texto: string, busca: string) {
-  const alvo = normTexto(texto), alvoDig = digitos(texto);
-  return normTexto(busca).split(" ").filter(Boolean).every(t => alvo.includes(t) || (/^[\d.\-\s]+$/.test(t) && digitos(t).length >= 4 && alvoDig.includes(digitos(t))));
-}
+const bate = buscaBate;
 
 async function enviar(url: string, metodo: string, body?: any) {
   const r = await fetch(url, { method: metodo, headers: { "Content-Type": "application/json", "x-user": "gestor_web" }, body: body ? JSON.stringify(body) : undefined });

@@ -1602,6 +1602,19 @@ const resumoInventario = () => resumirInventario({
   itens: db.inventario || [], contratos: db.itens_despesas, unidades: db.unidades, despesas: db.despesas, edificios: db.edificios || [],
 });
 
+// Outros nomes de cada contrato e unidade gestora para as buscas das telas: o nome na aba
+// Informações e o edifício (ex.: buscar "lar da menina" acha a UC mesmo com outro nome na unidade).
+app.get("/api/busca/apelidos", (req, res) => {
+  const contratos: Record<string, Set<string>> = {};
+  const juntar = (id: string | undefined, nome?: string) => { if (id && nome) (contratos[id] ||= new Set()).add(nome); };
+  for (const i of resumoInventario()) for (const l of i.ligacoes) { juntar(l.contrato_id, i.nome); juntar(l.contrato_id, i.edificio); }
+  for (const e of db.edificios || []) for (const c of e.contratos || []) juntar(c, e.nome);
+  const unidades: Record<string, Set<string>> = {};
+  for (const it of db.itens_despesas) for (const n of contratos[it.id] || []) (unidades[String(it.unidade_id)] ||= new Set()).add(n);
+  const texto = (m: Record<string, Set<string>>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, [...v].join(" | ")]));
+  res.json({ contratos: texto(contratos), unidades: texto(unidades) });
+});
+
 app.get("/api/inventario", (req, res) => {
   res.json({ itens: resumoInventario() });
 });

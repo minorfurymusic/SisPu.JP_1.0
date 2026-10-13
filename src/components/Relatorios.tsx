@@ -3,6 +3,8 @@ import { AlertTriangle, ArrowDown, ArrowUp, Download, Printer, Sparkles, X, Slid
 import { Grupo, GRUPOS_PERDA, NOME_GRUPO, TributosFatura, DemandaDoMes, FaixaDemanda, faixaDemanda, simularDemandaIdeal } from "../utils/analiseCelesc";
 import { compararComHistorico, TEXTO_ALERTA, ResultadoVariacao, Comparacao } from "../utils/variacao";
 import GraficoComparativo from "./GraficoComparativo";
+import { buscaBate } from "../utils/busca";
+import { useApelidos } from "../hooks/useApelidos";
 import { PREMISSAS, Contrato12, agregarContratos, precoMedioB, candidatosSolar, candidatosCapacitor, candidatosBOptante, mercadoLivre, CandidatoSolar, CandidatoCapacitor, CandidatoBOptante } from "../utils/oportunidades";
 
 type Linha = {
@@ -770,6 +772,7 @@ export default function Relatorios({ versao }: { versao: number }) {
   const [secretariaId, setSecretariaId] = useState("");
   const [tensao, setTensao] = useState<"" | "A" | "B">("");
   const [busca, setBusca] = useState("");
+  const apelidos = useApelidos(versao);
   const [unidadeAberta, setUnidadeAberta] = useState<string | null>(null);
   const [acomps, setAcomps] = useState<Record<string, Acompanhamento>>({});
   const [erroAcomp, setErroAcomp] = useState("");
@@ -808,8 +811,8 @@ export default function Relatorios({ versao }: { versao: number }) {
 
   const filtro = (l: Linha) => (!conc || l.concessionaria === conc) && (!secretariaId || l.secretaria_id === secretariaId) &&
     (!tensao || l.grupo_tensao.startsWith(tensao)) &&
-    (!busca || `${l.unidade_nome} ${l.unidade_endereco} ${l.codigo}`.toUpperCase().includes(busca.toUpperCase()));
-  const filtradasTodas: Linha[] = useMemo(() => todas.filter(filtro), [todas, conc, secretariaId, tensao, busca]);
+    (!busca || buscaBate(`${l.unidade_nome} | ${l.unidade_endereco} | ${l.codigo} | ${apelidos.contratos[l.contrato_id] || ""}`, busca));
+  const filtradasTodas: Linha[] = useMemo(() => todas.filter(filtro), [todas, conc, secretariaId, tensao, busca, apelidos]);
   const ls: Linha[] = useMemo(() => filtradasTodas.filter(l => l.mes >= deSel && l.mes <= ateSel), [filtradasTodas, deSel, ateSel]);
   const resumo: Resumo[] = useMemo(() => resumoPorPeriodo(ls, periodo, "meses"), [ls, periodo]);
   const historicoDe: Map<string, Linha[]> = useMemo(() => {

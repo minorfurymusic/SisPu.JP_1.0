@@ -15,6 +15,7 @@ import Relatorios from "./Relatorios";
 import GraficoComparativo from "./GraficoComparativo";
 import Edificios from "./Edificios";
 import Inventario from "./Inventario";
+import { useApelidos } from "../hooks/useApelidos";
 import { categorizarItens, GRUPOS_PERDA } from "../utils/analiseCelesc";
 
 const valorPerdasDosItens = (itens: any[]) => {
@@ -168,6 +169,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   const [itemMedidores, setItemMedidores] = useState<MedidorEditavel[]>([]);
   const [juntarNaUnidade, setJuntarNaUnidade] = useState<any | null>(null);
   const [versaoDados, setVersaoDados] = useState(0);
+  const apelidos = useApelidos(versaoDados);
 
   const separarContrato = async (itemId: string) => {
     try {
@@ -1558,6 +1560,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
             <div className="bg-white dark:bg-[#0f0f0f] p-6 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm space-y-4">
               <SmartTable
                 tableId="web_unidades"
+                extraSearch={(u) => apelidos.unidades[String(u?.id)] || ""}
                 data={filteredUnidades}
                 searchPlaceholder="Pesquisar por UC, matrícula, nome ou secretaria..."
                 onRowClick={(item) => item?.id && setExpandedUnitId(expandedUnitId === item.id ? null : item.id)}
@@ -1831,6 +1834,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       ) : (
                         <SmartTable
                           tableId="web_itens_celesc"
+                          extraSearch={(c) => apelidos.contratos[String(c?.id)] || ""}
                           data={celescItens}
                           searchPlaceholder="Pesquisar contratos Celesc..."
                           columns={[
@@ -1920,6 +1924,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                       ) : (
                         <SmartTable
                           tableId="web_itens_casan"
+                          extraSearch={(c) => apelidos.contratos[String(c?.id)] || ""}
                           data={casanItens}
                           searchPlaceholder="Pesquisar contratos Casan..."
                           columns={[
@@ -2006,6 +2011,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     <div className="p-4">
                       <SmartTable
                         tableId="web_itens_outros"
+                        extraSearch={(c) => apelidos.contratos[String(c?.id)] || ""}
                         data={outrosItens}
                         searchPlaceholder="Pesquisar outros contratos..."
                         columns={[
@@ -2081,6 +2087,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               <div className="bg-white dark:bg-[#0f0f0f] p-6 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm space-y-4">
                 <SmartTable
                   tableId="web_itens"
+                  extraSearch={(c) => apelidos.contratos[String(c?.id)] || ""}
                   data={filteredItens}
                   searchPlaceholder="Pesquisar por medidor, endereço, unidade..."
                   columns={[
@@ -2341,6 +2348,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                   {faturasViewMode === 'tree' ? (
                     <FaturasTreeView
                       lancamentos={lancamentos}
+                      apelidos={apelidos.contratos}
                       onEdit={handleEditLancamento}
                       onView={handleViewLancamento}
                       onDelete={handleDeleteLancamento}
@@ -2352,6 +2360,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     <div className="bg-[#0f0f0f] border border-white/10 p-6 rounded-xl shadow-sm space-y-4 text-gray-300">
                       <SmartTable
                         tableId="web_lancamentos"
+                        extraSearch={(l) => apelidos.contratos[String(l?.item_despesa_id)] || ""}
                         data={lancamentos}
                         searchPlaceholder="Filtrar por Medidor, Unidade..."
                         columns={[

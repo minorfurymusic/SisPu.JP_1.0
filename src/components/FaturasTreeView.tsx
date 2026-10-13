@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { buscaBate } from '../utils/busca';
 import { 
   ChevronRight, 
   ChevronDown, 
@@ -38,6 +39,8 @@ export interface FaturasTreeViewProps {
   onDeleteGroup?: (monthKey: string, items: any[], groupLabel: string) => void;
   onRefreshData?: () => void;
   isDeleting?: boolean;
+  // Outros nomes do contrato (aba Informações, edifício), por id do contrato, para a busca.
+  apelidos?: Record<string, string>;
 }
 
 export function getInvoiceType(item: any): 'CELESC' | 'CASAN' {
@@ -141,7 +144,8 @@ export default function FaturasTreeView({
   onDeleteMonth,
   onDeleteGroup,
   onRefreshData,
-  isDeleting = false
+  isDeleting = false,
+  apelidos
 }: FaturasTreeViewProps) {
   // Filter States
   const [selectedType, setSelectedType] = useState<'ALL' | 'CELESC' | 'CASAN'>('ALL');
@@ -235,20 +239,20 @@ export default function FaturasTreeView({
       }
 
       // Filter by Search
+      // Busca por palavras, sem acento, também pelos nomes da aba Informações e do edifício.
       if (searchTerm.trim()) {
-        const term = searchTerm.toLowerCase();
-        const codnum = [item.codigo_numero, item.codigo_fatura, ...(item.codigos_numero_anteriores || [])].join(' ').toLowerCase();
-        const unidade = (item.unidade_nome || '').toLowerCase();
-        const despesa = (item.despesa_descricao || '').toLowerCase();
-        const mesAnoStr = (item.mes_ano || '').toLowerCase();
-        const endereco = (item.endereco_fatura || item.unidade_endereco || item.endereco || '').toLowerCase();
-
-        return codnum.includes(term) || unidade.includes(term) || despesa.includes(term) || mesAnoStr.includes(term) || endereco.includes(term);
+        const texto = [
+          item.codigo_numero, item.codigo_fatura, ...(item.codigos_numero_anteriores || []),
+          item.unidade_nome, item.despesa_descricao, item.mes_ano,
+          item.endereco_fatura, item.unidade_endereco, item.endereco, item.nome_fatura,
+          apelidos?.[String(item.item_despesa_id)],
+        ].filter(Boolean).join(' | ');
+        return buscaBate(texto, searchTerm);
       }
 
       return true;
     });
-  }, [lancamentos, selectedType, selectedYear, searchTerm]);
+  }, [lancamentos, selectedType, selectedYear, searchTerm, apelidos]);
 
   // 3. Group filtered items by Year and Month (Mês/Ano)
   const groupedTree = useMemo(() => {
@@ -381,7 +385,7 @@ export default function FaturasTreeView({
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
             <input
               type="text"
-              placeholder="Buscar por Medidor, Endereço ou Unidade..."
+              placeholder="Buscar por medidor, endereço, unidade ou nome do local..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full bg-[#161616] border border-white/10 rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition"

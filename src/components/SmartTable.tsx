@@ -3,6 +3,7 @@ import {
   ArrowUpDown, ArrowUp, ArrowDown, Settings, 
   Eye, EyeOff, Pin, PinOff, RefreshCw, GripVertical, Search 
 } from "lucide-react";
+import { buscaBate } from "../utils/busca";
 
 export interface SmartTableColumn {
   key: string;
@@ -24,6 +25,8 @@ interface SmartTableProps {
   expandedRowRender?: (item: any) => React.ReactNode;
   isRowExpanded?: (item: any) => boolean;
   rowClassName?: (item: any) => string;
+  // Texto a mais para a busca de cada linha (ex.: nomes da aba Informações e do edifício).
+  extraSearch?: (item: any) => string;
 }
 
 interface TableConfig {
@@ -41,7 +44,8 @@ export default function SmartTable({
   onRowClick,
   expandedRowRender,
   isRowExpanded,
-  rowClassName
+  rowClassName,
+  extraSearch
 }: SmartTableProps) {
   // State for config
   const [config, setConfig] = useState<TableConfig>({
@@ -220,17 +224,13 @@ export default function SmartTable({
 
     // Search query filter
     if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim();
+      // Todas as palavras precisam aparecer em alguma coluna pesquisável (sem acento, em qualquer ordem).
       result = result.filter(item => {
         if (!item) return false;
-        return columns.some(col => {
-          if (col.searchable === false) return false;
-          
-          // If custom render is present, we try searching raw key value
-          const val = col.searchValue ? col.searchValue(item) : item[col.key];
-          if (val === undefined || val === null) return false;
-          return String(val).toLowerCase().includes(q);
-        });
+        const texto = columns.filter(col => col.searchable !== false)
+          .map(col => { const v = col.searchValue ? col.searchValue(item) : item[col.key]; return v === undefined || v === null ? "" : String(v); })
+          .concat(extraSearch ? extraSearch(item) : "").join(" | ");
+        return buscaBate(texto, searchQuery);
       });
     }
 
@@ -257,7 +257,7 @@ export default function SmartTable({
     }
 
     return result;
-  }, [data, columns, searchQuery, sortField, sortDirection]);
+  }, [data, columns, searchQuery, sortField, sortDirection, extraSearch]);
 
   // Determine actual column order including hidden ones filter
   const propKeys = columns.map(c => c.key);

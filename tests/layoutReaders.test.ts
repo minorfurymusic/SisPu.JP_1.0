@@ -10,6 +10,7 @@ import { calcularSituacao } from "../src/utils/situacao";
 import { agregarContratos, precoMedioB, candidatosSolar, candidatosCapacitor, candidatosBOptante, mercadoLivre, PREMISSAS } from "../src/utils/oportunidades";
 import { lerCelescAgrupadora } from "../src/utils/leitorCelescAgrupadora";
 import { resumirEdificios } from "../src/utils/edificios";
+import { buscaBate } from "../src/utils/busca";
 import { codigosDaCelula, resolverCodigosRepetidos, resumirInventario, tirarCodigo } from "../src/utils/inventario";
 
 const fixture = (nome: string) => fs.readFileSync(path.join(import.meta.dirname, "fixtures", nome), "utf8");
@@ -438,4 +439,12 @@ teste("Inventário: código repetido fica na unidade certa e cruza com o código
   const creas = r.find(i => i.id === "i3")!;
   assert.deepEqual([creas.ligacoes[0].codigo_sistema, creas.situacao_sistema, creas.edificio], ["2.456.128.011-20", "Inativa", "CREAS"]);
   assert.deepEqual([r.find(i => i.id === "i7")!.edificio, r.find(i => i.id === "i7")!.edificio_por], ["CREAS", "endereco"]);
+});
+
+teste("Busca acha por palavras, sem acento e pelos dígitos do código", () => {
+  assert.equal(buscaBate("LAR DAS MENINAS 1 - JOAO LEDRA", "lar da menina"), true);
+  assert.equal(buscaBate("Estação Cultural", "estacao"), true);
+  assert.equal(buscaBate("1.836.993.011-65 | 0028504900", "2850490"), true);
+  assert.equal(buscaBate("1.836.993.011-65", "1836993"), true);
+  assert.equal(buscaBate("CEI CINDERELA", "cei barragem"), false);
 });
