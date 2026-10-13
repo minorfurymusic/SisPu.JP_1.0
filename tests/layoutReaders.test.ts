@@ -10,6 +10,7 @@ import { calcularSituacao } from "../src/utils/situacao";
 import { agregarContratos, precoMedioB, candidatosSolar, candidatosCapacitor, candidatosBOptante, mercadoLivre, PREMISSAS } from "../src/utils/oportunidades";
 import { lerCelescAgrupadora } from "../src/utils/leitorCelescAgrupadora";
 import { resumirEdificios } from "../src/utils/edificios";
+import { codigosDaCelula, resolverCodigosRepetidos, resumirInventario, tirarCodigo } from "../src/utils/inventario";
 
 const fixture = (nome: string) => fs.readFileSync(path.join(import.meta.dirname, "fixtures", nome), "utf8");
 let falhas = 0;
@@ -406,3 +407,35 @@ if (falhas) {
   process.exit(1);
 }
 console.log("\nTodos os testes passaram");
+
+teste("Inventário: código repetido fica na unidade certa e cruza com o código antigo", () => {
+  assert.deepEqual(codigosDaCelula("580992-4   /   233672-3"), ["580992-4", "233672-3"]);
+  assert.deepEqual(codigosDaCelula("12270275.0"), ["12270275"]);
+  assert.deepEqual(codigosDaCelula("Medidores: TF5268421, TF5191925"), []);
+  assert.equal(tirarCodigo("1791102-8 / 233000-1", "1791102-8"), "233000-1");
+  const dados = {
+    contratos: [
+      { id: "c1", codigo_numero: "1572318-6", despesa_id: "2", unidade_id: "u1", ativo: true },
+      { id: "c2", codigo_numero: "2.456.128.011-20", codigos_numero_anteriores: ["0042884375"], despesa_id: "1", unidade_id: "u2", ativo: false },
+    ],
+    unidades: [{ id: "u1", nome: "PMRS ESF PROGRESSO", endereco: "EST. S. BENTO,S/N" }, { id: "u2", nome: "CREAS - RINALDO MEZADRI 100" }],
+    despesas: [{ id: "1", descricao: "ENERGIA ELÉTRICA (CELESC)" }, { id: "2", descricao: "ÁGUA E ESGOTO (CASAN)" }],
+  };
+  const itens = [
+    { id: "i1", nome: "Depto. de Proteção e Defesa Civil", endereco: "Rua Mafalda Lingner Porto, s/n, Progresso", casan: "1572318-6" },
+    { id: "i2", nome: "ESF Progresso", endereco: "Estrada São Bento, 1620, Progresso", casan: "1572318-6" },
+    { id: "i3", nome: "Creas", endereco: "Rua Rinaldo Mezadri, 100, Canoas", celesc: "42884375" },
+    { id: "i4", nome: "CEAF", endereco: "Rua Dom Bosco, 820 – Centro", casan: "1791102-8" },
+    { id: "i5", nome: "Centro Integrado de Saúde", endereco: "Rua Dom Bosco, 820, Centro", casan: "1793948-8" },
+    { id: "i6", nome: "Casa dos magistrados", endereco: "Alameda Bela Aliança, 782", casan: "1791102-8" },
+    { id: "i7", nome: "Auditório", endereco: "Rua Rinaldo Mezadri, 100 - Canoas" },
+  ];
+  const { remover, indecisos } = resolverCodigosRepetidos(itens, dados);
+  assert.deepEqual(remover.map(r => [r.item.id, r.codigo, r.dono.id]), [["i1", "1572318-6", "i2"], ["i4", "1791102-8", "i6"]]);
+  assert.equal(indecisos.length, 0);
+  const edificios = [{ id: "e1", nome: "CREAS", contratos: ["c2"] }];
+  const r = resumirInventario({ itens, ...dados, edificios });
+  const creas = r.find(i => i.id === "i3")!;
+  assert.deepEqual([creas.ligacoes[0].codigo_sistema, creas.situacao_sistema, creas.edificio], ["2.456.128.011-20", "Inativa", "CREAS"]);
+  assert.deepEqual([r.find(i => i.id === "i7")!.edificio, r.find(i => i.id === "i7")!.edificio_por], ["CREAS", "endereco"]);
+});

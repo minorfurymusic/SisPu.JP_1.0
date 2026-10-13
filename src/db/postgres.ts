@@ -248,6 +248,18 @@ export async function initPostgresSchema(tentativa = 1): Promise<boolean> {
           atualizado_em TEXT
         );
 
+        -- Inventário de unidades (planilha "Unidades"): dados complementares dos locais/setores.
+        -- Não liga em nada por chave: o cruzamento com os contratos é pelos códigos, na leitura.
+        CREATE TABLE IF NOT EXISTS inventario (
+          id TEXT PRIMARY KEY,
+          ordem INTEGER,
+          nome TEXT, secretaria TEXT, responsavel_1 TEXT, responsavel_2 TEXT, cep TEXT, endereco TEXT,
+          email TEXT, telefone TEXT, departamento TEXT, classificacao TEXT, situacao TEXT,
+          casan TEXT, celesc TEXT, qtde_bens TEXT, observacao TEXT,
+          criado_em TEXT,
+          atualizado_em TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS cadastro_mestre_ucs (
           id TEXT PRIMARY KEY,
           uc TEXT UNIQUE NOT NULL,
@@ -372,6 +384,7 @@ export async function loadStateFromPostgres(): Promise<any | null> {
       const resCadastroMestreUcs = await client.query(`SELECT * FROM cadastro_mestre_ucs ORDER BY uc`);
       const resAcompanhamentos = await client.query(`SELECT * FROM acompanhamentos ORDER BY id`);
       const resEdificios = await client.query(`SELECT * FROM edificios ORDER BY nome`);
+      const resInventario = await client.query(`SELECT * FROM inventario ORDER BY ordem, nome`);
       versaoLocal = versaoLida;
 
       return {
@@ -406,6 +419,7 @@ export async function loadStateFromPostgres(): Promise<any | null> {
         cadastro_mestre_ucs: resCadastroMestreUcs.rows,
         acompanhamentos: resAcompanhamentos.rows,
         edificios: resEdificios.rows.map(e => ({ ...e, contratos: typeof e.contratos === 'string' ? JSON.parse(e.contratos) : (e.contratos || []) })),
+        inventario: resInventario.rows,
       };
     } finally {
       client.release();
@@ -508,6 +522,11 @@ const TABLE_UPSERT_SPECS: Record<string, TableUpsertSpec> = {
     toValues: (row) => [row.id, row.nome, row.endereco || null, row.secretaria_id || null, row.observacao || null, JSON.stringify(row.contratos || []), row.criado_em, row.atualizado_em],
     updateSet: 'nome = EXCLUDED.nome, endereco = EXCLUDED.endereco, secretaria_id = EXCLUDED.secretaria_id, observacao = EXCLUDED.observacao, contratos = EXCLUDED.contratos, atualizado_em = EXCLUDED.atualizado_em'
   },
+  inventario: {
+    columns: ['id', 'ordem', 'nome', 'secretaria', 'responsavel_1', 'responsavel_2', 'cep', 'endereco', 'email', 'telefone', 'departamento', 'classificacao', 'situacao', 'casan', 'celesc', 'qtde_bens', 'observacao', 'criado_em', 'atualizado_em'],
+    toValues: (row) => [row.id, row.ordem ?? null, row.nome || null, row.secretaria || null, row.responsavel_1 || null, row.responsavel_2 || null, row.cep || null, row.endereco || null, row.email || null, row.telefone || null, row.departamento || null, row.classificacao || null, row.situacao || null, row.casan || null, row.celesc || null, row.qtde_bens || null, row.observacao || null, row.criado_em, row.atualizado_em],
+    updateSet: 'ordem = EXCLUDED.ordem, nome = EXCLUDED.nome, secretaria = EXCLUDED.secretaria, responsavel_1 = EXCLUDED.responsavel_1, responsavel_2 = EXCLUDED.responsavel_2, cep = EXCLUDED.cep, endereco = EXCLUDED.endereco, email = EXCLUDED.email, telefone = EXCLUDED.telefone, departamento = EXCLUDED.departamento, classificacao = EXCLUDED.classificacao, situacao = EXCLUDED.situacao, casan = EXCLUDED.casan, celesc = EXCLUDED.celesc, qtde_bens = EXCLUDED.qtde_bens, observacao = EXCLUDED.observacao, atualizado_em = EXCLUDED.atualizado_em'
+  },
   cadastro_mestre_ucs: {
     columns: ['id', 'uc', 'codnum', 'concessionaria', 'secretaria', 'unidade_administrativa', 'endereco', 'classe', 'grupo_tarifario', 'situacao', 'criado_em', 'atualizado_em'],
     toValues: (row) => [
@@ -549,7 +568,7 @@ function buildMultiRowUpsertQuery(tableName: string, rows: any[]): { text: strin
 const FULL_SYNC_TABLE_ORDER = [
   'usuarios', 'secretarias', 'unidades', 'despesas', 'itens_despesas', 'lancamentos',
   'pessoas', 'contatos_email', 'logs_erros', 'auditoria_registros', 'documentos_processados',
-  'cadastro_mestre_ucs', 'acompanhamentos', 'edificios',
+  'cadastro_mestre_ucs', 'acompanhamentos', 'edificios', 'inventario',
 ];
 
 // Usa INSERT multi-linha por tabela: 1 comando por linha fazia a semeadura inicial (milhares de
@@ -641,6 +660,7 @@ export async function upsertRowsToPostgres(rows: { table: string; row: any }[]):
 const DELETABLE_TABLES = new Set([
   'lancamentos',
   'edificios',
+  'inventario',
   'documentos_processados',
   'itens_despesas',
   'unidades',

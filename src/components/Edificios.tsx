@@ -7,7 +7,8 @@ import type { EdificioResumo, Ligacao, TipoLigacao } from "../utils/edificios";
 // Responde "quantas águas e luzes há aqui, quanto pagam e consomem" e aponta os prédios com
 // mais de uma ligação do mesmo tipo, candidatos a ficar com uma só.
 
-type Dados = { meses: string[]; ultimo: Record<TipoLigacao, string>; edificios: EdificioResumo[]; sem_edificio: Ligacao[] };
+type Setor = { nome: string; secretaria: string; responsavel: string; telefone: string; email: string };
+type Dados = { meses: string[]; ultimo: Record<TipoLigacao, string>; edificios: EdificioResumo[]; sem_edificio: Ligacao[]; setores?: Record<string, Setor[]> };
 type Filtro = "todos" | "agua2" | "luz2" | "ambos" | "sem";
 
 const brl = (v: number) => (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -57,7 +58,7 @@ export default function Edificios({ versao }: { versao?: number }) {
       if (filtro === "agua2" && e.agua.n < 2) return false;
       if (filtro === "luz2" && e.luz.n < 2) return false;
       if (filtro === "ambos" && !(e.agua.n && e.luz.n)) return false;
-      return !busca.trim() || bate(textoEdificio(e), busca);
+      return !busca.trim() || bate(`${textoEdificio(e)} ${(dados.setores?.[e.id] || []).map(s => `${s.nome} ${s.responsavel}`).join(" ")}`, busca);
     });
   }, [dados, filtro, busca]);
   const semEdificio = useMemo(() => (dados?.sem_edificio || []).filter(l => !busca.trim() || bate(textoLigacao(l), busca)), [dados, busca]);
@@ -140,7 +141,7 @@ export default function Edificios({ versao }: { versao?: number }) {
                   ? <span className="inline-flex items-center gap-1 text-amber-300"><AlertTriangle className="h-3.5 w-3.5" />{brl(e.economia_estimada)}/ano</span>
                   : <span className="text-gray-500">—</span>}</Celula>
               </button>
-              {aberto === e.id && <Detalhe e={e} meses={dados.meses} onEditar={() => setEditando(e)} />}
+              {aberto === e.id && <Detalhe e={e} meses={dados.meses} setores={dados.setores?.[e.id] || []} onEditar={() => setEditando(e)} />}
             </div>
           ))}
         </div>
@@ -201,7 +202,7 @@ function TabelaLigacoes({ ligacoes, extra }: { ligacoes: Ligacao[]; extra?: (l: 
   );
 }
 
-function Detalhe({ e, meses, onEditar }: { e: EdificioResumo; meses: string[]; onEditar: () => void }) {
+function Detalhe({ e, meses, setores, onEditar }: { e: EdificioResumo; meses: string[]; setores: Setor[]; onEditar: () => void }) {
   const ultimos = meses.slice(-12), anteriores = meses.slice(0, 12);
   const valor = (m: string) => (e.serie[m] ? e.serie[m].agua_valor + e.serie[m].luz_valor : null);
   return (
@@ -214,6 +215,16 @@ function Detalhe({ e, meses, onEditar }: { e: EdificioResumo; meses: string[]; o
       )}
       {e.observacao && <div className="text-xs text-gray-300"><b>Observação:</b> {e.observacao}</div>}
       <TabelaLigacoes ligacoes={e.ligacoes} />
+      {setores.length > 0 && (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-gray-300 font-semibold">Setores neste prédio, pelo inventário ({setores.length})</summary>
+          <div className="mt-2 grid sm:grid-cols-2 gap-x-6 gap-y-1">
+            {setores.map(s => (
+              <div key={s.nome}><b>{s.nome}</b> <span className="text-gray-500">{[s.secretaria, s.responsavel, s.telefone].filter(Boolean).join(" · ")}</span></div>
+            ))}
+          </div>
+        </details>
+      )}
       {meses.length > 0 && (
         <GraficoComparativo rotulos={ultimos.map(m => MESES_CURTOS[Number(m.substring(5, 7)) - 1])}
           atual={ultimos.map(valor)} anterior={anteriores.map(valor)}

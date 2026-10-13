@@ -14,6 +14,7 @@ import { SugestoesAgrupamento, JuntarContratosModal } from "./UnidadesAgrupament
 import Relatorios from "./Relatorios";
 import GraficoComparativo from "./GraficoComparativo";
 import Edificios from "./Edificios";
+import Inventario from "./Inventario";
 import { categorizarItens, GRUPOS_PERDA } from "../utils/analiseCelesc";
 
 const valorPerdasDosItens = (itens: any[]) => {
@@ -127,7 +128,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
   // Layout & Sections
   const [activeSection, setActiveSection] = useState<
-    "dashboard" | "secretarias" | "unidades" | "edificios" | "despesas" | "itens" | "lancamentos" | "documentos" | "auditoria"
+    "dashboard" | "secretarias" | "unidades" | "edificios" | "inventario" | "despesas" | "itens" | "lancamentos" | "documentos" | "auditoria"
   >("dashboard");
 
   const [chartMode, setChartMode] = useState<'energia' | 'agua'>('energia');
@@ -1247,6 +1248,12 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               className={`px-3 py-1.5 rounded-md transition ${activeSection === 'edificios' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
             >
               Edifícios
+            </button>
+            <button
+              onClick={() => setActiveSection('inventario')}
+              className={`px-3 py-1.5 rounded-md transition ${activeSection === 'inventario' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+            >
+              Inventário
             </button>
 
             <button
@@ -2415,6 +2422,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
         {/* SECTION: EDIFÍCIOS */}
         {activeSection === 'edificios' && <Edificios versao={versaoDados} />}
+        {activeSection === 'inventario' && <Inventario versao={versaoDados} />}
 
         {/* SECTION: CONTROLE DE AUDITORIA */}
         {activeSection === 'auditoria' && (

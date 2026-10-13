@@ -19,6 +19,8 @@ import { compararComHistorico } from "./src/utils/variacao";
 import { calcularSituacao, ultimosMeses, ehAutomatico } from "./src/utils/situacao";
 import { EDIFICIOS_SEMENTE } from "./src/data/edificiosSemente";
 import { resumirEdificios } from "./src/utils/edificios";
+import ExcelJS from "exceljs";
+import { COLUNAS_INVENTARIO, COLUNAS_SO_EXPORTACAO, campoDoCabecalho, chaveInventario, resolverCodigosRepetidos, resumirInventario, tirarCodigo, type CampoInventario, type ItemInventario } from "./src/utils/inventario";
 import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres, deleteLancamentosLote, unificarContratosNoBanco, versaoDoBanco, versaoCarregada } from "./src/db/postgres";
 
 dotenv.config();
@@ -77,6 +79,7 @@ interface DatabaseState {
   cadastro_mestre_ucs: CadastroMestreUC[];
   acompanhamentos: Acompanhamento[];
   edificios: Edificio[];
+  inventario: ItemInventario[];
 }
 
 // Edifício (prédio/local) com as ligações de água e luz que estão nele, pelo id do contrato.
@@ -109,7 +112,8 @@ const initialDBState: DatabaseState = {
   documentos_processados: [],
   cadastro_mestre_ucs: [],
   acompanhamentos: [],
-  edificios: []
+  edificios: [],
+  inventario: []
 };
 
 // Database utility functions with automatic write persistence (PostgreSQL + Local Cache)
@@ -316,6 +320,7 @@ function aplicarEstado(pgState: any) {
     cadastro_mestre_ucs: pgState.cadastro_mestre_ucs || [],
     acompanhamentos: pgState.acompanhamentos || [],
     edificios: pgState.edificios || [],
+    inventario: pgState.inventario || [],
   };
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
@@ -1509,10 +1514,16 @@ async function semearEdificios() {
 
 app.get("/api/edificios", (req, res) => {
   db.edificios = db.edificios || [];
-  res.json(resumirEdificios({
+  const resumo = resumirEdificios({
     edificios: db.edificios, contratos: db.itens_despesas, unidades: db.unidades, secretarias: db.secretarias,
     despesas: db.despesas, lancamentos: db.lancamentos,
-  }));
+  });
+  // Setores do inventário em cada prédio (pela ligação ou pelo endereço), para saber quem está lá.
+  const setores: Record<string, { nome: string; secretaria: string; responsavel: string; telefone: string; email: string }[]> = {};
+  for (const i of resumoInventario()) if (i.edificio_id) (setores[i.edificio_id] ||= []).push({
+    nome: i.nome || "", secretaria: i.secretaria || "", responsavel: [i.responsavel_1, i.responsavel_2].filter(Boolean).join(" / "), telefone: i.telefone || "", email: i.email || "",
+  });
+  res.json({ ...resumo, setores });
 });
 
 function lerEdificio(b: any, atual?: Edificio): { dados?: Partial<Edificio>; erro?: string } {
@@ -1580,6 +1591,192 @@ app.delete("/api/edificios/:id", async (req, res) => {
     logAudit("edificios", atual.id, "DELETE", usuario, atual, null);
     res.json({ ok: true });
   } catch { res.status(503).json({ error: "Não foi possível excluir no banco de dados. Tente de novo em alguns segundos." }); }
+});
+
+// --- Inventário de unidades -----------------------------------------------------------------
+// Dados complementares dos locais/setores (planilha "Unidades"). Editável aqui e por planilha
+// (.xlsx): exportar, editar no Excel e importar de volta. Não mexe em contratos nem faturas; a
+// situação "no sistema" segue a nossa regra (3 meses sem fatura), não a coluna da planilha.
+
+const resumoInventario = () => resumirInventario({
+  itens: db.inventario || [], contratos: db.itens_despesas, unidades: db.unidades, despesas: db.despesas, edificios: db.edificios || [],
+});
+
+app.get("/api/inventario", (req, res) => {
+  res.json({ itens: resumoInventario() });
+});
+
+function lerItemInventario(b: any): Partial<ItemInventario> {
+  const dados: Partial<ItemInventario> = {};
+  for (const { campo } of COLUNAS_INVENTARIO) if (b[campo] !== undefined) dados[campo] = String(b[campo] ?? "").trim().slice(0, campo === "observacao" ? 2000 : 400);
+  return dados;
+}
+
+async function gravarInventario(linhas: { novo: ItemInventario; antes: ItemInventario | null }[], usuario: string) {
+  if (!linhas.length) return;
+  await saveDBTargeted(db, linhas.map(l => ({ table: "inventario", row: l.novo })));
+  db.inventario = db.inventario || [];
+  for (const { novo } of linhas) {
+    const i = db.inventario.findIndex(x => x.id === novo.id);
+    if (i >= 0) db.inventario[i] = novo; else db.inventario.push(novo);
+  }
+  saveLocalOnly(db);
+  linhas.forEach(l => logAudit("inventario", l.novo.id, l.antes ? "UPDATE" : "INSERT", usuario, l.antes, l.novo));
+}
+
+app.post("/api/inventario", async (req, res) => {
+  const usuario = req.headers["x-user"] as string || "admin";
+  const dados = lerItemInventario(req.body || {});
+  if (!dados.nome) return res.status(400).json({ error: "Informe o nome da unidade." });
+  const agora = new Date().toISOString();
+  const ordem = Math.max(0, ...(db.inventario || []).map(x => x.ordem || 0)) + 1;
+  const novo: ItemInventario = { id: crypto.randomUUID(), ordem, ...dados, criado_em: agora, atualizado_em: agora };
+  try { await gravarInventario([{ novo, antes: null }], usuario); res.json(novo); }
+  catch { res.status(503).json({ error: "Não foi possível gravar no banco de dados. Tente de novo em alguns segundos." }); }
+});
+
+app.put("/api/inventario/:id", async (req, res) => {
+  const usuario = req.headers["x-user"] as string || "admin";
+  const atual = (db.inventario || []).find(x => x.id === req.params.id);
+  if (!atual) return res.status(404).json({ error: "Unidade do inventário não encontrada." });
+  const dados = lerItemInventario(req.body || {});
+  if (dados.nome !== undefined && !dados.nome) return res.status(400).json({ error: "Informe o nome da unidade." });
+  const novo: ItemInventario = { ...atual, ...dados, atualizado_em: new Date().toISOString() };
+  try { await gravarInventario([{ novo, antes: { ...atual } }], usuario); res.json(novo); }
+  catch { res.status(503).json({ error: "Não foi possível gravar no banco de dados. Tente de novo em alguns segundos." }); }
+});
+
+app.delete("/api/inventario/:id", async (req, res) => {
+  const usuario = req.headers["x-user"] as string || "admin";
+  const atual = (db.inventario || []).find(x => x.id === req.params.id);
+  if (!atual) return res.status(404).json({ error: "Unidade do inventário não encontrada." });
+  try {
+    await deleteRowFromPostgres("inventario", atual.id);
+    db.inventario = (db.inventario || []).filter(x => x.id !== atual.id);
+    saveLocalOnly(db);
+    logAudit("inventario", atual.id, "DELETE", usuario, atual, null);
+    res.json({ ok: true });
+  } catch { res.status(503).json({ error: "Não foi possível excluir no banco de dados. Tente de novo em alguns segundos." }); }
+});
+
+// Lê a planilha (.xlsx) e planeja a importação. Cada linha é achada pelo ID (planilha exportada
+// daqui) ou por nome + secretaria + endereço; a linha nova entra, a existente é completada: valor
+// preenchido na planilha substitui, célula vazia mantém o que já havia. Nada é apagado.
+// Depois, o mesmo código em duas linhas fica só na linha certa (ver resolverCodigosRepetidos).
+async function planejarImportacaoInventario(arquivoBase64: string) {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(Buffer.from(arquivoBase64, "base64") as any);
+  const ws = wb.worksheets[0];
+  if (!ws) throw new Error("A planilha não tem nenhuma aba.");
+  const texto = (v: any) => String(v ?? "").replace(/\s+/g, " ").trim();
+  // Cabeçalho: a primeira das 10 linhas iniciais que tenha a coluna do nome.
+  let linhaCab = 0, colunas = new Map<number, CampoInventario | "id">();
+  const desconhecidas: string[] = [];
+  for (let r = 1; r <= Math.min(10, ws.rowCount) && !linhaCab; r++) {
+    const mapa = new Map<number, CampoInventario | "id">();
+    ws.getRow(r).eachCell((cel, c) => { const campo = campoDoCabecalho(cel.text); if (campo) mapa.set(c, campo); });
+    if ([...mapa.values()].includes("nome")) {
+      linhaCab = r; colunas = mapa;
+      ws.getRow(r).eachCell((cel, c) => { const t = texto(cel.text); if (t && !mapa.has(c) && !COLUNAS_SO_EXPORTACAO.includes(t)) desconhecidas.push(t); });
+    }
+  }
+  if (!linhaCab) throw new Error('Não achei o cabeçalho: a planilha precisa da coluna "Nome da Unidade".');
+
+  const lidas: (Partial<ItemInventario> & { linha: number })[] = [];
+  for (let r = linhaCab + 1; r <= ws.rowCount; r++) {
+    const l: Partial<ItemInventario> & { linha: number } = { linha: r };
+    colunas.forEach((campo, c) => { const t = texto(ws.getRow(r).getCell(c).text); if (t) (l as any)[campo] = t; });
+    if (l.nome) lidas.push(l);
+  }
+
+  const atuais = (db.inventario || []).map(x => ({ ...x }));
+  const porId = new Map(atuais.map(x => [x.id, x]));
+  const porChave = new Map(atuais.map(x => [chaveInventario(x), x]));
+  const agora = new Date().toISOString();
+  let ordem = Math.max(0, ...atuais.map(x => x.ordem || 0));
+  const resultado = new Map<string, { novo: ItemInventario; antes: ItemInventario | null }>();
+  let iguais = 0;
+  for (const l of lidas) {
+    const existente = (l.id && porId.get(String(l.id))) || porChave.get(chaveInventario(l));
+    if (!existente) {
+      const novo: ItemInventario = { id: crypto.randomUUID(), ordem: ++ordem, criado_em: agora, atualizado_em: agora };
+      COLUNAS_INVENTARIO.forEach(({ campo }) => { if (l[campo]) novo[campo] = l[campo]; });
+      resultado.set(novo.id, { novo, antes: null });
+      porChave.set(chaveInventario(novo), novo);
+      continue;
+    }
+    const base = resultado.get(existente.id)?.novo || existente;
+    const novo: ItemInventario = { ...base };
+    COLUNAS_INVENTARIO.forEach(({ campo }) => { if (l[campo]) novo[campo] = l[campo]; });
+    if (COLUNAS_INVENTARIO.some(({ campo }) => (novo[campo] || "") !== (base[campo] || ""))) {
+      novo.atualizado_em = agora;
+      resultado.set(novo.id, { novo, antes: resultado.get(existente.id)?.antes ?? existente });
+    } else iguais++;
+  }
+
+  // Código repetido entre linhas: tira da linha errada e anota na observação dela.
+  const todas = [...atuais.filter(x => !resultado.has(x.id)), ...[...resultado.values()].map(v => v.novo)];
+  const { remover, indecisos } = resolverCodigosRepetidos(todas, { contratos: db.itens_despesas, unidades: db.unidades, despesas: db.despesas });
+  const correcoes = remover.map(r => {
+    // A mesma linha pode perder mais de um código: parte do que já foi corrigido.
+    const item = resultado.get(r.item.id)?.novo ?? (r.item as ItemInventario);
+    const antes = resultado.get(item.id)?.antes ?? (resultado.has(item.id) ? null : { ...item });
+    const nota = `Código ${r.codigo} tirado: pertence a "${r.dono.nome}" (${r.motivo}).`;
+    const obs = (item.observacao || "").includes(`Código ${r.codigo} tirado`) ? item.observacao : [item.observacao, nota].filter(Boolean).join(" ");
+    const novo: ItemInventario = { ...item, [r.campo]: tirarCodigo(item[r.campo] || "", r.codigo), observacao: obs, atualizado_em: agora };
+    resultado.set(item.id, { novo, antes });
+    return { linha: item.nome, codigo: r.codigo, dono: r.dono.nome, motivo: r.motivo };
+  });
+  // A planilha original traz de novo o código já corrigido: depois da correção, a linha pode ter
+  // voltado a ser igual ao que estava gravado.
+  for (const [id, v] of resultado) if (v.antes && COLUNAS_INVENTARIO.every(({ campo }) => (v.novo[campo] || "") === (v.antes![campo] || ""))) { resultado.delete(id); iguais++; }
+
+  const linhas = [...resultado.values()];
+  return {
+    linhas, iguais, desconhecidas, correcoes,
+    indecisos: indecisos.map(i => ({ codigo: i.codigo, linhas: i.itens.map(x => x.nome) })),
+    lidas: lidas.length, novas: linhas.filter(l => !l.antes).length, atualizadas: linhas.filter(l => l.antes).length,
+  };
+}
+
+app.post("/api/inventario/previa", async (req, res) => {
+  try {
+    const p = await planejarImportacaoInventario(String(req.body?.arquivo || ""));
+    res.json({
+      lidas: p.lidas, novas: p.novas, atualizadas: p.atualizadas, iguais: p.iguais,
+      colunas_desconhecidas: p.desconhecidas, correcoes: p.correcoes, indecisos: p.indecisos,
+      mudancas: p.linhas.filter(l => l.antes).map(l => ({
+        nome: l.novo.nome,
+        campos: COLUNAS_INVENTARIO.filter(({ campo }) => (l.novo[campo] || "") !== (l.antes![campo] || ""))
+          .map(({ campo, rotulo }) => ({ rotulo, de: l.antes![campo] || "", para: l.novo[campo] || "" })),
+      })),
+    });
+  } catch (err: any) { res.status(400).json({ error: err?.message || "Não foi possível ler a planilha." }); }
+});
+
+app.post("/api/inventario/importar", async (req, res) => {
+  const usuario = req.headers["x-user"] as string || "admin";
+  let p;
+  try { p = await planejarImportacaoInventario(String(req.body?.arquivo || "")); }
+  catch (err: any) { return res.status(400).json({ error: err?.message || "Não foi possível ler a planilha." }); }
+  try { await gravarInventario(p.linhas, usuario); res.json({ novas: p.novas, atualizadas: p.atualizadas, iguais: p.iguais, correcoes: p.correcoes.length }); }
+  catch { res.status(503).json({ error: "Não foi possível gravar no banco de dados. Tente de novo em alguns segundos." }); }
+});
+
+app.get("/api/inventario/exportar", async (req, res) => {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Unidades");
+  ws.addRow([...COLUNAS_INVENTARIO.map(c => c.rotulo), ...COLUNAS_SO_EXPORTACAO]);
+  ws.getRow(1).font = { bold: true };
+  ws.views = [{ state: "frozen", ySplit: 1 }];
+  for (const i of resumoInventario()) {
+    ws.addRow([...COLUNAS_INVENTARIO.map(c => i[c.campo] || ""), i.situacao_sistema, i.edificio || "", i.id]);
+  }
+  ws.columns.forEach((c, n) => { c.width = n === 0 ? 40 : n === 5 || n === 6 ? 34 : 18; });
+  const buf = await wb.xlsx.writeBuffer();
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="inventario_unidades_${new Date().toISOString().slice(0, 10)}.xlsx"`);
+  res.send(Buffer.from(buf as ArrayBuffer));
 });
 
 // --- Classificação por planilha: secretarias, Unidades Gestoras e nomes ----------------------
