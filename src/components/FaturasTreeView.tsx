@@ -247,7 +247,11 @@ export default function FaturasTreeView({
       const casanCount = items.filter(it => getInvoiceType(it) === 'CASAN').length;
 
       // Subgroup by type inside month
-      const celescItems = items.filter(it => getInvoiceType(it) === 'CELESC');
+      // CELESC na ordem do documento importado (ordem_documento); faturas importadas antes disso
+      // seguem a ordem em que foram gravadas, que é a da importação.
+      const ordemNoDocumento = (it: any) => String(it.ordem_documento || `${it.criado_em || ''}#99999`);
+      const celescItems = items.filter(it => getInvoiceType(it) === 'CELESC')
+        .sort((a, b) => ordemNoDocumento(a).localeCompare(ordemNoDocumento(b)));
       const casanItems = items.filter(it => getInvoiceType(it) === 'CASAN');
 
       return {
@@ -710,8 +714,8 @@ export default function FaturasTreeView({
                                   <th className="px-3 py-2">Endereço</th>
                                   <th className="px-3 py-2">Unidade Gestora</th>
                                   <th className="px-3 py-2">Medidor Antigo</th>
-                                  <th className="px-3 py-2 text-right">Consumo (kWh)</th>
                                   <th className="px-3 py-2 text-right">Valor Total</th>
+                                  <th className="px-3 py-2 text-right">Consumo (kWh)</th>
                                   <th className="px-3 py-2 text-right leading-tight">Energia<br />Injetada</th>
                                   <th className="px-3 py-2 text-center w-20">Ações</th>
                                 </tr>
@@ -756,11 +760,11 @@ export default function FaturasTreeView({
                                           return antigos.length ? antigos.map(cod => <div key={cod}>{cod}</div>) : '—';
                                         })()}
                                       </td>
-                                      <td className="px-3 py-2 text-right font-mono font-semibold text-blue-300">
-                                        {item.consumo ? `${parseFloat(item.consumo).toLocaleString('pt-BR')} kWh` : '0 kWh'}
-                                      </td>
                                       <td className="px-3 py-2 text-right font-mono font-bold text-amber-400">
                                         R$ {(parseFloat(item.valor_total) || 0).toFixed(2)}
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-mono font-semibold text-blue-300">
+                                        {item.consumo ? `${parseFloat(item.consumo).toLocaleString('pt-BR')} kWh` : '0 kWh'}
                                       </td>
                                       <td className="px-3 py-2 text-right font-mono text-yellow-300">
                                         {(parseFloat(item.energia_injetada) || 0).toLocaleString('pt-BR')} kWh

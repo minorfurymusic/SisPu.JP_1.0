@@ -2164,6 +2164,11 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
 
     const docLabel = (d: DocumentoProcessado) => d.nome_arquivo || d.dados_extraidos?.codigo_numero || "documento sem nome";
 
+    // Ordem das faturas no documento original, para a tela de faturas listar na mesma sequência
+    // (conferência lado a lado com o PDF). Vários lotes no mesmo mês: o mais antigo primeiro.
+    const inicioDoLote = new Date().toISOString();
+    const ordemDe = (i: number) => `${inicioDoLote}#${String(i + 1).padStart(5, "0")}`;
+
     for (let start = 0; start < docsToSave.length; start += SAVE_CHUNK_SIZE) {
       if (saveCancelRequestedRef.current) {
         cancelledEarly = true;
@@ -2184,17 +2189,18 @@ export default function DocumentManager({ onDocumentProcessed, currentUser = "ad
           method: "POST",
           headers: { "Content-Type": "application/json", "x-user": currentUser },
           body: JSON.stringify({
-            documentos: chunk.map(d => {
+            documentos: chunk.map((d, j) => {
               const sugestao = linkSuggestions[d.id];
               const vincular = sugestao && linkConfirmed[d.id];
+              const dados = { ...d.dados_extraidos, ordem_documento: ordemDe(start + j) };
               return {
                 nome_arquivo: d.nome_arquivo,
                 layout: d.layout,
                 tamanho: d.tamanho,
                 origem_conteudo: d.origem_conteudo,
                 dados_extraidos: vincular
-                  ? { ...d.dados_extraidos, vincular_a_item_despesa_id: sugestao!.item_despesa_id }
-                  : d.dados_extraidos
+                  ? { ...dados, vincular_a_item_despesa_id: sugestao!.item_despesa_id }
+                  : dados
               };
             })
           }),
