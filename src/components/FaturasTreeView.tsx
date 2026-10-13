@@ -100,6 +100,13 @@ const MONTH_NAMES = [
   'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
 ];
 
+// Matrícula CASAN como na planilha de conferência (coluna Registro): número com zeros à esquerda
+// até 7 dígitos, espaço, traço, espaço e o dígito. Só a exibição muda; o dado gravado fica igual.
+export function registroCasan(codigo?: string): string {
+  const m = String(codigo || '').trim().match(/^(\d+)\s*-\s*(\d)$/);
+  return m ? `${m[1].padStart(7, '0')} - ${m[2]}` : String(codigo || '');
+}
+
 export default function FaturasTreeView({
   lancamentos,
   unidades = [],
@@ -878,8 +885,8 @@ export default function FaturasTreeView({
                                   <th className="px-3 py-2">Medidor</th>
                                   <th className="px-3 py-2">Endereço</th>
                                   <th className="px-3 py-2">Unidade Gestora</th>
-                                  <th className="px-3 py-2 text-right">Consumo (m³)</th>
                                   <th className="px-3 py-2 text-right">Valor Total</th>
+                                  <th className="px-3 py-2 text-right">Consumo (m³)</th>
                                   <th className="px-3 py-2 text-center w-20">Ações</th>
                                 </tr>
                               </thead>
@@ -889,10 +896,10 @@ export default function FaturasTreeView({
                                   const isNaoLocalizada = !item.unidade_nome || item.unidade_nome === 'NÃO LOCALIZADA';
                                   return (
                                     <tr key={item.id || `casan-${idx}`} className="hover:bg-blue-500/5 transition group">
-                                      <td className="px-3 py-2 font-mono font-bold text-blue-200">
-                                        {item.codigo_fatura || item.codigo_numero}
+                                      <td className="px-3 py-2 font-mono font-bold text-blue-200 whitespace-nowrap">
+                                        {registroCasan(item.codigo_fatura || item.codigo_numero)}
                                         {item.codigo_fatura && item.codigo_fatura !== item.codigo_numero && (
-                                          <div className="text-[10px] font-normal text-gray-500" title="Código atual deste contrato">atual: {item.codigo_numero}</div>
+                                          <div className="text-[10px] font-normal text-gray-500" title="Código atual deste contrato">atual: {registroCasan(item.codigo_numero)}</div>
                                         )}
                                       </td>
                                       <td className="px-3 py-2 text-gray-300 max-w-[220px]">
@@ -917,11 +924,11 @@ export default function FaturasTreeView({
                                           </span>
                                         </button>
                                       </td>
-                                      <td className="px-3 py-2 text-right font-mono font-semibold text-blue-300">
-                                        {item.consumo ? `${parseFloat(item.consumo).toLocaleString('pt-BR')} m³` : '0 m³'}
-                                      </td>
                                       <td className="px-3 py-2 text-right font-mono font-bold text-blue-400">
                                         R$ {(parseFloat(item.valor_total) || 0).toFixed(2)}
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-mono font-semibold text-blue-300">
+                                        {item.consumo ? `${parseFloat(item.consumo).toLocaleString('pt-BR')} m³` : '0 m³'}
                                       </td>
                                       <td className="px-3 py-2 text-center">
                                         <div className="flex items-center justify-center gap-1">
