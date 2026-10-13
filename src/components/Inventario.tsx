@@ -47,7 +47,7 @@ export default function Inventario({ versao }: { versao?: number }) {
       const r = await fetch("/api/inventario");
       if (!r.ok) throw new Error();
       setItens((await r.json()).itens); setErro("");
-    } catch { setErro("Não foi possível carregar o inventário."); }
+    } catch { setErro("Não foi possível carregar as informações."); }
   };
   useEffect(() => { carregar(); }, [versao]);
 
@@ -59,7 +59,7 @@ export default function Inventario({ versao }: { versao?: number }) {
     passa(i, filtro) && (!secretaria || i.secretaria === secretaria) && (!busca.trim() || bate(textoItem(i), busca))), [itens, filtro, secretaria, busca]);
 
   if (erro) return <div className="p-6 text-rose-300">{erro}</div>;
-  if (!itens) return <div className="p-6 text-gray-400">Carregando inventário…</div>;
+  if (!itens) return <div className="p-6 text-gray-400">Carregando informações…</div>;
 
   const FILTROS: [Filtro, string][] = [["todos", "Todas"], ["avisos", "Com aviso"], ["inativas", "Inativas no sistema"], ["sem_ligacao", "Sem ligação própria"], ["sem_edificio", "Ligação sem edifício"]];
   const comLigacao = itens.filter(i => i.ligacoes.some(l => l.contrato_id)).length;
@@ -69,7 +69,7 @@ export default function Inventario({ versao }: { versao?: number }) {
       <div className="bg-[#0f0f0f] border border-white/10 rounded-2xl p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-bold flex items-center gap-2"><ClipboardList className="h-5 w-5 text-indigo-300" />Inventário de unidades</h2>
+            <h2 className="text-lg font-bold flex items-center gap-2"><ClipboardList className="h-5 w-5 text-indigo-300" />Informações das unidades</h2>
             <p className="text-xs text-gray-400">Locais e setores com responsáveis, contato, classificação e as ligações de água e luz. A situação no sistema segue a regra de 3 meses sem fatura.</p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -110,7 +110,7 @@ export default function Inventario({ versao }: { versao?: number }) {
         <div className="hidden md:grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.2fr)] gap-2 px-4 py-2 text-[10px] uppercase font-bold text-gray-400 border-b border-white/10">
           <div className="pl-6">Unidade</div><div>Secretaria</div><div>Ligações</div><div>Situação</div><div>Edifício</div>
         </div>
-        {lista.length === 0 && <div className="p-6 text-sm text-gray-400">{itens.length ? "Nenhuma unidade encontrada." : "O inventário está vazio. Use \"Importar planilha\" para carregar a planilha de unidades."}</div>}
+        {lista.length === 0 && <div className="p-6 text-sm text-gray-400">{itens.length ? "Nenhuma unidade encontrada." : "Ainda não há informações. Use \"Importar planilha\" para carregar a planilha de unidades."}</div>}
         {lista.map(i => (
           <div key={i.id} className="border-b border-white/5 last:border-0">
             <button onClick={() => setAberto(aberto === i.id ? null : i.id)} className="w-full text-left px-4 py-3 hover:bg-white/[0.03] grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.2fr)] gap-2 items-center">
@@ -219,14 +219,14 @@ function Editor({ item, onFechar, onSalvo }: { item: ItemInventarioResumo | null
     catch (e: any) { setMsg(e.message); } finally { setSalvando(false); }
   };
   const excluir = async () => {
-    if (!item || !confirm(`Excluir "${item.nome}" do inventário? As ligações e faturas não mudam.`)) return;
+    if (!item || !confirm(`Excluir "${item.nome}" das Informações? As ligações e faturas não mudam.`)) return;
     try { await enviar(`/api/inventario/${item.id}`, "DELETE"); onSalvo(); } catch (e: any) { setMsg(e.message); }
   };
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center overflow-y-auto p-4" onClick={onFechar}>
       <div className="bg-[#141414] border border-white/10 rounded-2xl w-full max-w-4xl my-8 p-5 space-y-4" onClick={ev => ev.stopPropagation()}>
         <div className="flex items-center justify-between">
-          <h3 className="font-bold">{item ? "Editar unidade do inventário" : "Nova unidade no inventário"}</h3>
+          <h3 className="font-bold">{item ? "Editar informações da unidade" : "Nova unidade nas Informações"}</h3>
           <button onClick={onFechar} className="p-1 hover:bg-white/10 rounded"><X className="h-4 w-4" /></button>
         </div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">

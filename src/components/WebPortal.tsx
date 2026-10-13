@@ -1253,7 +1253,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               onClick={() => setActiveSection('inventario')}
               className={`px-3 py-1.5 rounded-md transition ${activeSection === 'inventario' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
             >
-              Inventário
+              Informações
             </button>
 
             <button

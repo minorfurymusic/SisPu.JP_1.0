@@ -217,7 +217,7 @@ function Detalhe({ e, meses, setores, onEditar }: { e: EdificioResumo; meses: st
       <TabelaLigacoes ligacoes={e.ligacoes} />
       {setores.length > 0 && (
         <details className="text-xs">
-          <summary className="cursor-pointer text-gray-300 font-semibold">Setores neste prédio, pelo inventário ({setores.length})</summary>
+          <summary className="cursor-pointer text-gray-300 font-semibold">Setores neste prédio, pela aba Informações ({setores.length})</summary>
           <div className="mt-2 grid sm:grid-cols-2 gap-x-6 gap-y-1">
             {setores.map(s => (
               <div key={s.nome}><b>{s.nome}</b> <span className="text-gray-500">{[s.secretaria, s.responsavel, s.telefone].filter(Boolean).join(" · ")}</span></div>

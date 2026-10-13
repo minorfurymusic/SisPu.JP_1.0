@@ -1638,7 +1638,7 @@ app.post("/api/inventario", async (req, res) => {
 app.put("/api/inventario/:id", async (req, res) => {
   const usuario = req.headers["x-user"] as string || "admin";
   const atual = (db.inventario || []).find(x => x.id === req.params.id);
-  if (!atual) return res.status(404).json({ error: "Unidade do inventário não encontrada." });
+  if (!atual) return res.status(404).json({ error: "Unidade não encontrada nas Informações." });
   const dados = lerItemInventario(req.body || {});
   if (dados.nome !== undefined && !dados.nome) return res.status(400).json({ error: "Informe o nome da unidade." });
   const novo: ItemInventario = { ...atual, ...dados, atualizado_em: new Date().toISOString() };
@@ -1649,7 +1649,7 @@ app.put("/api/inventario/:id", async (req, res) => {
 app.delete("/api/inventario/:id", async (req, res) => {
   const usuario = req.headers["x-user"] as string || "admin";
   const atual = (db.inventario || []).find(x => x.id === req.params.id);
-  if (!atual) return res.status(404).json({ error: "Unidade do inventário não encontrada." });
+  if (!atual) return res.status(404).json({ error: "Unidade não encontrada nas Informações." });
   try {
     await deleteRowFromPostgres("inventario", atual.id);
     db.inventario = (db.inventario || []).filter(x => x.id !== atual.id);
@@ -1775,7 +1775,7 @@ app.get("/api/inventario/exportar", async (req, res) => {
   ws.columns.forEach((c, n) => { c.width = n === 0 ? 40 : n === 5 || n === 6 ? 34 : 18; });
   const buf = await wb.xlsx.writeBuffer();
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="inventario_unidades_${new Date().toISOString().slice(0, 10)}.xlsx"`);
+  res.setHeader("Content-Disposition", `attachment; filename="informacoes_unidades_${new Date().toISOString().slice(0, 10)}.xlsx"`);
   res.send(Buffer.from(buf as ArrayBuffer));
 });
 
