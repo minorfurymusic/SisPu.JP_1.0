@@ -33,7 +33,7 @@ export type ItemInventario = { id: string; ordem?: number; criado_em?: string; a
 
 export const normTexto = (v?: string) => String(v ?? "").toUpperCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/\s+/g, " ").trim();
 export const normCabecalho = (v?: string) => normTexto(v).replace(/[^A-Z0-9]/g, "");
-const normEndereco = (v?: string) => normTexto(v).replace(/\bS\/?N\b|\bSN\b/g, "").replace(/\b(RUA|R|AV|AVENIDA|ESTRADA|EST|N|NO|DE|DA|DO|DOS|DAS)\b/g, " ").replace(/[^A-Z0-9]+/g, " ").trim();
+export const normEndereco = (v?: string) => normTexto(v).replace(/\bS\/?N\b|\bSN\b/g, "").replace(/\b(RUA|R|AV|AVENIDA|ESTRADA|EST|N|NO|DE|DA|DO|DOS|DAS)\b/g, " ").replace(/[^A-Z0-9]+/g, " ").trim();
 const digitos = (v?: string) => String(v ?? "").replace(/\D/g, "").replace(/^0+/, "");
 
 // Campo da coluna pelo cabeçalho da planilha (null = coluna desconhecida).

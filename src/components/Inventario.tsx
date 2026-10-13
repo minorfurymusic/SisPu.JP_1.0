@@ -1,7 +1,8 @@
 import { buscaBate } from "../utils/busca";
 import React, { useEffect, useMemo, useState } from "react";
 import { ClipboardList, Droplet, Zap, Search, Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, AlertTriangle, Download, Upload } from "lucide-react";
-import { COLUNAS_INVENTARIO, type CampoInventario, type ItemInventarioResumo } from "../utils/inventario";
+import { COLUNAS_INVENTARIO, normEndereco, type CampoInventario, type ItemInventarioResumo } from "../utils/inventario";
+import { Building2 } from "lucide-react";
 
 // Inventário de unidades: dados complementares dos locais e setores (responsáveis, contato,
 // classificação, situação, matrícula CASAN e UC CELESC). Edita aqui ou pela planilha (.xlsx):
@@ -21,6 +22,25 @@ const textoItem = (i: ItemInventarioResumo) => [
   ...i.ligacoes.flatMap(l => [l.codigo, l.codigo_sistema || "", l.unidade || ""]),
 ].join(" ");
 const bate = buscaBate;
+
+// Local = linhas no mesmo endereço. A planilha lista cada setor (gabinete, departamento, divisão)
+// como uma linha, mas no mesmo prédio; aqui eles ficam dentro do local. Principal = linha com
+// ligação própria (quem manda é a matrícula/UC); sem nenhuma, a classificada como "Prédio"/"Secretaria".
+type Local = { chave: string; principais: ItemInventarioResumo[]; setores: ItemInventarioResumo[]; linhas: ItemInventarioResumo[] };
+const temLigacao = (i: ItemInventarioResumo) => i.ligacoes.length > 0;
+function agruparLocais(itens: ItemInventarioResumo[]): Local[] {
+  const grupos = new Map<string, ItemInventarioResumo[]>();
+  for (const i of itens) {
+    const k = normEndereco(i.endereco) || `sem-endereco:${i.id}`;
+    grupos.set(k, [...(grupos.get(k) || []), i]);
+  }
+  return [...grupos.entries()].map(([chave, linhas]) => {
+    let principais = linhas.filter(temLigacao);
+    if (!principais.length) principais = [linhas.find(i => /PREDIO|SECRETARIA/i.test(i.classificacao || "")) || linhas[0]];
+    return { chave, principais, setores: linhas.filter(i => !principais.includes(i)), linhas };
+  });
+}
+const nomeLocal = (l: Local) => l.principais.length > 2 ? `${l.principais.slice(0, 2).map(i => i.nome).join(" / ")} +${l.principais.length - 2}` : l.principais.map(i => i.nome).join(" / ");
 
 async function enviar(url: string, metodo: string, body?: any) {
   const r = await fetch(url, { method: metodo, headers: { "Content-Type": "application/json", "x-user": "gestor_web" }, body: body ? JSON.stringify(body) : undefined });
@@ -52,8 +72,11 @@ export default function Inventario({ versao }: { versao?: number }) {
   const passa = (i: ItemInventarioResumo, f: Filtro) =>
     f === "todos" || (f === "avisos" && i.avisos.length > 0) || (f === "inativas" && i.situacao_sistema === "Inativa") ||
     (f === "sem_ligacao" && !i.ligacoes.length) || (f === "sem_edificio" && i.ligacoes.some(l => l.contrato_id) && !i.edificio_id);
-  const lista = useMemo(() => (itens || []).filter(i =>
-    passa(i, filtro) && (!secretaria || i.secretaria === secretaria) && (!busca.trim() || bate(textoItem(i), busca))), [itens, filtro, secretaria, busca]);
+  const locais = useMemo(() => agruparLocais(itens || []), [itens]);
+  // "Sem ligação própria": o local inteiro sem nenhuma ligação; os outros filtros olham as linhas.
+  const localPassa = (l: Local, f: Filtro) => f === "sem_ligacao" ? !l.linhas.some(temLigacao) : l.linhas.some(i => passa(i, f));
+  const lista = useMemo(() => locais.filter(l =>
+    localPassa(l, filtro) && (!secretaria || l.linhas.some(i => i.secretaria === secretaria)) && (!busca.trim() || l.linhas.some(i => bate(textoItem(i), busca)))), [locais, filtro, secretaria, busca]);
 
   if (erro) return <div className="p-6 text-rose-300">{erro}</div>;
   if (!itens) return <div className="p-6 text-gray-400">Carregando informações…</div>;
@@ -77,7 +100,7 @@ export default function Inventario({ versao }: { versao?: number }) {
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <Kpi titulo="Unidades" valor={String(itens.length)} />
+          <Kpi titulo="Locais" valor={`${locais.length} (de ${itens.length} linhas)`} />
           <Kpi titulo="Com ligação no sistema" valor={String(comLigacao)} />
           <Kpi titulo="Inativas no sistema" valor={String(itens.filter(i => i.situacao_sistema === "Inativa").length)} />
           <Kpi titulo="Com aviso" valor={String(itens.filter(i => i.avisos.length).length)} />
@@ -97,7 +120,7 @@ export default function Inventario({ versao }: { versao?: number }) {
           {FILTROS.map(([f, rotulo]) => (
             <button key={f} onClick={() => setFiltro(f)}
               className={`text-xs font-semibold px-3 py-2 rounded-lg border ${filtro === f ? "bg-indigo-600 border-indigo-500 text-white" : "border-white/10 text-gray-300 hover:bg-white/5"}`}>
-              {rotulo} <span className="opacity-70">({itens.filter(i => passa(i, f)).length})</span>
+              {rotulo} <span className="opacity-70">({locais.filter(l => localPassa(l, f)).length})</span>
             </button>
           ))}
         </div>
@@ -105,30 +128,38 @@ export default function Inventario({ versao }: { versao?: number }) {
 
       <div className="bg-[#0f0f0f] border border-white/10 rounded-2xl overflow-hidden">
         <div className="hidden md:grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.2fr)] gap-2 px-4 py-2 text-[10px] uppercase font-bold text-gray-400 border-b border-white/10">
-          <div className="pl-6">Unidade</div><div>Secretaria</div><div>Ligações</div><div>Situação</div><div>Edifício</div>
+          <div className="pl-6">Local</div><div>Secretaria</div><div>Ligações</div><div>Situação</div><div>Edifício</div>
         </div>
-        {lista.length === 0 && <div className="p-6 text-sm text-gray-400">{itens.length ? "Nenhuma unidade encontrada." : "Ainda não há informações. Use \"Importar planilha\" para carregar a planilha de unidades."}</div>}
-        {lista.map(i => (
-          <div key={i.id} className="border-b border-white/5 last:border-0">
-            <button onClick={() => setAberto(aberto === i.id ? null : i.id)} className="w-full text-left px-4 py-3 hover:bg-white/[0.03] grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.2fr)] gap-2 items-center">
-              <div className="flex items-start gap-2 min-w-0">
-                {aberto === i.id ? <ChevronDown className="h-4 w-4 mt-0.5 shrink-0" /> : <ChevronRight className="h-4 w-4 mt-0.5 shrink-0" />}
-                <div className="min-w-0">
-                  <div className="font-semibold text-sm flex items-center gap-1.5">{i.avisos.length > 0 && <AlertTriangle className="h-3.5 w-3.5 text-amber-300 shrink-0" />}<span className="truncate">{i.nome}</span></div>
-                  <div className="text-xs text-gray-400 truncate">{i.endereco || "Endereço não informado"}{i.classificacao ? ` · ${i.classificacao}` : ""}</div>
+        {lista.length === 0 && <div className="p-6 text-sm text-gray-400">{itens.length ? "Nenhum local encontrado." : "Ainda não há informações. Use \"Importar planilha\" para carregar a planilha de unidades."}</div>}
+        {lista.map(l => {
+          const p = l.principais[0];
+          const ligacoes = l.principais.flatMap(i => i.ligacoes);
+          const avisos = l.linhas.some(i => i.avisos.length);
+          const situacao = l.principais.map(i => i.situacao_sistema).find(Boolean) || "";
+          const edificio = l.linhas.find(i => i.edificio);
+          return (
+            <div key={l.chave} className="border-b border-white/5 last:border-0">
+              <button onClick={() => setAberto(aberto === l.chave ? null : l.chave)} className="w-full text-left px-4 py-3 hover:bg-white/[0.03] grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.2fr)] gap-2 items-center">
+                <div className="flex items-start gap-2 min-w-0">
+                  {aberto === l.chave ? <ChevronDown className="h-4 w-4 mt-0.5 shrink-0" /> : <ChevronRight className="h-4 w-4 mt-0.5 shrink-0" />}
+                  <div className="min-w-0">
+                    <div className="font-semibold text-sm flex items-center gap-1.5">{avisos && <AlertTriangle className="h-3.5 w-3.5 text-amber-300 shrink-0" />}<span className="truncate">{nomeLocal(l)}</span>
+                      {l.setores.length > 0 && <span className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-white/10 text-gray-300">+{l.setores.length} setor{l.setores.length > 1 ? "es" : ""}</span>}</div>
+                    <div className="text-xs text-gray-400 truncate">{p.endereco || "Endereço não informado"}{p.classificacao ? ` · ${p.classificacao}` : ""}</div>
+                  </div>
                 </div>
-              </div>
-              <Celula titulo="Secretaria">{i.secretaria || "—"}</Celula>
-              <Celula titulo="Ligações">{i.ligacoes.length ? <div className="flex flex-wrap gap-1">{i.ligacoes.map(l => <Chip key={l.codigo} l={l} />)}</div> : <span className="text-gray-500">—</span>}</Celula>
-              <Celula titulo="Situação">
-                {i.situacao_sistema ? <span className={i.situacao_sistema === "Ativa" ? "text-emerald-300" : "text-gray-400"}>{i.situacao_sistema} no sistema</span> : <span className="text-gray-500">sem ligação no sistema</span>}
-                {i.situacao && <div className="text-gray-500">planilha: {i.situacao}</div>}
-              </Celula>
-              <Celula titulo="Edifício">{i.edificio ? <>{i.edificio}{i.edificio_por === "endereco" && <div className="text-gray-500">pelo endereço</div>}</> : <span className="text-gray-500">—</span>}</Celula>
-            </button>
-            {aberto === i.id && <Detalhe i={i} onEditar={() => setEditando(i)} />}
-          </div>
-        ))}
+                <Celula titulo="Secretaria">{[...new Set(l.principais.map(i => i.secretaria).filter(Boolean))].join(" / ") || "—"}</Celula>
+                <Celula titulo="Ligações">{ligacoes.length ? <div className="flex flex-wrap gap-1">{ligacoes.map(x => <Chip key={x.codigo} l={x} />)}</div> : <span className="text-gray-500">—</span>}</Celula>
+                <Celula titulo="Situação">
+                  {situacao ? <span className={situacao === "Ativa" ? "text-emerald-300" : "text-gray-400"}>{situacao} no sistema</span> : <span className="text-gray-500">sem ligação no sistema</span>}
+                  {p.situacao && <div className="text-gray-500">planilha: {p.situacao}</div>}
+                </Celula>
+                <Celula titulo="Edifício">{edificio ? <>{edificio.edificio}{edificio.edificio_por === "endereco" && <div className="text-gray-500">pelo endereço</div>}</> : <span className="text-gray-500">—</span>}</Celula>
+              </button>
+              {aberto === l.chave && <DetalheLocal local={l} onEditar={setEditando} onMudou={carregar} />}
+            </div>
+          );
+        })}
       </div>
 
       {editando && <Editor item={editando === "novo" ? null : editando} onFechar={() => setEditando(null)} onSalvo={async () => { setEditando(null); await carregar(); }} />}
@@ -165,9 +196,60 @@ function Chip({ l }: { l: ItemInventarioResumo["ligacoes"][number]; key?: string
   );
 }
 
-function Detalhe({ i, onEditar }: { i: ItemInventarioResumo; onEditar: () => void }) {
+function DetalheLocal({ local, onEditar, onMudou }: { local: Local; onEditar: (i: ItemInventarioResumo) => void; onMudou: () => void }) {
+  const [msg, setMsg] = useState("");
+  const [criando, setCriando] = useState(false);
+  // Ligações do sistema deste local que ainda não estão em nenhum edifício.
+  const soltas = [...new Set(local.principais.flatMap(i => i.ligacoes).filter(x => x.contrato_id && !x.edificio_id).map(x => x.contrato_id!))];
+  const criarEdificio = async () => {
+    const p = local.principais[0];
+    if (!confirm(`Criar o edifício "${p.nome.toUpperCase()}" com ${soltas.length} ligação(ões)?`)) return;
+    setCriando(true); setMsg("");
+    try { await enviar("/api/edificios", "POST", { nome: local.principais.map(i => i.nome).join(" / "), endereco: p.endereco || "", contratos: soltas }); onMudou(); }
+    catch (e: any) { setMsg(e.message); } finally { setCriando(false); }
+  };
   return (
-    <div className="px-4 pb-5 pt-1 space-y-3 bg-black/20">
+    <div className="bg-black/20">
+      {local.principais.map(i => <Detalhe key={i.id} i={i} titulo={local.principais.length > 1 ? i.nome : undefined} onEditar={() => onEditar(i)} />)}
+      {soltas.length > 0 && (
+        <div className="px-4 pb-3 flex flex-wrap items-center gap-3 text-xs">
+          <span className="text-gray-400">{soltas.length} ligação(ões) deste local ainda não estão em nenhum edifício.</span>
+          <button disabled={criando} onClick={criarEdificio} className="font-semibold px-3 py-1.5 rounded-lg border border-white/15 hover:bg-white/5 flex items-center gap-1.5 disabled:opacity-50"><Building2 className="h-3.5 w-3.5" />Criar edifício com elas</button>
+          {msg && <span className="text-rose-300">{msg}</span>}
+        </div>
+      )}
+      {local.setores.length > 0 && (
+        <details className="px-4 pb-5 text-xs" open={local.setores.length <= 5}>
+          <summary className="cursor-pointer font-semibold text-gray-300 py-1">Setores no mesmo endereço ({local.setores.length}) — sem ligação própria, usam a do local</summary>
+          <div className="overflow-x-auto mt-2">
+            <table className="w-full">
+              <thead className="text-[10px] uppercase text-gray-400 border-b border-white/10">
+                <tr><th className="text-left py-1.5 pr-3">Setor</th><th className="text-left py-1.5 pr-3">Secretaria</th><th className="text-left py-1.5 pr-3">Responsável</th><th className="text-left py-1.5 pr-3">Telefone</th><th className="text-left py-1.5 pr-3">E-mail</th><th /></tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {local.setores.map(i => (
+                  <tr key={i.id}>
+                    <td className="py-1.5 pr-3">{i.nome}{i.classificacao ? <span className="text-gray-500"> · {i.classificacao}</span> : null}</td>
+                    <td className="py-1.5 pr-3 text-gray-300">{i.secretaria || "—"}</td>
+                    <td className="py-1.5 pr-3 text-gray-300">{[i.responsavel_1, i.responsavel_2].filter(Boolean).join(" / ") || "—"}</td>
+                    <td className="py-1.5 pr-3 text-gray-300 whitespace-nowrap">{i.telefone || "—"}</td>
+                    <td className="py-1.5 pr-3 text-gray-300">{i.email || "—"}</td>
+                    <td className="py-1.5 text-right"><button onClick={() => onEditar(i)} className="p-1 rounded hover:bg-white/10" title="Editar"><Pencil className="h-3.5 w-3.5" /></button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function Detalhe({ i, titulo, onEditar }: { i: ItemInventarioResumo; titulo?: string; onEditar: () => void; key?: string }) {
+  return (
+    <div className="px-4 pb-4 pt-1 space-y-3">
+      {titulo && <div className="text-sm font-semibold text-gray-200 pt-2">{titulo}</div>}
       {i.avisos.length > 0 && (
         <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2 space-y-0.5">
           {i.avisos.map(a => <div key={a}>{a}</div>)}
