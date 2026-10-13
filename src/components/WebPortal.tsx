@@ -13,6 +13,7 @@ import EditFaturaModal from "./EditFaturaModal";
 import { SugestoesAgrupamento, JuntarContratosModal } from "./UnidadesAgrupamento";
 import Relatorios from "./Relatorios";
 import GraficoComparativo from "./GraficoComparativo";
+import Edificios from "./Edificios";
 import { categorizarItens, GRUPOS_PERDA } from "../utils/analiseCelesc";
 
 const valorPerdasDosItens = (itens: any[]) => {
@@ -126,7 +127,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
 
   // Layout & Sections
   const [activeSection, setActiveSection] = useState<
-    "dashboard" | "secretarias" | "unidades" | "despesas" | "itens" | "lancamentos" | "documentos" | "auditoria"
+    "dashboard" | "secretarias" | "unidades" | "edificios" | "despesas" | "itens" | "lancamentos" | "documentos" | "auditoria"
   >("dashboard");
 
   const [chartMode, setChartMode] = useState<'energia' | 'agua'>('energia');
@@ -1241,6 +1242,13 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
             >
               Unidades Gestoras
             </button>
+            <button
+              onClick={() => setActiveSection('edificios')}
+              className={`px-3 py-1.5 rounded-md transition ${activeSection === 'edificios' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+            >
+              Edifícios
+            </button>
+
             <button
               onClick={() => setActiveSection('despesas')}
               className={`px-3 py-1.5 rounded-md transition ${activeSection === 'despesas' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
@@ -2404,6 +2412,9 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
           </div>
         )}
 
+
+        {/* SECTION: EDIFÍCIOS */}
+        {activeSection === 'edificios' && <Edificios versao={versaoDados} />}
 
         {/* SECTION: CONTROLE DE AUDITORIA */}
         {activeSection === 'auditoria' && (

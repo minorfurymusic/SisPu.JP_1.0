@@ -9,6 +9,7 @@ import { compararComHistorico } from "../src/utils/variacao";
 import { calcularSituacao } from "../src/utils/situacao";
 import { agregarContratos, precoMedioB, candidatosSolar, candidatosCapacitor, candidatosBOptante, mercadoLivre, PREMISSAS } from "../src/utils/oportunidades";
 import { lerCelescAgrupadora } from "../src/utils/leitorCelescAgrupadora";
+import { resumirEdificios } from "../src/utils/edificios";
 
 const fixture = (nome: string) => fs.readFileSync(path.join(import.meta.dirname, "fixtures", nome), "utf8");
 let falhas = 0;
@@ -90,6 +91,39 @@ teste("UC com Valor em branco gera aviso e entra como zero", () => {
 
 teste("Texto desconhecido não é reconhecido como layout fixo", () => {
   assert.equal(detectarLayout("FATURA QUALQUER\nValor: 10,00"), null);
+});
+
+teste("Edifício soma água e luz em 12 meses e estima o custo fixo da ligação extra", () => {
+  const mes = (m: string) => `${m}-01`;
+  const lanc = (id: string, m: string, valor: number, consumo: number) => ({ item_despesa_id: id, mes_ano: mes(m), valor_total: valor, consumo });
+  const r = resumirEdificios({
+    edificios: [{ id: "e1", nome: "ESCOLA", contratos: ["a1", "a2", "l1"] }],
+    contratos: [
+      { id: "a1", codigo_numero: "2021866-4", despesa_id: "2", unidade_id: "u1", ativo: true },
+      { id: "a2", codigo_numero: "1965634-3", despesa_id: "2", unidade_id: "u1", ativo: true },
+      { id: "l1", codigo_numero: "1.833.305.011-87", despesa_id: "1", unidade_id: "u2", ativo: true, nome_fatura: "AMABILIO TESTONI 120" },
+      { id: "l2", codigo_numero: "2.000.000.011-00", despesa_id: "1", unidade_id: "u2", ativo: true },
+      { id: "l3", codigo_numero: "3.000.000.011-00", despesa_id: "1", unidade_id: "u2", ativo: false },
+    ],
+    unidades: [{ id: "u1", nome: "C. E. X - PMRS", secretaria_id: "s1" }, { id: "u2", nome: "C. E. X - LUZ", secretaria_id: "s1" }],
+    secretarias: [{ id: "s1", nome: "SECRETARIA DE EDUCAÇÃO" }],
+    despesas: [{ id: "1", descricao: "ENERGIA ELÉTRICA (CELESC)" }, { id: "2", descricao: "ÁGUA E ESGOTO (CASAN)" }],
+    lancamentos: [
+      lanc("a1", "2025-08", 999, 99),                         // fora dos 12 meses da água (até 2026-08)
+      lanc("a1", "2026-07", 300, 20), lanc("a1", "2026-08", 500, 30),
+      lanc("a2", "2026-07", 44.12, 0), lanc("a2", "2026-08", 50, 1),
+      lanc("l1", "2026-09", 1000, 900),                       // luz vai até setembro
+      lanc("l2", "2026-09", 10, 30),
+    ],
+  });
+  const e = r.edificios[0];
+  assert.equal(r.ultimo.AGUA, "2026-08"); assert.equal(r.ultimo.LUZ, "2026-09");
+  assert.deepEqual([e.agua.n, e.agua.valor_12m, e.agua.consumo_12m, e.agua.valor_ultimo], [2, 894.12, 51, 550]);
+  assert.deepEqual([e.luz.n, e.luz.valor_12m, e.luz.consumo_12m], [1, 1000, 900]);
+  // a ligação extra de água (a menor) custa ao menos 44,12 por mês
+  assert.equal(e.economia_estimada, 94.12);
+  assert.deepEqual(r.sem_edificio.map(l => l.codigo), ["2.000.000.011-00"]);   // inativa não aparece
+  assert.equal(e.ligacoes.find(l => l.id === "l1")!.endereco, "AMABILIO TESTONI 120");
 });
 
 if (falhas) {

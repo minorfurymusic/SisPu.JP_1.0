@@ -17,6 +17,8 @@ import { lerCelescAgrupadora, VERSAO_LEITOR_AGRUPADORA } from "./src/utils/leito
 import { categorizarItens, grupoDoItem, demandaDoMes, custoDisponibilidade, consumoMedidoDoTexto, grupoTensaoDoTexto, diasFaturadosDoTexto } from "./src/utils/analiseCelesc";
 import { compararComHistorico } from "./src/utils/variacao";
 import { calcularSituacao, ultimosMeses, ehAutomatico } from "./src/utils/situacao";
+import { EDIFICIOS_SEMENTE } from "./src/data/edificiosSemente";
+import { resumirEdificios } from "./src/utils/edificios";
 import { initPostgresSchema, loadStateFromPostgres, saveAllStateToPostgres, resetPool, getPool, getDbUrl, deleteRowFromPostgres, upsertRowsToPostgres, deleteLancamentosLote, unificarContratosNoBanco, versaoDoBanco, versaoCarregada } from "./src/db/postgres";
 
 dotenv.config();
@@ -74,6 +76,13 @@ interface DatabaseState {
   documentos_processados: DocumentoProcessado[];
   cadastro_mestre_ucs: CadastroMestreUC[];
   acompanhamentos: Acompanhamento[];
+  edificios: Edificio[];
+}
+
+// Edifício (prédio/local) com as ligações de água e luz que estão nele, pelo id do contrato.
+interface Edificio {
+  id: string; nome: string; endereco?: string; secretaria_id?: string; observacao?: string;
+  contratos: string[]; criado_em: string; atualizado_em: string;
 }
 
 // Andamento de uma ação/alerta dos relatórios. O id é a chave da ação, montada no relatório.
@@ -99,7 +108,8 @@ const initialDBState: DatabaseState = {
   auditoria_registros: [],
   documentos_processados: [],
   cadastro_mestre_ucs: [],
-  acompanhamentos: []
+  acompanhamentos: [],
+  edificios: []
 };
 
 // Database utility functions with automatic write persistence (PostgreSQL + Local Cache)
@@ -305,6 +315,7 @@ function aplicarEstado(pgState: any) {
     documentos_processados: pgState.documentos_processados || [],
     cadastro_mestre_ucs: pgState.cadastro_mestre_ucs || [],
     acompanhamentos: pgState.acompanhamentos || [],
+    edificios: pgState.edificios || [],
   };
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
@@ -405,6 +416,7 @@ async function initDatabasePersistence() {
     // rotina que dependa de "um código, um contrato".
     await unificarContratosDuplicados("sistema").catch(err => console.error("[manutenção] Unificação de contratos falhou, nada foi alterado:", err?.message || err));
     await atualizarSituacaoPorFaturas("sistema").catch(err => console.error("[situação] Não foi possível atualizar a situação dos contratos:", err?.message || err));
+    await semearEdificios().catch(err => console.error("[edifícios] Carga inicial não gravada:", err?.message || err));
   }
   autoSyncOrphanRecords();
 }
@@ -1465,6 +1477,109 @@ app.put("/api/unidades/:id", (req, res) => {
   logAudit("unidades", id, "UPDATE", usuario, oldVal, db.unidades[index]);
 
   res.json(db.unidades[index]);
+});
+
+// --- Edifícios ------------------------------------------------------------------------------
+// Prédios/locais com as ligações de água (CASAN) e luz (CELESC) que estão neles. A ligação fica
+// no edifício (lista de contratos), então importar faturas ou reclassificar unidades não mexe nela.
+
+// Carga inicial: só quando ainda não há nenhum edifício. Cada ligação é achada pela matrícula/UC
+// (código atual ou antigo); a que não existir na base é ignorada.
+async function semearEdificios() {
+  db.edificios = db.edificios || [];
+  if (db.edificios.length) return;
+  const up = (v?: string) => (v || "").trim().toUpperCase();
+  const acharContrato = (cod: string) => db.itens_despesas.find(it => [it.codigo_numero, ...(it.codigos_numero_anteriores || [])].some(c => up(c) === up(cod)));
+  const agora = new Date().toISOString();
+  const usados = new Set<string>();
+  const novos: Edificio[] = [];
+  for (const s of EDIFICIOS_SEMENTE) {
+    const contratos = s.contratos.map(acharContrato).filter((c): c is ItemDespesa => !!c && !usados.has(c.id)).map(c => c.id);
+    if (!contratos.length) continue;
+    contratos.forEach(id => usados.add(id));
+    novos.push({ id: crypto.randomUUID(), nome: s.nome, endereco: s.endereco, contratos, criado_em: agora, atualizado_em: agora });
+  }
+  if (!novos.length) return;
+  await saveDBTargeted(db, novos.map(row => ({ table: "edificios", row })));
+  db.edificios.push(...novos);
+  saveLocalOnly(db);
+  novos.forEach(e => logAudit("edificios", e.id, "INSERT", "sistema", null, e));
+  console.log(`[edifícios] Carga inicial: ${novos.length} edifício(s), ${usados.size} ligação(ões).`);
+}
+
+app.get("/api/edificios", (req, res) => {
+  db.edificios = db.edificios || [];
+  res.json(resumirEdificios({
+    edificios: db.edificios, contratos: db.itens_despesas, unidades: db.unidades, secretarias: db.secretarias,
+    despesas: db.despesas, lancamentos: db.lancamentos,
+  }));
+});
+
+function lerEdificio(b: any, atual?: Edificio): { dados?: Partial<Edificio>; erro?: string } {
+  const texto = (v: any, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : undefined);
+  const dados: Partial<Edificio> = {};
+  if (b.nome !== undefined) { dados.nome = texto(b.nome, 200)?.toUpperCase(); if (!dados.nome) return { erro: "Informe o nome do edifício." }; }
+  else if (!atual) return { erro: "Informe o nome do edifício." };
+  if (b.endereco !== undefined) dados.endereco = texto(b.endereco, 300)?.toUpperCase() || "";
+  if (b.observacao !== undefined) dados.observacao = texto(b.observacao, 2000) || "";
+  if (b.secretaria_id !== undefined) dados.secretaria_id = texto(b.secretaria_id, 80) || "";
+  if (b.contratos !== undefined) {
+    if (!Array.isArray(b.contratos)) return { erro: "Lista de ligações inválida." };
+    const ids = [...new Set(b.contratos.map((x: any) => String(x)))] as string[];
+    if (ids.some(id => !db.itens_despesas.some(it => it.id === id))) return { erro: "Alguma ligação informada não existe mais." };
+    dados.contratos = ids;
+  }
+  return { dados };
+}
+
+// Grava o edifício e tira dos outros as ligações que vieram para ele (uma ligação fica em um só).
+async function gravarEdificio(novo: Edificio, usuario: string, antes: Edificio | null) {
+  const outros = db.edificios.filter(e => e.id !== novo.id && e.contratos.some(c => novo.contratos.includes(c)))
+    .map(e => ({ antes: { ...e }, depois: { ...e, contratos: e.contratos.filter(c => !novo.contratos.includes(c)), atualizado_em: novo.atualizado_em } }));
+  await saveDBTargeted(db, [{ table: "edificios", row: novo }, ...outros.map(o => ({ table: "edificios", row: o.depois }))]);
+  const i = db.edificios.findIndex(e => e.id === novo.id);
+  if (i >= 0) db.edificios[i] = novo; else db.edificios.push(novo);
+  outros.forEach(o => { const j = db.edificios.findIndex(e => e.id === o.depois.id); db.edificios[j] = o.depois; });
+  saveLocalOnly(db);
+  logAudit("edificios", novo.id, antes ? "UPDATE" : "INSERT", usuario, antes, novo);
+  outros.forEach(o => logAudit("edificios", o.depois.id, "UPDATE", usuario, o.antes, o.depois));
+}
+
+app.post("/api/edificios", async (req, res) => {
+  const usuario = req.headers["x-user"] as string || "admin";
+  db.edificios = db.edificios || [];
+  const { dados, erro } = lerEdificio(req.body || {});
+  if (erro) return res.status(400).json({ error: erro });
+  const agora = new Date().toISOString();
+  const novo: Edificio = { id: crypto.randomUUID(), nome: "", contratos: [], ...dados, criado_em: agora, atualizado_em: agora } as Edificio;
+  try { await gravarEdificio(novo, usuario, null); res.json(novo); }
+  catch { res.status(503).json({ error: "Não foi possível gravar no banco de dados. Tente de novo em alguns segundos." }); }
+});
+
+app.put("/api/edificios/:id", async (req, res) => {
+  const usuario = req.headers["x-user"] as string || "admin";
+  db.edificios = db.edificios || [];
+  const atual = db.edificios.find(e => e.id === req.params.id);
+  if (!atual) return res.status(404).json({ error: "Edifício não encontrado." });
+  const { dados, erro } = lerEdificio(req.body || {}, atual);
+  if (erro) return res.status(400).json({ error: erro });
+  const novo: Edificio = { ...atual, ...dados, atualizado_em: new Date().toISOString() };
+  try { await gravarEdificio(novo, usuario, { ...atual }); res.json(novo); }
+  catch { res.status(503).json({ error: "Não foi possível gravar no banco de dados. Tente de novo em alguns segundos." }); }
+});
+
+app.delete("/api/edificios/:id", async (req, res) => {
+  const usuario = req.headers["x-user"] as string || "admin";
+  db.edificios = db.edificios || [];
+  const atual = db.edificios.find(e => e.id === req.params.id);
+  if (!atual) return res.status(404).json({ error: "Edifício não encontrado." });
+  try {
+    await deleteRowFromPostgres("edificios", atual.id);
+    db.edificios = db.edificios.filter(e => e.id !== atual.id);
+    saveLocalOnly(db);
+    logAudit("edificios", atual.id, "DELETE", usuario, atual, null);
+    res.json({ ok: true });
+  } catch { res.status(503).json({ error: "Não foi possível excluir no banco de dados. Tente de novo em alguns segundos." }); }
 });
 
 // --- Classificação por planilha: secretarias, Unidades Gestoras e nomes ----------------------
