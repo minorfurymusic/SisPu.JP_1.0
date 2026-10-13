@@ -100,11 +100,36 @@ const MONTH_NAMES = [
   'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
 ];
 
+// Código antigo da CELESC (10 dígitos) como o campo Número do sistema antigo, no formato da coluna
+// Registro da CASAN (espaço, traço, espaço, dígito). Regra conferida nas 152 telas: "00" + 7 dígitos
+// + dígito → "NNNNNNN - D" (0012341210 → 1234121 - 0); "000" + 7 dígitos não tem dígito lá →
+// "NNNNNNN -" (0008305170 → 8305170 -). Os dois casos abaixo estão digitados assim no sistema antigo
+// e são copiados como estão. Só a exibição muda; o dado gravado fica igual.
+const MEDIDOR_ANTIGO_COMO_DIGITADO: Record<string, string> = {
+  '0044876655': '4487665 -- 5',
+  '0012269889': '1226988 - 90',
+};
+export function medidorAntigoCelesc(codigo?: string): string {
+  const cod = String(codigo || '').trim();
+  if (MEDIDOR_ANTIGO_COMO_DIGITADO[cod]) return MEDIDOR_ANTIGO_COMO_DIGITADO[cod];
+  const sem = cod.match(/^000(\d{7})$/);
+  if (sem) return `${sem[1]} -`;
+  const m = cod.match(/^00(\d{7})(\d)$/);
+  return m ? `${m[1]} - ${m[2]}` : cod;
+}
+
 // Matrícula CASAN como na planilha de conferência (coluna Registro): número com zeros à esquerda
 // até 7 dígitos, espaço, traço, espaço e o dígito. Só a exibição muda; o dado gravado fica igual.
+// Exceções copiadas da planilha como estão (8 dígitos, ou sem o zero).
+const REGISTRO_CASAN_PLANILHA: Record<string, string> = {
+  '1572310': '01572310', '1572320': '01572320', '1572319': '01572319', '1572318': '01572318',
+  '1572311': '01572311', '1572241': '01572241', '233753': '233753',
+};
 export function registroCasan(codigo?: string): string {
   const m = String(codigo || '').trim().match(/^(\d+)\s*-\s*(\d)$/);
-  return m ? `${m[1].padStart(7, '0')} - ${m[2]}` : String(codigo || '');
+  if (!m) return String(codigo || '');
+  const numero = m[1].replace(/^0+/, '');
+  return `${REGISTRO_CASAN_PLANILHA[numero] ?? m[1].padStart(7, '0')} - ${m[2]}`;
 }
 
 export default function FaturasTreeView({
@@ -764,7 +789,7 @@ export default function FaturasTreeView({
                                       <td className="px-3 py-2 font-mono text-gray-400 whitespace-nowrap">
                                         {(() => {
                                           const antigos = ((item.codigos_numero_anteriores || []) as string[]).filter(cod => cod && cod !== item.codigo_numero);
-                                          return antigos.length ? antigos.map(cod => <div key={cod}>{cod}</div>) : '—';
+                                          return antigos.length ? antigos.map(cod => <div key={cod}>{medidorAntigoCelesc(cod)}</div>) : '—';
                                         })()}
                                       </td>
                                       <td className="px-3 py-2 text-right font-mono font-bold text-amber-400">

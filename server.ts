@@ -1473,6 +1473,13 @@ app.put("/api/unidades/:id", (req, res) => {
 // que o usuário pedir para separar na prévia. Nome final: "UNIDADE - NOME NA FATURA".
 type LinhaClassificacaoReq = { matricula: string; nome_fatura: string; unidade: string; secretaria: string; endereco?: string };
 
+// Concessionária do contrato pela despesa (água = CASAN, o resto = CELESC): é o que a unidade nova
+// herda, porque a listagem de lançamentos lê a concessionária da unidade.
+function concessionariaDoContrato(it: ItemDespesa): "CASAN" | "CELESC" {
+  const despesa = db.despesas.find(d => String(d.id) === String(it.despesa_id));
+  return /CASAN|ÁGUA|AGUA/i.test(despesa?.descricao || "") ? "CASAN" : "CELESC";
+}
+
 function planejarClassificacao(linhas: LinhaClassificacaoReq[], separar: string[] = []) {
   const up = (v?: string) => (v || "").trim().toUpperCase();
   const norm = (v?: string) => up(v).normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/\s+/g, " ").trim();
@@ -1515,7 +1522,10 @@ function planejarClassificacao(linhas: LinhaClassificacaoReq[], separar: string[
   const naoEncontradas = linhas.filter(l => up(l.matricula) && !acharContrato(l.matricula)).map(l => l.matricula);
   const casanIds = new Set(db.despesas.filter(d => /CASAN|ÁGUA|AGUA/i.test(d.descricao)).map(d => d.id));
   const usados = new Set(grupos.flatMap(g => g.linhas.map(l => l.contrato?.id)).filter(Boolean) as string[]);
-  const foraDaPlanilha = db.itens_despesas.filter(it => casanIds.has(it.despesa_id) && !usados.has(it.id)).map(it => it.codigo_numero);
+  // "Fora da planilha" olha só as concessionárias que a planilha trouxe (CASAN, CELESC ou as duas).
+  const despesasDaPlanilha = new Set(grupos.flatMap(g => g.linhas.map(l => l.contrato?.despesa_id)).filter(Boolean) as string[]);
+  if (!despesasDaPlanilha.size) casanIds.forEach(id => despesasDaPlanilha.add(id));
+  const foraDaPlanilha = db.itens_despesas.filter(it => despesasDaPlanilha.has(it.despesa_id) && !usados.has(it.id)).map(it => it.codigo_numero);
   return { grupos, secretariasNovas, secretariasExistentes, naoEncontradas, foraDaPlanilha, norm, up };
 }
 
@@ -1569,7 +1579,7 @@ app.post("/api/classificacao/aplicar", async (req, res) => {
         .find(id => !reivindicadas.has(id) && db.unidades.some(u => String(u.id) === id));
       let alvo = candidata ? db.unidades.find(u => String(u.id) === candidata)! : undefined;
       if (!alvo) {
-        alvo = { id: crypto.randomUUID(), secretaria_id: sec.id, nome: destino.nome, uc: destino.contratos[0].codigo_numero, codnum: destino.contratos[0].codigo_numero, concessionaria: "CASAN", endereco: "", ativo: true, criado_em: agora, atualizado_em: agora };
+        alvo = { id: crypto.randomUUID(), secretaria_id: sec.id, nome: destino.nome, uc: destino.contratos[0].codigo_numero, codnum: destino.contratos[0].codigo_numero, concessionaria: concessionariaDoContrato(destino.contratos[0]), endereco: "", ativo: true, criado_em: agora, atualizado_em: agora };
         db.unidades.push(alvo);
         unidadesCriadas++;
       }
