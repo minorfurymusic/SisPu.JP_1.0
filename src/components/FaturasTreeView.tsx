@@ -709,6 +709,7 @@ export default function FaturasTreeView({
                                   <th className="px-3 py-2">Medidor</th>
                                   <th className="px-3 py-2">Endereço</th>
                                   <th className="px-3 py-2">Unidade Gestora</th>
+                                  <th className="px-3 py-2">Medidor Antigo</th>
                                   <th className="px-3 py-2 text-right">Consumo (kWh)</th>
                                   <th className="px-3 py-2 text-right">Valor Total</th>
                                   <th className="px-3 py-2 text-right leading-tight">Energia<br />Injetada</th>
@@ -748,6 +749,12 @@ export default function FaturasTreeView({
                                             {item.unidade_nome || "NÃO LOCALIZADA"}
                                           </span>
                                         </button>
+                                      </td>
+                                      <td className="px-3 py-2 font-mono text-gray-400 whitespace-nowrap">
+                                        {(() => {
+                                          const antigos = ((item.codigos_numero_anteriores || []) as string[]).filter(cod => cod && cod !== item.codigo_numero);
+                                          return antigos.length ? antigos.map(cod => <div key={cod}>{cod}</div>) : '—';
+                                        })()}
                                       </td>
                                       <td className="px-3 py-2 text-right font-mono font-semibold text-blue-300">
                                         {item.consumo ? `${parseFloat(item.consumo).toLocaleString('pt-BR')} kWh` : '0 kWh'}
