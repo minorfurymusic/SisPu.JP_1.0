@@ -54,6 +54,11 @@ const renderConcessionariaBadge = (desc?: string) => {
   );
 };
 
+type SecaoPortal = "dashboard" | "secretarias" | "unidades" | "edificios" | "inventario" | "despesas" | "itens" | "lancamentos" | "documentos" | "auditoria";
+// Telas de cadastro, agrupadas no menu "Cadastros".
+const CADASTROS: [SecaoPortal, string][] = [["secretarias", "Secretarias"], ["unidades", "Unidades Gestoras"], ["itens", "Contratos"], ["inventario", "Informações"], ["despesas", "Tipos de Conta"]];
+const MENU_PRINCIPAL: [SecaoPortal | "cadastros", string][] = [["dashboard", "Dashboard"], ["cadastros", "Cadastros"], ["edificios", "Edifícios"], ["lancamentos", "Faturas Mensais"], ["auditoria", "Controle de Auditoria"]];
+
 export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortalProps) {
   // Shared States
   const [secretarias, setSecretarias] = useState<Secretaria[]>([]);
@@ -1226,69 +1231,36 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
             </button>
           </div>
 
+          {/* Menu: Cadastros reúne as telas de cadastro em sub-abas (barra logo abaixo do menu). */}
           <div className="flex flex-wrap gap-1 bg-[#0a0a0a] p-1 rounded-lg text-xs font-semibold border border-white/10">
-            <button
-              onClick={() => setActiveSection('dashboard')}
-              className={`px-3 py-1.5 rounded-md transition ${activeSection === 'dashboard' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
-            >
-              Dashboard
-            </button>
-            <button
-              onClick={() => setActiveSection('secretarias')}
-              className={`px-3 py-1.5 rounded-md transition ${activeSection === 'secretarias' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
-            >
-              Secretarias
-            </button>
-            <button
-              onClick={() => setActiveSection('unidades')}
-              className={`px-3 py-1.5 rounded-md transition ${activeSection === 'unidades' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
-            >
-              Unidades Gestoras
-            </button>
-            <button
-              onClick={() => setActiveSection('edificios')}
-              className={`px-3 py-1.5 rounded-md transition ${activeSection === 'edificios' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
-            >
-              Edifícios
-            </button>
-            <button
-              onClick={() => setActiveSection('inventario')}
-              className={`px-3 py-1.5 rounded-md transition ${activeSection === 'inventario' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
-            >
-              Informações
-            </button>
-
-            <button
-              onClick={() => setActiveSection('despesas')}
-              className={`px-3 py-1.5 rounded-md transition ${activeSection === 'despesas' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
-            >
-              Tipos de Conta
-            </button>
-            <button
-              onClick={() => setActiveSection('itens')}
-              className={`px-3 py-1.5 rounded-md transition ${activeSection === 'itens' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
-            >
-              Contratos
-            </button>
-            <button
-              onClick={() => setActiveSection('lancamentos')}
-              className={`px-3 py-1.5 rounded-md transition ${activeSection === 'lancamentos' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
-            >
-              Faturas Mensais
-            </button>
-
-            <button
-              onClick={() => setActiveSection('auditoria')}
-              className={`px-3 py-1.5 rounded-md transition ${activeSection === 'auditoria' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
-            >
-              Controle de Auditoria
-            </button>
+            {MENU_PRINCIPAL.map(([secao, rotulo]) => {
+              const ativo = secao === 'cadastros' ? CADASTROS.some(([c]) => c === activeSection) : activeSection === secao;
+              return (
+                <button key={secao}
+                  onClick={() => setActiveSection(secao === 'cadastros' ? (CADASTROS.some(([c]) => c === activeSection) ? activeSection : 'secretarias') : secao)}
+                  className={`px-3 py-1.5 rounded-md transition ${ativo ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+                >
+                  {rotulo}
+                </button>
+              );
+            })}
           </div>
         </div>
       </nav>
 
       {/* 📊 Main Content Space */}
       <div className="max-w-[1680px] mx-auto px-6 py-6 space-y-6">
+        {CADASTROS.some(([c]) => c === activeSection) && (
+          <div className="flex flex-wrap items-center gap-1 bg-[#0a0a0a] p-1 rounded-lg text-xs font-semibold border border-white/10 w-fit">
+            <span className="px-2 text-[10px] uppercase tracking-wider text-gray-500">Cadastros</span>
+            {CADASTROS.map(([secao, rotulo]) => (
+              <button key={secao} onClick={() => setActiveSection(secao)}
+                className={`px-3 py-1.5 rounded-md transition ${activeSection === secao ? 'bg-white/10 text-white' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}>
+                {rotulo}
+              </button>
+            ))}
+          </div>
+        )}
         
         {/* Status Messages */}
         {globalSuccess && (

@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Building2, Droplet, Zap, Search, Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react";
 import GraficoComparativo from "./GraficoComparativo";
 import EdificiosPainel from "./EdificiosPainel";
+import { BotaoIA } from "./Relatorios";
 import type { EdificioResumo, Ligacao, TipoLigacao } from "../utils/edificios";
 
 // Edifícios: prédios/locais com as ligações de água (CASAN) e luz (CELESC) que estão neles.
@@ -237,7 +238,10 @@ function Detalhe({ e, meses, setores, onEditar }: { e: EdificioResumo; meses: st
           atual={ultimos.map(valor)} anterior={anteriores.map(valor)}
           nomeAtual={`Água + luz até ${mesBR(meses[meses.length - 1])}`} nomeAnterior="Mesmo mês do ano anterior" cor="#7f77dd" formato={brl} altura={200} />
       )}
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex-1 min-w-[260px]">
+          <BotaoIA titulo={e.nome} resumo={() => ({})} url={`/api/edificios/${e.id}/analise-ia`} rotulo="Gerar relatório com IA" />
+        </div>
         <button onClick={onEditar} className="text-xs font-semibold px-3 py-2 rounded-lg border border-white/15 hover:bg-white/5 flex items-center gap-1.5"><Pencil className="h-3.5 w-3.5" />Editar edifício</button>
       </div>
     </div>

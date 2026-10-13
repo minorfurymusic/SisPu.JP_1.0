@@ -18,6 +18,7 @@ import { categorizarItens, grupoDoItem, demandaDoMes, custoDisponibilidade, cons
 import { compararComHistorico } from "./src/utils/variacao";
 import { calcularSituacao, ultimosMeses, ehAutomatico } from "./src/utils/situacao";
 import { EDIFICIOS_SEMENTE } from "./src/data/edificiosSemente";
+import { REGRAS_TARIFARIAS, REGRAS_ATUALIZADAS_EM } from "./src/data/regrasTarifarias";
 import { resumirEdificios } from "./src/utils/edificios";
 import ExcelJS from "exceljs";
 import { COLUNAS_INVENTARIO, COLUNAS_SO_EXPORTACAO, campoDoCabecalho, chaveInventario, resolverCodigosRepetidos, resumirInventario, tirarCodigo, type CampoInventario, type ItemInventario } from "./src/utils/inventario";
@@ -1593,6 +1594,85 @@ app.delete("/api/edificios/:id", async (req, res) => {
   } catch { res.status(503).json({ error: "Não foi possível excluir no banco de dados. Tente de novo em alguns segundos." }); }
 });
 
+// Relatório por IA de um edifício: as ligações com 12 meses de valor e consumo, demanda do grupo A,
+// mínimo pago no grupo B, preços tirados das faturas e as regras de tarifa. A IA pode sugerir juntar
+// ligações; os números de economia vêm prontos daqui, para ela não inventar conta.
+app.post("/api/edificios/:id/analise-ia", async (req, res) => {
+  const e = (db.edificios || []).find(x => x.id === req.params.id);
+  if (!e) return res.status(404).json({ error: "Edifício não encontrado." });
+  const soDados = req.query.so_dados === "1";   // para conferir o que vai para a IA
+  if (!soDados && !process.env.GEMINI_API_KEY) return res.status(503).json({ error: "A chave do Gemini (GEMINI_API_KEY) não está configurada no servidor." });
+  const resumo = resumirEdificios({
+    edificios: [e], contratos: db.itens_despesas, unidades: db.unidades, secretarias: db.secretarias, despesas: db.despesas, lancamentos: db.lancamentos,
+  });
+  const ed = resumo.edificios[0];
+  const idx = indiceDocsPorCodigoMes();
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const ligacoes = ed.ligacoes.map(l => {
+    const item = db.itens_despesas.find(it => it.id === l.id);
+    const fim = resumo.ultimo[l.tipo], meses12 = Object.keys(l.serie).filter(m => m <= fim).sort().slice(-12);
+    const meses = meses12.map(mes => {
+      const lanc = db.lancamentos.find(x => x.item_despesa_id === l.id && (x.mes_ano || "").startsWith(mes));
+      const doc = lanc ? docDoLancamento(lanc, item, idx) : undefined;
+      const itens = l.tipo === "LUZ" ? ((doc?.dados_extraidos?.itens_fatura || []) as any[]) : [];
+      const texto = doc?.origem_conteudo || "";
+      const grupo = l.tipo === "LUZ" ? grupoTensaoDoTexto(texto) : "";
+      const dem = itens.length ? demandaDoMes(itens) : null;
+      const disp = itens.length ? custoDisponibilidade(itens, consumoMedidoDoTexto(texto), grupo) : null;
+      return {
+        mes, valor: l.serie[mes].valor, consumo: l.serie[mes].consumo, grupo_tensao: grupo || undefined,
+        demanda_kw: dem ? { medida_faturada: dem.faturada, contratada: dem.contratada, ultrapassagem: dem.ultrapassagem, sem_uso: dem.sem_uso, preco_kw: dem.preco_kw } : undefined,
+        minimo_pago_sem_uso: disp ? { kwh: disp.kwh, valor: disp.valor } : undefined,
+        preco_medio: l.serie[mes].consumo > 0 ? r2(l.serie[mes].valor / l.serie[mes].consumo) : undefined,
+      };
+    });
+    const grupo = meses.map(m => m.grupo_tensao).filter(Boolean).pop() || "";
+    return {
+      tipo: l.tipo === "AGUA" ? "água (CASAN)" : "energia (CELESC)", codigo: l.codigo, ativa: l.ativo, unidade_gestora: l.unidade, endereco: l.endereco,
+      grupo_tensao: grupo || undefined, valor_12m: l.valor_12m, consumo_12m: l.consumo_12m, menor_fatura_12m: l.menor_fatura_12m,
+      minimo_pago_sem_uso_12m: r2(meses.reduce((a, m) => a + (m.minimo_pago_sem_uso?.valor || 0), 0)), meses,
+    };
+  });
+  // Grupo A: soma das demandas medidas por mês (teto da demanda de um relógio só) contra a soma das contratadas.
+  const grupoA = ligacoes.filter(l => /^A/.test(l.grupo_tensao || ""));
+  const demandaJunta = grupoA.length >= 2 ? (() => {
+    const meses = [...new Set(grupoA.flatMap(l => l.meses.map(m => m.mes)))].sort();
+    const porMes = meses.map(mes => ({ mes, soma_medidas_kw: r2(grupoA.reduce((a, l) => a + (l.meses.find(m => m.mes === mes)?.demanda_kw?.medida_faturada || 0), 0)) }));
+    const somaContratadas = r2(grupoA.reduce((a, l) => a + (l.meses.map(m => m.demanda_kw?.contratada).filter((v): v is number => v != null).pop() || 0), 0));
+    return { meses: porMes, maior_soma_kw: Math.max(...porMes.map(m => m.soma_medidas_kw)), soma_das_contratadas_kw: somaContratadas };
+  })() : undefined;
+  const setores = resumoInventario().filter(i => i.edificio_id === e.id).map(i => `${i.nome}${i.secretaria ? ` (${i.secretaria})` : ""}`);
+  const dados = {
+    edificio: { nome: e.nome, endereco: e.endereco, observacao: e.observacao, setores },
+    periodo: { agua_ate: resumo.ultimo.AGUA, luz_ate: resumo.ultimo.LUZ },
+    totais_12m: { agua: ed.agua, luz: ed.luz, custo_fixo_estimado_das_ligacoes_extras_ano: ed.economia_estimada },
+    ligacoes, demanda_se_juntar_relogios_grupo_A: demandaJunta,
+  };
+  if (soDados) return res.json(dados);
+  const prompt = `Você é analista de gestão de energia elétrica e água de uma prefeitura (Rio do Sul/SC). Escreva em português do Brasil um relatório objetivo sobre o prédio "${e.nome}" para o gestor.
+
+REGRAS:
+- Use SOMENTE os números do JSON. Não invente valores, tarifas, custos de obra nem regras além das listadas abaixo.
+- Se o prédio tiver 2 ou mais ligações do mesmo tipo, avalie se vale juntar: quanto deixaria de pagar por ano (use custo_fixo_estimado_das_ligacoes_extras_ano, minimo_pago_sem_uso_12m e, no grupo A, maior_soma_kw contra soma_das_contratadas_kw), quanto a obra poderia custar para se pagar em 2 anos e o que precisa ser verificado na vistoria. Se não valer, diga por quê.
+- Aponte meses fora do padrão (subida forte, consumo zerado, mês faltando).
+- Ligação inativa (ativa=false) não gera mais fatura: não conte na economia.
+
+FORMATO (markdown simples, sem tabelas):
+## Resumo do prédio
+## Onde está o gasto
+## Ligações duplicadas: vale juntar?
+## Recomendações (da maior para a menor economia)
+## Pontos de atenção
+
+REGRAS DE TARIFA (regras de ${REGRAS_ATUALIZADAS_EM}; os preços estão no JSON, tirados das faturas):
+${REGRAS_TARIFARIAS}
+
+DADOS (JSON):
+${JSON.stringify(dados).slice(0, 60000)}`;
+  try { res.json(await perguntarGemini(prompt)); }
+  catch (err: any) { res.status(502).json({ error: err.message }); }
+});
+
 // --- Inventário de unidades -----------------------------------------------------------------
 // Dados complementares dos locais/setores (planilha "Unidades"). Editável aqui e por planilha
 // (.xlsx): exportar, editar no Excel e importar de volta. Não mexe em contratos nem faturas; a
@@ -2134,6 +2214,32 @@ app.post("/api/faturas/variacao", (req, res) => {
 
 // Análise em texto pelo Gemini. Recebe o RESUMO já calculado pelo sistema (não os PDFs) e só pode
 // comentar esses números — a conta é sempre do sistema.
+// "Alta demanda" (503) e limite de uso (429) do Gemini são passageiros: tenta de novo com
+// espera e passa para o próximo modelo. Só desiste depois de todos.
+async function perguntarGemini(prompt: string): Promise<{ texto: string; modelo: string }> {
+  const modelos = ["gemini-pro-latest", "gemini-flash-latest", "gemini-3.6-flash", "gemini-3.1-flash-lite"];
+  let ultimoErro: any = null;
+  for (const model of modelos) {
+    for (let tentativa = 0; tentativa < 2; tentativa++) {
+      try {
+        const r = await ai.models.generateContent({ model, contents: prompt, config: { temperature: 0.2 } });
+        const texto = (r as any).text || "";
+        if (texto.trim()) return { texto, modelo: model };
+        break;
+      } catch (err: any) {
+        ultimoErro = err;
+        const passageiro = /\b(503|429)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand/i.test(String(err?.message || err));
+        if (!passageiro) break;
+        await delay(2000 * (tentativa + 1));
+      }
+    }
+  }
+  const ocupado = /\b(503|429)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|high demand/i.test(String(ultimoErro?.message || ""));
+  throw new Error(ocupado
+    ? "O Gemini está sobrecarregado agora (alta demanda no Google). Tente de novo em alguns minutos. As recomendações acima são calculadas pelo próprio sistema e não dependem da IA."
+    : `Não foi possível gerar a análise com o Gemini agora: ${ultimoErro?.message || "sem resposta"}`);
+}
+
 app.post("/api/relatorios/analise-ia", async (req, res) => {
   const titulo = String(req.body?.titulo || "Relatório");
   const resumo = req.body?.resumo;
@@ -2157,31 +2263,13 @@ FORMATO (markdown simples, sem tabelas):
 ## Pontos de atenção
 (variações, consumo zerado, dados faltando)
 
+REGRAS DE TARIFA (para explicar e recomendar; os preços estão no JSON, tirados das faturas; regras de ${REGRAS_ATUALIZADAS_EM}):
+${REGRAS_TARIFARIAS}
+
 DADOS (JSON):
 ${JSON.stringify(resumo).slice(0, 60000)}`;
-  // "Alta demanda" (503) e limite de uso (429) do Gemini são passageiros: tenta de novo com
-  // espera e passa para o próximo modelo. Só desiste depois de todos.
-  const modelos = ["gemini-pro-latest", "gemini-flash-latest", "gemini-3.6-flash", "gemini-3.1-flash-lite"];
-  let ultimoErro: any = null;
-  for (const model of modelos) {
-    for (let tentativa = 0; tentativa < 2; tentativa++) {
-      try {
-        const r = await ai.models.generateContent({ model, contents: prompt, config: { temperature: 0.2 } });
-        const texto = (r as any).text || "";
-        if (texto.trim()) return res.json({ texto, modelo: model });
-        break;
-      } catch (err: any) {
-        ultimoErro = err;
-        const passageiro = /\b(503|429)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand/i.test(String(err?.message || err));
-        if (!passageiro) break;
-        await delay(2000 * (tentativa + 1));
-      }
-    }
-  }
-  const ocupado = /\b(503|429)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|high demand/i.test(String(ultimoErro?.message || ""));
-  res.status(502).json({ error: ocupado
-    ? "O Gemini está sobrecarregado agora (alta demanda no Google). Tente de novo em alguns minutos. As recomendações acima são calculadas pelo próprio sistema e não dependem da IA."
-    : `Não foi possível gerar a análise com o Gemini agora: ${ultimoErro?.message || "sem resposta"}` });
+  try { res.json(await perguntarGemini(prompt)); }
+  catch (err: any) { res.status(502).json({ error: err.message }); }
 });
 
 // --- Unidade Gestora como local físico: juntar e separar contratos -------------------------

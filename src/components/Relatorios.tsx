@@ -384,12 +384,13 @@ function TextoIA({ texto }: { texto: string }) {
   );
 }
 
-function BotaoIA({ titulo, resumo }: { titulo: string; resumo: () => any }) {
+// url/rotulo: o mesmo botão serve a outros relatórios (ex.: o de um edifício, que monta os dados no servidor).
+export function BotaoIA({ titulo, resumo, url = "/api/relatorios/analise-ia", rotulo = "Analisar com IA (Gemini)" }: { titulo: string; resumo: () => any; url?: string; rotulo?: string }) {
   const [estado, setEstado] = useState<{ carregando: boolean; texto?: string; erro?: string; modelo?: string }>({ carregando: false });
   const gerar = async () => {
     setEstado({ carregando: true });
     try {
-      const r = await fetch("/api/relatorios/analise-ia", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ titulo, resumo: resumo() }) });
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ titulo, resumo: resumo() }) });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error || "Falha ao gerar a análise.");
       setEstado({ carregando: false, texto: d.texto, modelo: d.modelo });
@@ -401,7 +402,7 @@ function BotaoIA({ titulo, resumo }: { titulo: string; resumo: () => any }) {
     <div className="space-y-2">
       <button type="button" onClick={gerar} disabled={estado.carregando}
         className="print:hidden flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold disabled:opacity-50">
-        <Sparkles className="h-3.5 w-3.5" /> {estado.carregando ? "Analisando…" : estado.texto ? "Gerar de novo" : "Analisar com IA (Gemini)"}
+        <Sparkles className="h-3.5 w-3.5" /> {estado.carregando ? "Analisando…" : estado.texto ? "Gerar de novo" : rotulo}
       </button>
       {estado.erro && <div className="text-xs text-rose-300">{estado.erro}</div>}
       {estado.texto && (
