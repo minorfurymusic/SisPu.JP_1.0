@@ -174,6 +174,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
   const [itemMedidores, setItemMedidores] = useState<MedidorEditavel[]>([]);
   const [juntarNaUnidade, setJuntarNaUnidade] = useState<any | null>(null);
   const [versaoDados, setVersaoDados] = useState(0);
+  const [unidadeDestravada, setUnidadeDestravada] = useState(false);
   const apelidos = useApelidos(versaoDados);
 
   const separarContrato = async (itemId: string) => {
@@ -723,13 +724,20 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
     const salvos: MedidorEditavel[] = Array.isArray(it.medidores_fisicos) ? it.medidores_fisicos : [];
     const detectados: MedidorEditavel[] = (it.medidores_detectados || []).map((m: any) => ({ numero: m.numero, desde: m.desde || undefined, ate: m.ate || undefined }));
     const legado: MedidorEditavel[] = it.medidor && it.medidor !== "N/A" ? [{ numero: it.medidor }] : [];
-    setItemMedidores(salvos.length ? salvos : (detectados.length ? detectados : legado));
+    // Salvos à mão + os lidos das faturas que ainda não estão na lista (troca de medidor nova entra sozinha).
+    const semZeros = (n: string) => String(n || "").trim().replace(/^0+(?=\d)/, "");
+    const novos = detectados.filter(d => !salvos.some(m => semZeros(m.numero) === semZeros(d.numero)));
+    const juntos = [...salvos, ...novos].sort((a, b) => String(a.desde || "").localeCompare(String(b.desde || "")));
+    setItemMedidores(juntos.length ? juntos : legado);
+    setUnidadeDestravada(false);
     setFormModal('item');
   };
 
   const medidorAtualDoContrato = (it: any): string => {
-    const lista: any[] = Array.isArray(it?.medidores_fisicos) && it.medidores_fisicos.length ? it.medidores_fisicos : (it?.medidores_detectados || []);
-    const emUso = lista.find(m => !m.ate) || lista[lista.length - 1];
+    // O detectado em uso (fatura mais recente) vale mais que a lista salva, que pode ser de antes da troca.
+    const detectados: any[] = it?.medidores_detectados || [];
+    const salvos: any[] = Array.isArray(it?.medidores_fisicos) ? it.medidores_fisicos : [];
+    const emUso = detectados.find(m => !m.ate) || salvos.find(m => !m.ate) || salvos[salvos.length - 1] || detectados[detectados.length - 1];
     return emUso?.numero || (it?.medidor && it.medidor !== "N/A" ? it.medidor : "");
   };
 
@@ -2831,6 +2839,15 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                     </div>
                     <div className="space-y-1.5">
                       <label className="text-gray-300">Unidade Gestora Vinculada:</label>
+                      {/* Num contrato que já existe, a unidade só muda depois de destravar: mudar aqui tira o
+                          contrato (e as faturas dele) da unidade atual nos relatórios. */}
+                      {editingItemId && !unidadeDestravada ? (
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 bg-[#1f1f22] border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-gray-200 truncate">{unidades.find(u => u?.id === itemUnidadeId)?.nome || "—"}</div>
+                          <button type="button" onClick={() => { if (confirm("Trocar a Unidade Gestora deste contrato? As faturas dele passam a contar para a outra unidade nos relatórios. Para agrupar locais do mesmo prédio, use a aba Edifícios.")) setUnidadeDestravada(true); }}
+                            className="text-xs px-3 py-2 rounded-lg border border-white/15 text-gray-300 hover:bg-white/5 shrink-0">Trocar</button>
+                        </div>
+                      ) : (
                       <select
                         required
                         value={itemUnidadeId}
@@ -2842,6 +2859,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
                           <option key={u.id || `uni-${idx}`} value={u.id}>{u.nome}</option>
                         ))}
                       </select>
+                      )}
                     </div>
                   </div>
                   {editingItemId && (

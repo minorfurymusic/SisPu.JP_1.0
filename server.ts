@@ -2820,7 +2820,15 @@ function mapearCodigosEMedidoresDasFaturas() {
     if (endereco && endereco !== "N/A" && !enderecoPorCodigo.has(cod)) enderecoPorCodigo.set(cod, endereco);
     const nome = d.dados_extraidos?.unidade_nome;
     if (nome && nome !== "N/A" && !nomeFaturaPorCodigo.has(cod)) nomeFaturaPorCodigo.set(cod, up(nome));
-    for (const numero of chave?.medidores || []) {
+    // Medidor de cada fatura: "Valores Medidos" (layout novo), "CON RG-" (layout antigo, é o mesmo
+    // número) ou o que o leitor extraiu. Sem zeros à esquerda, para o mesmo aparelho não aparecer duas vezes.
+    const texto = d.origem_conteudo || "";
+    const doTexto = [...texto.matchAll(/^\s*(\d{6,12})\s+Energia\s+(?:Único|Unico|Ponta|Fora ponta)/gmi)].map(m => m[1]);
+    const rg = texto.match(/^\s*CON\s+RG-(\d+)/m)?.[1];
+    const extraido = d.dados_extraidos?.medidor && d.dados_extraidos.medidor !== "N/A" ? String(d.dados_extraidos.medidor) : "";
+    const numeros = [...new Set([...(chave?.medidores || []), ...doTexto, ...(rg ? [rg] : []), ...(extraido ? [extraido] : [])]
+      .map(n => String(n).trim().replace(/^0+(?=\d)/, "")).filter(Boolean))];
+    for (const numero of numeros) {
       if (!medidoresPorCodigo.has(cod)) medidoresPorCodigo.set(cod, new Map());
       const porNumero = medidoresPorCodigo.get(cod)!;
       if (!porNumero.has(numero)) porNumero.set(numero, new Set());
@@ -2844,9 +2852,11 @@ function historicoDoContrato(it: ItemDespesa, mapa: ReturnType<typeof mapearCodi
     if (!detectados.has(numero)) detectados.set(numero, new Set());
     meses.forEach(m => detectados.get(numero)!.add(m));
   }));
+  // O medidor da fatura mais recente está em uso: fica sem "até".
+  const ultimoMes = [...detectados.values()].flatMap(m => [...m]).sort().pop();
   const medidores_detectados = [...detectados.entries()].map(([numero, meses]) => {
     const p = periodo(meses);
-    return { numero, desde: p.primeiro_mes, ate: p.ultimo_mes, faturas: p.faturas };
+    return { numero, desde: p.primeiro_mes, ate: p.ultimo_mes === ultimoMes ? null : p.ultimo_mes, faturas: p.faturas };
   }).sort((a, b) => String(a.desde).localeCompare(String(b.desde)));
   // Endereço impresso na fatura mais recente do contrato (numa unidade que junta vários contratos,
   // cada um pode ter o seu — ex.: as duas ruas de uma esquina).
