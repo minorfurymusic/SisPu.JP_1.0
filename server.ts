@@ -19,6 +19,7 @@ import { compararComHistorico } from "./src/utils/variacao";
 import { calcularSituacao, ultimosMeses, ehAutomatico } from "./src/utils/situacao";
 import { EDIFICIOS_SEMENTE } from "./src/data/edificiosSemente";
 import { REGRAS_TARIFARIAS, REGRAS_ATUALIZADAS_EM } from "./src/data/regrasTarifarias";
+import { linhaCasanDoTexto } from "./src/utils/casanRelatorio";
 import { resumirEdificios } from "./src/utils/edificios";
 import ExcelJS from "exceljs";
 import { COLUNAS_INVENTARIO, COLUNAS_SO_EXPORTACAO, campoDoCabecalho, chaveInventario, resolverCodigosRepetidos, resumirInventario, tirarCodigo, type CampoInventario, type ItemInventario } from "./src/utils/inventario";
@@ -1690,6 +1691,61 @@ DADOS (JSON):
 ${JSON.stringify(dados).slice(0, 60000)}`;
   try { res.json(await perguntarGemini(prompt)); }
   catch (err: any) { res.status(502).json({ error: err.message }); }
+});
+
+// Detalhe das faturas de um edifício, mês a mês por ligação (12 meses de cada concessionária).
+// Água: leituras, consumo, água, esgoto, IR retido e bônus. Luz: consumo, injetada, partes da conta
+// (energia, rede, bandeira, demanda), perdas (ultrapassagem, demanda sem uso, reativo, mínimo pago
+// sem uso, multas) e tributos. Tudo do texto/itens das faturas importadas.
+app.get("/api/edificios/:id/faturas", (req, res) => {
+  const e = (db.edificios || []).find(x => x.id === req.params.id);
+  if (!e) return res.status(404).json({ error: "Edifício não encontrado." });
+  const resumo = resumirEdificios({ edificios: [e], contratos: db.itens_despesas, unidades: db.unidades, secretarias: db.secretarias, despesas: db.despesas, lancamentos: db.lancamentos });
+  const idx = indiceDocsPorCodigoMes();
+  const r2 = (v: number) => Math.round((v || 0) * 100) / 100;
+  const ligacoes = resumo.edificios[0].ligacoes.map(l => {
+    const item = db.itens_despesas.find(it => it.id === l.id);
+    const fim = resumo.ultimo[l.tipo];
+    const meses = Object.keys(l.serie).filter(m => m <= fim).sort().slice(-12).reverse().map(mes => {
+      const lanc = db.lancamentos.find(x => x.item_despesa_id === l.id && (x.mes_ano || "").startsWith(mes));
+      const doc = lanc ? docDoLancamento(lanc, item, idx) : undefined;
+      const texto = doc?.origem_conteudo || "";
+      const base = { mes, valor: l.serie[mes].valor, consumo: l.serie[mes].consumo, dias: diasDoDoc(doc) };
+      if (l.tipo === "AGUA") {
+        const c = doc ? linhaCasanDoTexto(texto, doc.dados_extraidos?.codigo_numero || l.codigo) : null;
+        return { ...base, leitura_anterior: c?.leitura_anterior, leitura_atual: c?.leitura_atual, agua: c?.agua, esgoto: c?.esgoto, ir_retido: c?.servico, bonus: c?.bonus };
+      }
+      const itens = (doc?.dados_extraidos?.itens_fatura || []) as any[];
+      const grupo = grupoTensaoDoTexto(texto);
+      const a = itens.length ? categorizarItens(itens) : null;
+      const dem = itens.length ? demandaDoMes(itens) : null;
+      const disp = itens.length ? custoDisponibilidade(itens, consumoMedidoDoTexto(texto), grupo) : null;
+      const g = a?.grupos;
+      return {
+        ...base, grupo_tensao: grupo || undefined,
+        // "Energia injetada" dos itens é a energia COMPENSADA pelos créditos (gerada aqui ou em outra UC);
+        // a injetada de fato é a medida no relógio (Valores Medidos).
+        compensada: Number((lanc as any)?.energia_injetada ?? doc?.dados_extraidos?.energia_injetada) || 0,
+        injetada_medida: (() => {
+          const v = [...texto.matchAll(/^\s*\d{6,12}\s+Energia injetada\s+(?:Único|Unico|Ponta|Fora ponta)\s+.*\s(-?[\d.]+,\d{1,3})\s*$/gmi)]
+            .reduce((a, m) => a + Number(m[1].replace(/\./g, "").replace(",", ".")), 0);
+          return Math.round(v * 1000) / 1000;
+        })(),
+        medidor: [...texto.matchAll(/^\s*(\d{6,12})\s+Energia\s+(?:Único|Unico|Ponta|Fora ponta)/gmi)].map(m => m[1].replace(/^0+/, ""))[0] || texto.match(/^\s*CON\s+RG-(\d+)/m)?.[1],
+        energia: g?.energia, rede: g?.rede, bandeira: g?.bandeira, demanda: g?.demanda,
+        demanda_contratada_kw: dem?.contratada ?? undefined, demanda_medida_kw: dem?.faturada,
+        ultrapassagem_kw: dem?.ultrapassagem || undefined, ultrapassagem: g?.ultrapassagem,
+        sem_uso_kw: dem?.sem_uso || undefined, demanda_sem_uso: g?.demanda_sem_uso,
+        reativo: g?.reativo, minimo_sem_uso: disp?.valor, minimo_sem_uso_kwh: disp?.kwh,
+        multas_juros: g?.multas_juros, cosip: g?.cosip, solar: g?.solar,
+        icms: a?.tributos.icms, pis_cofins: a?.tributos.pis_cofins,
+        ir_retido: a ? r2(a.tributos.irpj_retido + a.tributos.pis_retido + a.tributos.cofins_retido + a.tributos.csll_retido) : undefined,
+        detalhado: !!a,
+      };
+    });
+    return { id: l.id, tipo: l.tipo, codigo: l.codigo, unidade: l.unidade, ativo: l.ativo, meses };
+  });
+  res.json({ ligacoes });
 });
 
 // --- Inventário de unidades -----------------------------------------------------------------

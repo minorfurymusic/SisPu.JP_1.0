@@ -11,6 +11,7 @@ import { agregarContratos, precoMedioB, candidatosSolar, candidatosCapacitor, ca
 import { lerCelescAgrupadora } from "../src/utils/leitorCelescAgrupadora";
 import { resumirEdificios } from "../src/utils/edificios";
 import { buscaBate } from "../src/utils/busca";
+import { linhaCasanDoTexto } from "../src/utils/casanRelatorio";
 import { codigosDaCelula, resolverCodigosRepetidos, resumirInventario, tirarCodigo } from "../src/utils/inventario";
 
 const fixture = (nome: string) => fs.readFileSync(path.join(import.meta.dirname, "fixtures", nome), "utf8");
@@ -447,4 +448,15 @@ teste("Busca acha por palavras, sem acento e pelos dígitos do código", () => {
   assert.equal(buscaBate("1.836.993.011-65 | 0028504900", "2850490"), true);
   assert.equal(buscaBate("1.836.993.011-65", "1836993"), true);
   assert.equal(buscaBate("CEI CINDERELA", "cei barragem"), false);
+});
+
+teste("CASAN: linha do relatório SCI8095 com e sem leitura anterior", () => {
+  const texto = [
+    " 228597-5   656. 831. 041. 1000. 02 PMRS PAVILHÃO 01 HERMANN   001   002132   002274   000142   2.468,49   0,00   -118,49    0,00 2.350,00 ",
+    " 2021871-0   656. 853. 084. 0480. 02 PMRS CE RICARDO MARCHI   001   002530   000063   908,94   0,00   -43,63    0,00 865,31 ",
+  ].join("\n");
+  assert.deepEqual(linhaCasanDoTexto(texto, "228597-5"), { leitura_anterior: 2132, leitura_atual: 2274, consumo: 142, agua: 2468.49, esgoto: 0, servico: -118.49, bonus: 0, total: 2350 });
+  const b = linhaCasanDoTexto(texto, "2021871-0")!;
+  assert.deepEqual([b.leitura_anterior, b.leitura_atual, b.consumo, b.total], [undefined, 2530, 63, 865.31]);
+  assert.equal(linhaCasanDoTexto(texto, "999999-9"), null);
 });

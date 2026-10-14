@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Building2, Droplet, Zap, Search, Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react";
 import GraficoComparativo from "./GraficoComparativo";
 import EdificiosPainel from "./EdificiosPainel";
+import EdificioFaturas from "./EdificioFaturas";
 import { BotaoIA } from "./Relatorios";
 import type { EdificioResumo, Ligacao, TipoLigacao } from "../utils/edificios";
 
@@ -277,6 +278,7 @@ function Detalhe({ e, meses, setores, dados, onMudou, onEditar }: { e: EdificioR
       )}
       {e.observacao && <div className="text-xs text-gray-300"><b>Observação:</b> {e.observacao}</div>}
       <Vinculos e={e} dados={dados} onMudou={onMudou} />
+      <EdificioFaturas edificioId={e.id} />
       {setores.length > 0 && (
         <details className="text-xs">
           <summary className="cursor-pointer text-gray-300 font-semibold">Setores neste prédio, pela aba Informações ({setores.length})</summary>
