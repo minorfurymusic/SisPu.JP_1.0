@@ -1119,6 +1119,27 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
           </div>
         </div>
         
+        {unitItems.length > 1 && (
+          <div className="rounded-lg border border-amber-300/60 bg-amber-50 dark:bg-amber-500/10 dark:border-amber-500/30 p-3 space-y-2">
+            <div className="text-xs font-bold text-amber-800 dark:text-amber-200">Contratos juntos nesta unidade ({unitItems.length})</div>
+            <p className="text-[11px] text-amber-900/80 dark:text-amber-100/70">Se algum não é deste local, clique em "Separar": ele volta a ter unidade própria e as faturas dele continuam iguais.</p>
+            <div className="divide-y divide-amber-200 dark:divide-white/10">
+              {unitItems.map(it => (
+                <div key={it.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5 text-xs">
+                  <div className="min-w-0">
+                    <span className={`font-bold ${/CASAN|ÁGUA|AGUA/i.test(it.despesa_descricao || "") ? "text-sky-700 dark:text-sky-300" : "text-amber-700 dark:text-amber-300"}`}>{/CASAN|ÁGUA|AGUA/i.test(it.despesa_descricao || "") ? "Água" : "Luz"}</span>
+                    <span className="font-mono font-bold text-slate-900 dark:text-white ml-2">{it.codigo_numero}</span>
+                    {(it.codigos_numero_anteriores || []).length > 0 && <span className="font-mono text-slate-500 ml-2">antes: {it.codigos_numero_anteriores.join(", ")}</span>}
+                    <span className="block text-[11px] text-slate-600 dark:text-gray-400 truncate">{it.nome_fatura || it.endereco_contrato || ""}</span>
+                  </div>
+                  <button type="button" onClick={(e) => { e.stopPropagation(); if (confirm(`Separar ${it.codigo_numero} desta unidade?`)) separarContrato(it.id); }}
+                    className="px-3 py-1 rounded-lg border border-rose-400 text-rose-600 dark:text-rose-300 font-bold hover:bg-rose-50 dark:hover:bg-rose-500/10">Separar</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {activeItems.map(it => {
             const itemLancs = lancamentos.filter(l => l.item_despesa_id === it.id);
@@ -1532,7 +1553,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
             <div className="bg-white dark:bg-[#0f0f0f] p-6 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm space-y-4">
               <SmartTable
                 tableId="web_unidades"
-                extraSearch={(u) => apelidos.unidades[String(u?.id)] || ""}
+                extraSearch={(u) => `${apelidos.unidades[String(u?.id)] || ""} | ${itens.filter(it => it?.unidade_id === u?.id).flatMap(it => [it.codigo_numero, ...(it.codigos_numero_anteriores || [])]).join(" ")}`}
                 data={filteredUnidades}
                 searchPlaceholder="Pesquisar por UC, matrícula, nome ou secretaria..."
                 onRowClick={(item) => item?.id && setExpandedUnitId(expandedUnitId === item.id ? null : item.id)}

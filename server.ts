@@ -900,6 +900,25 @@ function autoSyncOrphanRecords() {
     hasChanges = true;
   });
 
+  // Contrato apontando para unidade que não existe mais (ex.: gravação interrompida no meio de
+  // um juntar/separar) ganha uma unidade própria, para não sumir das telas.
+  const idsUnidades = new Set(db.unidades.map(u => String(u.id)));
+  (db.itens_despesas || []).filter(it => it?.unidade_id && !idsUnidades.has(String(it.unidade_id))).forEach(it => {
+    const agora = new Date().toISOString();
+    const nova: Unidade = {
+      id: crypto.randomUUID(), secretaria_id: secretariaAClassificar().id,
+      nome: up(it.nome_fatura) || up(it.codigo_numero), uc: it.codigo_numero, codnum: it.codigo_numero,
+      concessionaria: concessionariaDoContrato(it), endereco: "ENDEREÇO A CADASTRAR", ativo: true, criado_em: agora, atualizado_em: agora,
+    };
+    db.unidades.push(nova);
+    idsUnidades.add(nova.id);
+    logAudit("unidades", nova.id, "INSERT", "sistema", null, nova);
+    console.log(`[DB] Contrato ${it.codigo_numero} estava sem unidade; criada a unidade "${nova.nome}".`);
+    it.unidade_id = nova.id;
+    it.atualizado_em = agora;
+    hasChanges = true;
+  });
+
   // Junta unidades duplicadas — duplicada é a que tem a MESMA matrícula/UC. Nunca pelo nome:
   // imóveis diferentes compartilham o nome do usuário (ex.: "MUNICIPIO DE RIO DO SUL" em toda UC
   // da CELESC), e juntar por nome fundia e apagava do banco unidades legítimas a cada reinício.
@@ -2540,10 +2559,11 @@ app.post("/api/itens_despesas/:id/separar", async (req, res) => {
   const nova: Unidade = {
     id: crypto.randomUUID(),
     secretaria_id: atual.secretaria_id,
-    nome: dados?.unidade_nome && dados.unidade_nome !== "N/A" ? up(dados.unidade_nome) : atual.nome,
+    // Na CELESC o "usuário" da fatura é sempre o Município; o nome na fatura identifica o local.
+    nome: up(item.nome_fatura) || (dados?.unidade_nome && dados.unidade_nome !== "N/A" && !/MUNICIPIO DE RIO DO SUL/i.test(dados.unidade_nome) ? up(dados.unidade_nome) : atual.nome),
     uc: item.codigo_numero,
     codnum: item.codigo_numero,
-    concessionaria: item.despesa_id === "2" ? "CASAN" : (atual.concessionaria || "CELESC"),
+    concessionaria: concessionariaDoContrato(item),
     endereco: dados?.endereco && dados.endereco !== "N/A" ? up(dados.endereco) : "ENDEREÇO A CADASTRAR",
     ativo: true,
     criado_em: agora,
