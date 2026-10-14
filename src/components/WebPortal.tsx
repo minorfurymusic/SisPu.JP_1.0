@@ -10,7 +10,7 @@ import DocumentManager from "./DocumentManager";
 import SmartTable, { SmartTableColumn } from "./SmartTable";
 import FaturasTreeView from "./FaturasTreeView";
 import EditFaturaModal from "./EditFaturaModal";
-import { SugestoesAgrupamento, JuntarContratosModal } from "./UnidadesAgrupamento";
+import { JuntarContratosModal } from "./UnidadesAgrupamento";
 import Relatorios from "./Relatorios";
 import GraficoComparativo from "./GraficoComparativo";
 import Edificios from "./Edificios";
@@ -1079,8 +1079,6 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
       return (
         <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 italic text-xs flex items-center justify-between gap-3">
           <span>Nenhum contrato vinculado a esta unidade.</span>
-          <button type="button" onClick={(e) => { e.stopPropagation(); setJuntarNaUnidade(unit); }}
-            className="not-italic px-3 py-1.5 rounded-lg bg-indigo-600 text-white font-bold">Juntar contratos</button>
         </div>
       );
     }
@@ -1095,14 +1093,6 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
             <p className="text-[10px] text-slate-500">Selecione a concessionária para inspecionar os medidores associados</p>
           </div>
           <div className="flex gap-1.5">
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); setJuntarNaUnidade(unit); }}
-              className="px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black hover:bg-amber-400"
-              title="Trazer para esta unidade contratos de água ou luz do mesmo local"
-            >
-              🔗 Juntar contratos
-            </button>
             {concessionaires.map(conces => (
               <button
                 key={conces}
@@ -1122,7 +1112,7 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
         {unitItems.length > 1 && (
           <div className="rounded-lg border border-amber-300/60 bg-amber-50 dark:bg-amber-500/10 dark:border-amber-500/30 p-3 space-y-2">
             <div className="text-xs font-bold text-amber-800 dark:text-amber-200">Contratos juntos nesta unidade ({unitItems.length})</div>
-            <p className="text-[11px] text-amber-900/80 dark:text-amber-100/70">Se algum não é deste local, clique em "Separar": ele volta a ter unidade própria e as faturas dele continuam iguais.</p>
+            <p className="text-[11px] text-amber-900/80 dark:text-amber-100/70">Se algum não é deste local, clique em "Separar": ele volta a ter unidade própria e as faturas dele continuam iguais. Para agrupar unidades do mesmo prédio, use a aba Edifícios.</p>
             <div className="divide-y divide-amber-200 dark:divide-white/10">
               {unitItems.map(it => (
                 <div key={it.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5 text-xs">
@@ -1548,7 +1538,6 @@ export default function WebPortal({ onRefreshTrigger, onDataChanged }: WebPortal
               <span className="text-[11px] text-slate-500 dark:text-gray-500">Unidade com 3 meses seguidos sem fatura nova fica inativa sozinha (o histórico continua) e volta quando chega fatura ou quando você reativa.</span>
             </div>
 
-            <SugestoesAgrupamento onChanged={notifyChange} onError={showError} onSuccess={showSuccess} />
 
             <div className="bg-white dark:bg-[#0f0f0f] p-6 rounded-xl border border-slate-200 dark:border-white/10 shadow-sm space-y-4">
               <SmartTable

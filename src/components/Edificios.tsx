@@ -149,7 +149,7 @@ export default function Edificios({ versao }: { versao?: number }) {
                   ? <span className="inline-flex items-center gap-1 text-amber-300"><AlertTriangle className="h-3.5 w-3.5" />{brl(e.economia_estimada)}/ano</span>
                   : <span className="text-gray-500">—</span>}</Celula>
               </button>
-              {aberto === e.id && <Detalhe e={e} meses={dados.meses} setores={dados.setores?.[e.id] || []} onEditar={() => setEditando(e)} />}
+              {aberto === e.id && <Detalhe e={e} meses={dados.meses} setores={dados.setores?.[e.id] || []} dados={dados} onMudou={carregar} onEditar={() => setEditando(e)} />}
             </div>
           ))}
         </div>
@@ -210,7 +210,61 @@ function TabelaLigacoes({ ligacoes, extra }: { ligacoes: Ligacao[]; extra?: (l: 
   );
 }
 
-function Detalhe({ e, meses, setores, onEditar }: { e: EdificioResumo; meses: string[]; setores: Setor[]; onEditar: () => void }) {
+// Vincular e desvincular unidades gestoras (com as ligações de água e luz delas) direto no prédio.
+// Vincular uma unidade traz todas as ligações dela; se alguma estava em outro prédio, sai de lá.
+function Vinculos({ e, dados, onMudou }: { e: EdificioResumo; dados: Dados; onMudou: () => void }) {
+  const [busca, setBusca] = useState("");
+  const [salvando, setSalvando] = useState(false);
+  const [msg, setMsg] = useState("");
+  const gravar = async (contratos: string[]) => {
+    setSalvando(true); setMsg("");
+    const r = await fetch(`/api/edificios/${e.id}`, { method: "PUT", headers: { "Content-Type": "application/json", "x-user": "gestor_web" }, body: JSON.stringify({ contratos }) });
+    setSalvando(false);
+    if (!r.ok) { setMsg((await r.json().catch(() => ({}))).error || "Não foi possível gravar."); return; }
+    setBusca(""); onMudou();
+  };
+  // Unidades gestoras de todas as ligações (sem prédio e de outros prédios), para vincular.
+  const unidades = useMemo(() => {
+    const m = new Map<string, { id: string; nome: string; ligacoes: Ligacao[]; outros: Set<string> }>();
+    const somar = (l: Ligacao, predio?: string) => {
+      const k = l.unidade_id || l.id;
+      if (!m.has(k)) m.set(k, { id: k, nome: l.unidade || l.codigo, ligacoes: [], outros: new Set() });
+      m.get(k)!.ligacoes.push(l);
+      if (predio) m.get(k)!.outros.add(predio);
+    };
+    dados.sem_edificio.forEach(l => somar(l));
+    dados.edificios.filter(x => x.id !== e.id).forEach(x => x.ligacoes.forEach(l => somar(l, x.nome)));
+    return [...m.values()];
+  }, [dados, e.id]);
+  const opcoes = busca.trim().length >= 2
+    ? unidades.filter(u => bate(`${u.nome} ${u.ligacoes.map(textoLigacao).join(" ")}`, busca)).slice(0, 10) : [];
+  const desvincular = (l: Ligacao) => {
+    if (confirm(`Desvincular ${l.codigo} (${l.unidade}) deste prédio? A ligação e as faturas continuam no sistema.`)) gravar(e.contratos.filter(c => c !== l.id));
+  };
+  return (
+    <div className="space-y-3">
+      <TabelaLigacoes ligacoes={e.ligacoes} extra={l => (
+        <button disabled={salvando} onClick={() => desvincular(l)} className="text-xs px-2 py-1 rounded border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 disabled:opacity-50">Desvincular</button>
+      )} />
+      <div className="space-y-2">
+        <input value={busca} onChange={ev => setBusca(ev.target.value)} placeholder="Vincular unidade gestora a este prédio: digite o nome, matrícula ou UC"
+          className="w-full bg-black/40 border border-white/10 rounded px-3 py-2 text-sm" />
+        {opcoes.map(u => (
+          <button key={u.id} disabled={salvando} onClick={() => gravar([...new Set([...e.contratos, ...u.ligacoes.map(l => l.id)])])}
+            className="w-full text-left text-xs px-3 py-2 rounded border border-white/10 hover:bg-white/5 flex flex-wrap gap-x-3 gap-y-1 items-center disabled:opacity-50">
+            <span className="font-semibold">{u.nome}</span>
+            {u.ligacoes.map(l => <span key={l.id} className="inline-flex items-center gap-1"><Tipo tipo={l.tipo} /><span className="font-mono">{l.codigo}</span></span>)}
+            {u.outros.size > 0 && <span className="text-amber-300">sai de: {[...u.outros].join(", ")}</span>}
+            <span className="ml-auto text-indigo-300 font-semibold">Vincular</span>
+          </button>
+        ))}
+        {msg && <div className="text-xs text-rose-300">{msg}</div>}
+      </div>
+    </div>
+  );
+}
+
+function Detalhe({ e, meses, setores, dados, onMudou, onEditar }: { e: EdificioResumo; meses: string[]; setores: Setor[]; dados: Dados; onMudou: () => void; onEditar: () => void }) {
   const ultimos = meses.slice(-12), anteriores = meses.slice(0, 12);
   const valor = (m: string) => (e.serie[m] ? e.serie[m].agua_valor + e.serie[m].luz_valor : null);
   return (
@@ -222,7 +276,7 @@ function Detalhe({ e, meses, setores, onEditar }: { e: EdificioResumo; meses: st
         </div>
       )}
       {e.observacao && <div className="text-xs text-gray-300"><b>Observação:</b> {e.observacao}</div>}
-      <TabelaLigacoes ligacoes={e.ligacoes} />
+      <Vinculos e={e} dados={dados} onMudou={onMudou} />
       {setores.length > 0 && (
         <details className="text-xs">
           <summary className="cursor-pointer text-gray-300 font-semibold">Setores neste prédio, pela aba Informações ({setores.length})</summary>

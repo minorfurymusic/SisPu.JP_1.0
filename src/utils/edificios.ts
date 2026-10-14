@@ -10,7 +10,7 @@ type EdificioBase = { id: string; nome: string; endereco?: string; secretaria_id
 
 export type Ligacao = {
   id: string; codigo: string; codigos_antigos: string[]; tipo: TipoLigacao; ativo: boolean;
-  unidade: string; secretaria: string; endereco: string;
+  unidade_id: string; unidade: string; secretaria: string; endereco: string;
   valor_12m: number; consumo_12m: number; valor_ultimo: number; consumo_ultimo: number; menor_fatura_12m: number;
   serie: Record<string, { valor: number; consumo: number }>;
 };
@@ -81,7 +81,7 @@ export function resumirEdificios(dados: {
     meses.forEach(m => { if (serie[m]) serieRecente[m] = { valor: r2(serie[m].valor), consumo: r2(serie[m].consumo) }; });
     return {
       id: c.id, codigo: c.codigo_numero, codigos_antigos: c.codigos_numero_anteriores || [], tipo, ativo: c.ativo !== false,
-      unidade: u?.nome || "", secretaria: secretaria.get(String(u?.secretaria_id)) || "",
+      unidade_id: String(c.unidade_id || ""), unidade: u?.nome || "", secretaria: secretaria.get(String(u?.secretaria_id)) || "",
       endereco: (tipo === "LUZ" ? c.nome_fatura : "") || u?.endereco || "",
       valor_12m: r2(valor), consumo_12m: r2(consumo),
       valor_ultimo: r2(serie[fim]?.valor || 0), consumo_ultimo: r2(serie[fim]?.consumo || 0),
