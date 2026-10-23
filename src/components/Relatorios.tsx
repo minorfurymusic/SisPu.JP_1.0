@@ -773,6 +773,7 @@ export default function Relatorios({ versao }: { versao: number }) {
   const [secretariaId, setSecretariaId] = useState("");
   const [tensao, setTensao] = useState<"" | "A" | "B">("");
   const [busca, setBusca] = useState("");
+  const [exportando, setExportando] = useState(false);
   const apelidos = useApelidos(versao);
   const [unidadeAberta, setUnidadeAberta] = useState<string | null>(null);
   const [acomps, setAcomps] = useState<Record<string, Acompanhamento>>({});
@@ -906,6 +907,26 @@ export default function Relatorios({ versao }: { versao: number }) {
     }
     return out;
   }, [avaliados, recs12, caps, bopt, solar, ml, ult12, precoB, base]);
+
+  // Planilha completa: o servidor monta os cadastros e as faturas; daqui vão as contas que só a
+  // tela faz (ações, alertas e oportunidades), para a aba Relatórios sair igual ao que se vê.
+  const exportarTudo = async () => {
+    setExportando(true);
+    try {
+      const relatorio = {
+        acoes,
+        alertas: avaliados.map(({ l, r }) => ({ unidade: l.unidade_nome, codigo: l.codigo, concessionaria: l.concessionaria, mes: l.mes, alerta: TEXTO_ALERTA[r.alerta!], motivo: r.motivo,
+          consumo: l.consumo, ref_mensal: r.mensal?.ref_consumo_30d ?? null, ref_anual: r.anual?.ref_consumo_30d ?? null, impacto: r.impacto_valor })),
+        solar, capacitores: caps, b_optante: bopt, mercado_livre: ml,
+      };
+      const res = await fetch("/api/exportar/tudo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ de: deSel, ate: ateSel, relatorio }) });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Não foi possível gerar a planilha.");
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url; a.download = `sispu_completo_${deSel}_a_${ateSel}.xlsx`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (e: any) { alert(e.message); } finally { setExportando(false); }
+  };
 
   if (erro) return <div className="bg-[#0f0f0f] p-6 rounded-xl border border-rose-500/30 text-rose-300 text-sm">{erro}</div>;
   if (!base) return <div className="bg-[#0f0f0f] p-6 rounded-xl border border-white/10 text-gray-400 text-sm">Carregando relatórios…</div>;
@@ -1401,7 +1422,11 @@ export default function Relatorios({ versao }: { versao: number }) {
             </button>
           ))}
         </div>
-        <button type="button" onClick={() => imprimir(`SisPu.JP — ${tituloAba} ${tituloPeriodo}`, "relatorios-conteudo")} className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-gray-300 hover:bg-white/5 text-xs">
+        <button type="button" disabled={exportando} onClick={exportarTudo} title="Uma planilha com Resumo, Relatórios, Faturas, Contratos, Unidades, Secretarias, Edifícios e Informações, no período escolhido"
+          className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs disabled:opacity-50">
+          <Download className="h-3.5 w-3.5" /> {exportando ? "Gerando planilha…" : "Exportar tudo (.xlsx)"}
+        </button>
+        <button type="button" onClick={() => imprimir(`SisPu.JP — ${tituloAba} ${tituloPeriodo}`, "relatorios-conteudo")} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-gray-300 hover:bg-white/5 text-xs">
           <Printer className="h-3.5 w-3.5" /> Imprimir / PDF
         </button>
       </div>

@@ -14,12 +14,13 @@ import { runDeterministicParser } from "./src/utils/documentParser";
 import { chaveVinculoDoBloco } from "./src/utils/layoutReaders";
 import { ParserCelesc, VERSAO_LEITOR_CELESC } from "./src/utils/ParserCelesc";
 import { lerCelescAgrupadora, VERSAO_LEITOR_AGRUPADORA } from "./src/utils/leitorCelescAgrupadora";
-import { categorizarItens, grupoDoItem, demandaDoMes, custoDisponibilidade, consumoMedidoDoTexto, grupoTensaoDoTexto, diasFaturadosDoTexto } from "./src/utils/analiseCelesc";
+import { GRUPOS_PERDA, categorizarItens, grupoDoItem, demandaDoMes, custoDisponibilidade, consumoMedidoDoTexto, grupoTensaoDoTexto, diasFaturadosDoTexto } from "./src/utils/analiseCelesc";
 import { compararComHistorico } from "./src/utils/variacao";
 import { calcularSituacao, ultimosMeses, ehAutomatico } from "./src/utils/situacao";
 import { EDIFICIOS_SEMENTE } from "./src/data/edificiosSemente";
 import { REGRAS_TARIFARIAS, REGRAS_ATUALIZADAS_EM } from "./src/data/regrasTarifarias";
 import { linhaCasanDoTexto } from "./src/utils/casanRelatorio";
+import { montarPlanilhaCompleta, type Aba as AbaPlanilha, type Celula } from "./src/utils/planilhaCompleta";
 import { resumirEdificios } from "./src/utils/edificios";
 import ExcelJS from "exceljs";
 import { COLUNAS_INVENTARIO, COLUNAS_SO_EXPORTACAO, campoDoCabecalho, chaveInventario, resolverCodigosRepetidos, resumirInventario, tirarCodigo, type CampoInventario, type ItemInventario } from "./src/utils/inventario";
@@ -2151,7 +2152,9 @@ function docDoLancamento(l: Lancamento, item: ItemDespesa | undefined, idx: Map<
 const diasDoDoc = (doc?: DocumentoProcessado) =>
   Number((doc?.dados_extraidos as any)?.dias_faturados) || diasFaturadosDoTexto(doc?.origem_conteudo || "") || 30;
 
-app.get("/api/relatorios/base", (req, res) => {
+// Uma linha por fatura (lançamento) com as partes da conta, demanda e mínimo pago: base dos
+// relatórios e da exportação completa.
+function linhasDosRelatorios() {
   const idx = indiceDocsPorCodigoMes();
   const itemPorId = new Map(db.itens_despesas.map(it => [String(it.id), it]));
   const unidadePorId = new Map(db.unidades.map(u => [String(u.id), u]));
@@ -2193,6 +2196,11 @@ app.get("/api/relatorios/base", (req, res) => {
       disponibilidade: itens.length ? custoDisponibilidade(itens, consumoMedidoDoTexto(texto), grupoTensao) : null,
     };
   });
+  return linhas;
+}
+
+app.get("/api/relatorios/base", (req, res) => {
+  const linhas = linhasDosRelatorios();
   res.json({
     linhas,
     unidades: db.unidades.map(u => ({ id: u.id, nome: u.nome, endereco: u.endereco || "", secretaria_id: u.secretaria_id, ativo: u.ativo !== false, situacao_motivo: u.situacao_motivo || null })),
@@ -2200,6 +2208,199 @@ app.get("/api/relatorios/base", (req, res) => {
     // Contratos desativados (regra dos 3 meses ou à mão), para os relatórios não cobrarem fatura deles.
     contratos_inativos: db.itens_despesas.filter(it => it.ativo === false).map(it => ({ contrato_id: it.id, codigo: it.codigo_numero, unidade_id: it.unidade_id, motivo: it.situacao_motivo || "Inativo", desde: it.situacao_em || null })),
   });
+});
+
+// --- Exportar tudo (.xlsx) ----------------------------------------------------------------
+// Uma planilha com todas as abas (ver src/utils/planilhaCompleta.ts). O período vale para Resumo,
+// Relatórios e Faturas; cadastros saem como estão hoje. A aba Relatórios usa o que a tela já
+// calculou (ações, alertas, oportunidades), mandado no corpo do pedido.
+app.post("/api/exportar/tudo", async (req, res) => {
+  const mesOk = (v: any) => (typeof v === "string" && /^\d{4}-\d{2}$/.test(v) ? v : "");
+  const todas = linhasDosRelatorios();
+  const mesesTodos = [...new Set(todas.map(l => l.mes).filter(Boolean))].sort();
+  const ate = mesOk(req.body?.ate) || mesesTodos[mesesTodos.length - 1] || "";
+  const de = mesOk(req.body?.de) || mesesTodos.find(m => m.startsWith(ate.substring(0, 4))) || "";
+  const rel = req.body?.relatorio || {};
+  const lista = (v: any) => (Array.isArray(v) ? v : []);
+  const r2 = (v: any) => (typeof v === "number" && isFinite(v) ? Math.round(v * 100) / 100 : null);
+  const mesBR = (m: string) => (m ? `${m.substring(5, 7)}/${m.substring(0, 4)}` : "");
+  const soma = <T,>(xs: T[], f: (x: T) => number) => xs.reduce((a, x) => a + (Number(f(x)) || 0), 0);
+  const ls = todas.filter(l => l.mes >= de && l.mes <= ate);
+  const periodo = [...new Set(ls.map(l => l.mes))].sort();
+
+  // Contexto: edifício de cada contrato, documentos de cada fatura, medidores.
+  const edificioDoContrato = new Map<string, string>();
+  (db.edificios || []).forEach(e => (e.contratos || []).forEach(c => edificioDoContrato.set(c, e.nome)));
+  const itemPorId = new Map(db.itens_despesas.map(it => [String(it.id), it]));
+  const unidadePorId = new Map(db.unidades.map(u => [String(u.id), u]));
+  const secretariaPorId = new Map(db.secretarias.map(sc => [String(sc.id), sc]));
+  const despesaPorId = new Map(db.despesas.map(d => [String(d.id), d]));
+  const lancPorId = new Map(db.lancamentos.map(l => [String(l.id), l]));
+  const idx = indiceDocsPorCodigoMes();
+  const mapa = mapearCodigosEMedidoresDasFaturas();
+  const perdaDe = (l: any) => GRUPOS_PERDA.reduce((a, g) => a + (l.grupos?.[g] || 0), 0) + (l.disponibilidade?.valor || 0);
+
+  // ---- Faturas (período)
+  const faturas = ls.map(l => {
+    const lanc = lancPorId.get(String(l.id));
+    const it = itemPorId.get(String(l.contrato_id));
+    const doc = lanc ? docDoLancamento(lanc, it, idx) : undefined;
+    const texto = doc?.origem_conteudo || "";
+    const g = l.grupos || ({} as any), t = l.tributos;
+    const casan = l.concessionaria === "CASAN" && doc ? linhaCasanDoTexto(texto, doc.dados_extraidos?.codigo_numero || l.codigo) : null;
+    const medidor = [...texto.matchAll(/^\s*(\d{6,12})\s+Energia\s+(?:Único|Unico|Ponta|Fora ponta)/gmi)].map(m => m[1].replace(/^0+/, ""))[0] || texto.match(/^\s*CON\s+RG-(\d+)/m)?.[1] || "";
+    const injetada = [...texto.matchAll(/^\s*\d{6,12}\s+Energia injetada\s+(?:Único|Unico|Ponta|Fora ponta)\s+.*\s(-?[\d.]+,\d{1,3})\s*$/gmi)].reduce((a, m) => a + Number(m[1].replace(/\./g, "").replace(",", ".")), 0);
+    const ir = t ? t.irpj_retido + t.pis_retido + t.cofins_retido + t.csll_retido : casan?.servico;
+    return [
+      mesBR(l.mes), l.concessionaria, l.codigo, (it?.codigos_numero_anteriores || []).join(", "), l.unidade_nome, l.secretaria_nome,
+      edificioDoContrato.get(String(l.contrato_id)) || "", it?.nome_fatura || l.unidade_endereco, l.grupo_tensao, l.dias,
+      r2(l.consumo), r2(l.valor_total), it?.ativo === false ? "Inativo" : "Ativo",
+      r2(g.energia), r2(g.rede), r2(g.bandeira), r2(g.demanda), l.demanda?.contratada ?? null, l.demanda?.faturada ?? null,
+      l.demanda?.ultrapassagem || null, r2(g.ultrapassagem), l.demanda?.sem_uso || null, r2(g.demanda_sem_uso), r2(g.reativo),
+      l.disponibilidade?.kwh ?? null, r2(l.disponibilidade?.valor), r2(g.multas_juros), r2(g.infraestrutura), r2(g.cosip),
+      r2(g.solar), l.grupos ? r2((g.ajustes || 0) + (g.outros || 0)) : null, r2(t?.icms), r2(t?.pis_cofins), r2(ir),
+      r2(l.energia_injetada) || null, r2(injetada) || null, medidor, (l.nao_classificados || []).join("; "),
+      casan?.leitura_anterior ?? null, casan?.leitura_atual ?? null, r2(casan?.agua), r2(casan?.esgoto), r2(casan?.bonus),
+    ] as Celula[];
+  });
+
+  // ---- Resumo (período)
+  const porMes = periodo.map(m => {
+    const xs = ls.filter(l => l.mes === m), a = xs.filter(l => l.concessionaria === "CASAN"), e = xs.filter(l => l.concessionaria === "CELESC");
+    const mesAnt = `${Number(m.substring(0, 4)) - 1}${m.substring(4)}`;
+    const ant = todas.filter(l => l.mes === mesAnt);
+    return [mesBR(m), r2(soma(a, l => l.valor_total)), r2(soma(a, l => l.consumo)), r2(soma(e, l => l.valor_total)), r2(soma(e, l => l.consumo)),
+      r2(soma(e, perdaDe)), r2(soma(e, l => l.grupos?.solar || 0)), r2(soma(xs, l => l.valor_total)), ant.length ? r2(soma(ant, l => l.valor_total)) : null] as Celula[];
+  });
+  const secretariasNoPeriodo = [...new Set(ls.map(l => l.secretaria_nome))].sort();
+  const porSecretaria = secretariasNoPeriodo.map(sn => {
+    const xs = ls.filter(l => l.secretaria_nome === sn);
+    return [sn, r2(soma(xs.filter(l => l.concessionaria === "CASAN"), l => l.valor_total)), r2(soma(xs.filter(l => l.concessionaria === "CELESC"), l => l.valor_total)),
+      r2(soma(xs, perdaDe)), r2(soma(xs, l => l.valor_total)), new Set(xs.map(l => l.contrato_id)).size] as Celula[];
+  }).sort((a, b) => (b[4] as number) - (a[4] as number));
+
+  // ---- Relatórios: perdas, demanda e tributos daqui; ações, alertas e oportunidades da tela.
+  const e = ls.filter(l => l.concessionaria === "CELESC");
+  const tiposPerda: [string, (l: any) => number][] = [
+    ["Ultrapassagem de demanda", l => l.grupos?.ultrapassagem || 0], ["Demanda paga sem uso", l => l.grupos?.demanda_sem_uso || 0],
+    ["Energia reativa excedente", l => l.grupos?.reativo || 0], ["Mínimo pago sem consumo", l => l.disponibilidade?.valor || 0],
+    ["Multas e juros", l => l.grupos?.multas_juros || 0],
+  ];
+  const perdas: Celula[][] = [];
+  for (const [nome, f] of tiposPerda) {
+    const ids = [...new Set(e.filter(l => f(l) > 0.004).map(l => l.contrato_id))];
+    ids.map(id => { const xs = e.filter(l => l.contrato_id === id); return [nome, xs[0].unidade_nome, xs[0].codigo, xs[0].secretaria_nome, xs.filter(l => f(l) > 0.004).length, r2(soma(xs, f))] as Celula[]; })
+      .sort((a, b) => (b[5] as number) - (a[5] as number)).forEach(r => perdas.push(r));
+  }
+  const demanda = [...new Set(e.filter(l => l.demanda).map(l => l.contrato_id))].map(id => {
+    const xs = e.filter(l => l.contrato_id === id && l.demanda).sort((a, b) => a.mes.localeCompare(b.mes));
+    const usos = xs.map(l => l.demanda!.faturada).sort((a, b) => a - b);
+    const contr = [...xs].reverse().map(l => l.demanda!.contratada).find(v => v != null) ?? null;
+    return [xs[0].unidade_nome, xs[0].codigo, xs[0].grupo_tensao, contr, usos[0], usos[Math.floor(usos.length / 2)], usos[usos.length - 1],
+      contr ? xs.filter(l => l.demanda!.faturada > contr * 1.05).length : null, contr ? xs.filter(l => l.demanda!.faturada < contr * 0.9).length : null,
+      r2(soma(xs, l => (l.grupos?.ultrapassagem || 0) + (l.grupos?.demanda_sem_uso || 0)))] as Celula[];
+  });
+  const trib = (k: string) => r2(soma(e, l => (l.tributos as any)?.[k] || 0));
+  const irCasan = r2(soma(faturas.filter(f => f[1] === "CASAN"), f => Number(f[33]) || 0));
+  const acompanhamento = new Map((db.acompanhamentos || []).map(a => [a.id, a]));
+  const acoes = lista(rel.acoes).map((a: any) => {
+    const ac = acompanhamento.get(a.id);
+    return [a.quando === "agora" ? "Agora" : "Economia", a.tipo, a.unidade, a.endereco, String(a.codigo || "").replace(/^[^\d.]+/, ""), a.titulo, a.detalhe,
+      r2(a.valor), a.valor_texto || a.rotulo_valor, r2(a.investimento), ac?.status || "novo", ac?.responsavel || "", ac?.prazo || "", ac?.observacao || ""] as Celula[];
+  });
+  const alertas = lista(rel.alertas).map((a: any) => [a.unidade, a.codigo, a.concessionaria, mesBR(a.mes), a.alerta, a.motivo, r2(a.consumo), r2(a.ref_mensal), r2(a.ref_anual), r2(a.impacto)] as Celula[]);
+  const solar = lista(rel.solar).map((c: any) => [c.unidade, c.codigo, r2(c.kwh), r2(c.kwp), r2(c.investimento), r2(c.economia), r2(c.payback), r2(c.area_m2)] as Celula[]);
+  const caps = lista(rel.capacitores).map((c: any) => [c.unidade, c.codigo, r2(c.reativo), r2(c.limite_investimento), c.solucao, `${r2(c.custo?.[0])} a ${r2(c.custo?.[1])}`] as Celula[]);
+  const bopt = lista(rel.b_optante).map((c: any) => [c.unidade, c.codigo, r2(c.custo_a), r2(c.custo_b), r2(c.economia)] as Celula[]);
+  const ml = rel.mercado_livre && typeof rel.mercado_livre === "object" ? [[rel.mercado_livre.ucs, r2(rel.mercado_livre.kwh), r2(rel.mercado_livre.base), r2(rel.mercado_livre.economia?.[0]), r2(rel.mercado_livre.economia?.[1])] as Celula[]] : [];
+
+  // ---- Cadastros (estado atual)
+  const ultimoMesDe = (id: string) => db.lancamentos.filter(l => l.item_despesa_id === id).map(l => (l.mes_ano || "").substring(0, 7)).sort();
+  const ini12 = mesesTodos[Math.max(0, mesesTodos.length - 12)] || "";
+  const contratos = db.itens_despesas.map(it => {
+    const u = unidadePorId.get(String(it.unidade_id)), sc = u ? secretariaPorId.get(String(u.secretaria_id)) : undefined;
+    const h = historicoDoContrato(it, mapa), meses = ultimoMesDe(it.id);
+    const salvos = it.medidores_fisicos || [];
+    const med = [...salvos, ...h.medidores_detectados.filter(d => !salvos.some(m => m.numero.replace(/^0+/, "") === d.numero))]
+      .map((m: any) => `${m.numero} (${m.desde ? mesBR(m.desde) : "?"}–${m.ate ? mesBR(m.ate) : "atual"})`).join("; ");
+    return [it.codigo_numero, (it.codigos_numero_anteriores || []).join(", "), concessionariaDoContrato(it), despesaPorId.get(String(it.despesa_id))?.descricao || "",
+      u?.nome || "", sc?.nome || "", edificioDoContrato.get(it.id) || "", h.nome_fatura || it.nome_fatura || "", h.endereco_contrato || u?.endereco || "",
+      it.ativo === false ? "Inativo" : "Ativo", it.situacao_motivo || "", med, mesBR(meses[0] || ""), mesBR(meses[meses.length - 1] || ""), meses.length,
+      r2(soma(db.lancamentos.filter(l => l.item_despesa_id === it.id && (l.mes_ano || "") >= ini12), l => Number(l.valor_total)))] as Celula[];
+  });
+  const unidades = db.unidades.map(u => {
+    const cs = db.itens_despesas.filter(it => String(it.unidade_id) === String(u.id));
+    return [u.nome, secretariaPorId.get(String(u.secretaria_id))?.nome || "", u.concessionaria || "", u.endereco || "", u.ativo === false ? "Inativa" : "Ativa",
+      u.situacao_motivo || "", cs.length, cs.map(c => c.codigo_numero).join(", "), [...new Set(cs.map(c => edificioDoContrato.get(c.id)).filter(Boolean))].join(", ")] as Celula[];
+  });
+  const secretarias = db.secretarias.map(sc => {
+    const us = db.unidades.filter(u => String(u.secretaria_id) === String(sc.id));
+    const cs = db.itens_despesas.filter(it => us.some(u => String(u.id) === String(it.unidade_id)));
+    const xs = ls.filter(l => l.secretaria_id === sc.id);
+    return [sc.nome, us.length, cs.filter(c => c.ativo !== false).length, cs.length,
+      r2(soma(xs.filter(l => l.concessionaria === "CASAN"), l => l.valor_total)), r2(soma(xs.filter(l => l.concessionaria === "CELESC"), l => l.valor_total))] as Celula[];
+  });
+  const ed = resumirEdificios({ edificios: db.edificios || [], contratos: db.itens_despesas, unidades: db.unidades, secretarias: db.secretarias, despesas: db.despesas, lancamentos: db.lancamentos });
+  const inv = resumoInventario();
+  const setoresDe = (id: string) => inv.filter(i => i.edificio_id === id).map(i => i.nome).join("; ");
+  const edificios = ed.edificios.map(x => [x.nome, x.endereco || "", x.observacao || "", x.agua.n, x.luz.n, r2(x.agua.valor_12m), r2(x.agua.consumo_12m),
+    r2(x.luz.valor_12m), r2(x.luz.consumo_12m), r2(x.agua.valor_12m + x.luz.valor_12m), r2(x.agua.valor_ultimo + x.luz.valor_ultimo), r2(x.economia_estimada),
+    x.ligacoes.map(l => `${l.tipo === "AGUA" ? "Água" : "Luz"} ${l.codigo}${l.ativo ? "" : " (inativa)"}`).join("; "), setoresDe(x.id)] as Celula[]);
+  const informacoes = inv.map(i => [...COLUNAS_INVENTARIO.map(c => i[c.campo] || ""), i.situacao_sistema, i.edificio || "", i.avisos.join(" | ")] as Celula[]);
+  const tipos = db.despesas.map(d => [d.descricao, db.itens_despesas.filter(it => String(it.despesa_id) === String(d.id)).length] as Celula[]);
+
+  const R = "rs" as const, N = "num" as const, N1 = "num1" as const, T = "texto" as const;
+  const col = (titulo: string, formato?: "rs" | "num" | "num1" | "texto", largura?: number) => ({ titulo, formato, largura });
+  const abas: AbaPlanilha[] = [
+    { nome: "Resumo", cabecalho: [`SisPu.JP — planilha completa`, `Período: ${mesBR(de)} a ${mesBR(ate)} · gerada em ${new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}`,
+      `${ls.length} faturas no período. Cadastros (contratos, unidades, edifícios, informações) saem como estão hoje.`],
+      blocos: [
+        { titulo: "Por mês", tabela: { total: true, colunas: [col("Mês", T), col("Água R$", R), col("Água m³", N), col("Luz R$", R), col("Luz kWh", N), col("Perdas R$", R), col("Crédito solar R$", R), col("Total R$", R), col("Mesmo mês ano anterior R$", R)], linhas: porMes } },
+        { titulo: "Por secretaria", tabela: { total: true, colunas: [col("Secretaria", T, 40), col("Água R$", R), col("Luz R$", R), col("Perdas R$", R), col("Total R$", R), col("UCs com fatura", N)], linhas: porSecretaria } },
+      ] },
+    { nome: "Relatórios", cabecalho: [`Relatórios condensados — ${mesBR(de)} a ${mesBR(ate)}`, "Os mesmos cálculos da tela de Relatórios (Dashboard). Oportunidades usam os últimos 12 meses com fatura."],
+      blocos: [
+        { titulo: "O que fazer", nota: "Agora = alertas do último mês; Economia = ações recorrentes por ano. Status = acompanhamento registrado no sistema.",
+          tabela: { colunas: [col("Quando", T), col("Tipo", T, 18), col("Unidade", T, 40), col("Endereço", T, 30), col("Código", T, 18), col("Ação", T, 50), col("Detalhe", T, 80), col("Valor R$", R), col("Referência", T, 22), col("Investimento R$", R), col("Status", T), col("Responsável", T), col("Prazo", T), col("Observação", T, 30)], linhas: acoes } },
+        { titulo: `Alertas de consumo (${mesBR(ate)})`, tabela: { colunas: [col("Unidade", T, 40), col("Código", T, 18), col("Concessionária", T), col("Mês", T), col("Alerta", T), col("Motivo", T, 50), col("Consumo", N), col("Ref. mês anterior", N), col("Ref. ano anterior", N), col("Impacto R$", R)], linhas: alertas } },
+        { titulo: "Perdas e penalidades (luz)", tabela: { total: true, colunas: [col("Tipo", T, 26), col("Unidade", T, 40), col("Código", T, 18), col("Secretaria", T, 30), col("Meses", N), col("R$", R)], linhas: perdas } },
+        { titulo: "Demanda (grupo A)", nota: "Ultrapassagem = medida acima de 105% da contratada; sobra = abaixo de 90%.", tabela: { colunas: [col("Unidade", T, 40), col("Código", T, 18), col("Grupo", T), col("Contratada kW", N1), col("Medida mín. kW", N1), col("Medida típica kW", N1), col("Medida máx. kW", N1), col("Meses com ultrapassagem", N), col("Meses com sobra", N), col("Ultrapassagem + sem uso R$", R)], linhas: demanda } },
+        { titulo: "Energia solar (candidatos)", tabela: { colunas: [col("Unidade", T, 40), col("Código", T, 18), col("kWh/ano", N), col("kWp", N1), col("Investimento R$", R), col("Economia R$/ano", R), col("Retorno (anos)", N1), col("Telhado m²", N)], linhas: solar } },
+        { titulo: "Capacitores (energia reativa)", tabela: { colunas: [col("Unidade", T, 40), col("Código", T, 18), col("Reativo R$/ano", R), col("Limite p/ pagar em 2 anos R$", R), col("Solução", T), col("Custo estimado R$", T)], linhas: caps } },
+        { titulo: "B optante", tabela: { colunas: [col("Unidade", T, 40), col("Código", T, 18), col("Custo grupo A R$/ano", R), col("Custo grupo B R$/ano", R), col("Economia R$/ano", R)], linhas: bopt } },
+        { titulo: "Mercado livre (grupo A)", tabela: { colunas: [col("UCs", N), col("kWh/ano", N), col("Energia + bandeiras R$/ano", R), col("Economia mín. R$", R), col("Economia máx. R$", R)], linhas: ml } },
+        { titulo: "Tributos no período", tabela: { colunas: [col("Tributo", T, 40), col("R$", R)], linhas: [
+          ["ICMS (luz, embutido)", trib("icms")], ["PIS/COFINS (luz, embutido)", trib("pis_cofins")], ["COSIP (luz)", trib("cosip")],
+          ["IRPJ retido (luz)", trib("irpj_retido")], ["PIS retido (luz)", trib("pis_retido")], ["COFINS retido (luz)", trib("cofins_retido")], ["CSLL retido (luz)", trib("csll_retido")],
+          ["IR retido (água)", irCasan]] } },
+      ] },
+    { nome: "Faturas", tabela: { colunas: [
+      col("Mês", T), col("Concessionária", T), col("Matrícula/UC", T, 18), col("Códigos antigos", T, 18), col("Unidade gestora", T, 40), col("Secretaria", T, 30), col("Edifício", T, 30),
+      col("Nome/endereço na fatura", T, 30), col("Grupo", T), col("Dias", N), col("Consumo (kWh/m³)", N1), col("Valor total R$", R), col("Situação do contrato", T),
+      col("Energia TE R$", R), col("Rede TUSD R$", R), col("Bandeira R$", R), col("Demanda R$", R), col("Demanda contratada kW", N1), col("Demanda medida kW", N1),
+      col("Ultrapassagem kW", N1), col("Ultrapassagem R$", R), col("Demanda sem uso kW", N1), col("Demanda sem uso R$", R), col("Reativo R$", R),
+      col("Mínimo sem uso kWh", N1), col("Mínimo sem uso R$", R), col("Multas e juros R$", R), col("Infraestrutura R$", R), col("COSIP R$", R),
+      col("Crédito solar R$", R), col("Ajustes e outros R$", R), col("ICMS R$", R), col("PIS/COFINS R$", R), col("IR retido R$", R),
+      col("Compensada kWh", N1), col("Injetada medida kWh", N1), col("Medidor", T), col("Itens não classificados", T, 30),
+      col("Leitura anterior (água)", N), col("Leitura atual (água)", N), col("Água R$", R), col("Esgoto R$", R), col("Bônus R$", R),
+    ], linhas: faturas } },
+    { nome: "Contratos", tabela: { colunas: [col("Matrícula/UC", T, 18), col("Códigos antigos", T, 18), col("Concessionária", T), col("Tipo de conta", T, 26), col("Unidade gestora", T, 40), col("Secretaria", T, 30), col("Edifício", T, 30),
+      col("Nome na fatura", T, 30), col("Endereço", T, 30), col("Situação", T), col("Motivo", T, 30), col("Medidores (período)", T, 40), col("1ª fatura", T), col("Última fatura", T), col("Nº faturas", N), col("Valor 12 meses R$", R)], linhas: contratos } },
+    { nome: "Unidades Gestoras", tabela: { colunas: [col("Unidade gestora", T, 45), col("Secretaria", T, 30), col("Concessionária", T), col("Endereço", T, 30), col("Situação", T), col("Motivo", T, 30), col("Nº contratos", N), col("Contratos", T, 30), col("Edifícios", T, 30)], linhas: unidades } },
+    { nome: "Secretarias", tabela: { total: true, colunas: [col("Secretaria", T, 40), col("Unidades", N), col("Contratos ativos", N), col("Contratos (total)", N), col(`Água R$ (${mesBR(de)}–${mesBR(ate)})`, R), col(`Luz R$ (${mesBR(de)}–${mesBR(ate)})`, R)], linhas: secretarias } },
+    { nome: "Edifícios", tabela: { total: true, colunas: [col("Edifício", T, 40), col("Endereço", T, 30), col("Observação", T, 30), col("Ligações água", N), col("Ligações luz", N),
+      col("Água 12m R$", R), col("Água 12m m³", N), col("Luz 12m R$", R), col("Luz 12m kWh", N), col("Total 12m R$", R), col("Último mês R$", R), col("Custo fixo ligações extras R$/ano", R), col("Ligações", T, 40), col("Setores (Informações)", T, 40)], linhas: edificios } },
+    { nome: "Informações", tabela: { colunas: [...COLUNAS_INVENTARIO.map(c => col(c.rotulo, T, c.campo === "nome" || c.campo === "endereco" ? 35 : undefined)), col("Situação no sistema", T), col("Edifício", T, 30), col("Avisos", T, 50)], linhas: informacoes } },
+    { nome: "Tipos de Conta", tabela: { colunas: [col("Tipo de conta", T, 35), col("Contratos", N)], linhas: tipos } },
+  ];
+  try {
+    const buf = await montarPlanilhaCompleta(ExcelJS, abas);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="sispu_completo_${de}_a_${ate}.xlsx"`);
+    res.send(buf);
+  } catch (err: any) {
+    res.status(500).json({ error: `Não foi possível montar a planilha: ${err?.message || err}` });
+  }
 });
 
 // Itens da fatura de um contrato num mês (painel da unidade).
