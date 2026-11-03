@@ -2166,7 +2166,8 @@ function linhasDosRelatorios() {
     const unidade = item ? unidadePorId.get(String(item.unidade_id)) : undefined;
     const secretaria = unidade ? secretariaPorId.get(String(unidade.secretaria_id)) : undefined;
     const despesa = item ? despesaPorId.get(String(item.despesa_id)) : undefined;
-    const concessionaria = /CASAN|ÁGUA|AGUA/i.test(despesa?.descricao || "") || unidade?.concessionaria === "CASAN" ? "CASAN" : "CELESC";
+    // Pelo contrato (tipo de conta): a unidade pode juntar água e luz do mesmo local.
+    const concessionaria = item ? concessionariaDoContrato(item) : (unidade?.concessionaria === "CASAN" ? "CASAN" : "CELESC");
     const doc = docDoLancamento(l, item, idx);
     const itens = concessionaria === "CELESC" ? ((doc?.dados_extraidos?.itens_fatura || []) as any[]) : [];
     const texto = doc?.origem_conteudo || "";
@@ -3404,7 +3405,7 @@ app.post("/api/itens_despesas/sugestoes-vinculo", (req, res) => {
   for (const [criterio, bate] of criterios) {
     const disponiveis = (p: Pendente) => candidatos.filter(c =>
       !usados.has(c.item.id) &&
-      !(p.concessionaria && c.unidade?.concessionaria && c.unidade.concessionaria !== p.concessionaria) &&
+      !(p.concessionaria && concessionariaDoContrato(c.item) !== p.concessionaria) &&
       bate(p, c));
     const restantes: Pendente[] = [];
     const escolhas = pendentes.map(p => ({ p, cands: disponiveis(p) }));
@@ -3573,8 +3574,11 @@ app.get("/api/lancamentos", (req, res) => {
     const extracao = extracaoEnxuta(matchingDoc?.dados_extraidos);
     const energia_injetada = (l as any).energia_injetada ?? matchingDoc?.dados_extraidos?.energia_injetada ?? 0;
 
-    let concessionaria: 'CASAN' | 'CELESC' = (unidade?.concessionaria as 'CASAN' | 'CELESC') || (despesa?.id === "2" ? "CASAN" : "CELESC");
-    if (!unidade?.concessionaria && matchingDoc) {
+    // Quem manda é o contrato (tipo de conta): uma unidade pode juntar água e luz do mesmo local,
+    // e pela unidade a fatura de água aparecia como CELESC. A unidade só entra sem contrato.
+    let concessionaria: 'CASAN' | 'CELESC' = item ? concessionariaDoContrato(item)
+      : ((unidade?.concessionaria as 'CASAN' | 'CELESC') || (despesa?.id === "2" ? "CASAN" : "CELESC"));
+    if (!item && !unidade?.concessionaria && matchingDoc) {
       if ((matchingDoc.layout && matchingDoc.layout.includes("CASAN")) || /casan|catarinense/i.test(matchingDoc.nome_arquivo || "")) {
         concessionaria = "CASAN";
       }
