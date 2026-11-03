@@ -46,13 +46,15 @@ export interface FaturasTreeViewProps {
 export function getInvoiceType(item: any): 'CELESC' | 'CASAN' {
   if (!item) return 'CELESC';
 
-  // 1. Verificação direta da propriedade concessionaria
-  if (item?.concessionaria === 'CASAN') return 'CASAN';
-  if (item?.concessionaria === 'CELESC') return 'CELESC';
-
-  // 2. Verificação direta por ID do tipo de despesa
+  // 1. O tipo de conta do contrato manda: a Unidade Gestora pode juntar água e luz do mesmo local.
+  if (/CASAN|ÁGUA|AGUA/i.test(item?.despesa_descricao || '')) return 'CASAN';
+  if (/CELESC|ENERGIA/i.test(item?.despesa_descricao || '')) return 'CELESC';
   if (String(item?.despesa_id) === '2' || String(item?.tipo_despesa_id) === '2') return 'CASAN';
   if (String(item?.despesa_id) === '1' || String(item?.tipo_despesa_id) === '1') return 'CELESC';
+
+  // 2. Propriedade concessionaria (sem contrato)
+  if (item?.concessionaria === 'CASAN') return 'CASAN';
+  if (item?.concessionaria === 'CELESC') return 'CELESC';
 
   // 3. Verificação textual abrangente em todas as propriedades do objeto item
   const fullText = [
@@ -133,6 +135,14 @@ export function registroCasan(codigo?: string): string {
   if (!m) return String(codigo || '');
   const numero = m[1].replace(/^0+/, '');
   return `${REGISTRO_CASAN_PLANILHA[numero] ?? m[1].padStart(7, '0')} - ${m[2]}`;
+}
+
+// Código no formato do sistema antigo ("0637565 - 0") sem espaço logo depois do número: com dois
+// cliques seleciona e copia só "0637565". O espaçamento do " - 0" vem da margem, não de espaço.
+function CodigoCopiavel({ texto }: { texto: string; key?: string }) {
+  const m = String(texto || '').match(/^(\S+)\s+(.+)$/);
+  if (!m) return <span>{texto}</span>;
+  return <span className="whitespace-nowrap"><span>{m[1]}</span><span className="ml-1">{m[2]}</span></span>;
 }
 
 export default function FaturasTreeView({
@@ -793,7 +803,7 @@ export default function FaturasTreeView({
                                       <td className="px-3 py-2 font-mono text-gray-400 whitespace-nowrap">
                                         {(() => {
                                           const antigos = ((item.codigos_numero_anteriores || []) as string[]).filter(cod => cod && cod !== item.codigo_numero);
-                                          return antigos.length ? antigos.map(cod => <div key={cod}>{medidorAntigoCelesc(cod)}</div>) : '—';
+                                          return antigos.length ? antigos.map(cod => <div key={cod}><CodigoCopiavel texto={medidorAntigoCelesc(cod)} /></div>) : '—';
                                         })()}
                                       </td>
                                       <td className="px-3 py-2 text-right font-mono font-bold text-amber-400">
@@ -911,9 +921,9 @@ export default function FaturasTreeView({
                             <table className="w-full text-xs text-left text-gray-300 border-collapse">
                               <thead className="bg-black/40 text-gray-400 uppercase text-[10px] font-mono border-b border-white/10">
                                 <tr>
-                                  <th className="px-3 py-2">Medidor</th>
                                   <th className="px-3 py-2">Endereço</th>
                                   <th className="px-3 py-2">Unidade Gestora</th>
+                                  <th className="px-3 py-2">Matrícula (Registro)</th>
                                   <th className="px-3 py-2 text-right">Valor Total</th>
                                   <th className="px-3 py-2 text-right">Consumo (m³)</th>
                                   <th className="px-3 py-2 text-center w-20">Ações</th>
@@ -925,12 +935,6 @@ export default function FaturasTreeView({
                                   const isNaoLocalizada = !item.unidade_nome || item.unidade_nome === 'NÃO LOCALIZADA';
                                   return (
                                     <tr key={item.id || `casan-${idx}`} className="hover:bg-blue-500/5 transition group">
-                                      <td className="px-3 py-2 font-mono font-bold text-blue-200 whitespace-nowrap">
-                                        {registroCasan(item.codigo_fatura || item.codigo_numero)}
-                                        {item.codigo_fatura && item.codigo_fatura !== item.codigo_numero && (
-                                          <div className="text-[10px] font-normal text-gray-500" title="Código atual deste contrato">atual: {registroCasan(item.codigo_numero)}</div>
-                                        )}
-                                      </td>
                                       <td className="px-3 py-2 text-gray-300 max-w-[220px]">
                                         <span className="block truncate" title={item.endereco_fatura || item.unidade_endereco || item.endereco || ""}>
                                           {item.endereco_fatura || item.unidade_endereco || item.endereco || "—"}
@@ -952,6 +956,12 @@ export default function FaturasTreeView({
                                             {item.unidade_nome || "NÃO LOCALIZADA"}
                                           </span>
                                         </button>
+                                      </td>
+                                      <td className="px-3 py-2 font-mono font-bold text-blue-200 whitespace-nowrap">
+                                        <CodigoCopiavel texto={registroCasan(item.codigo_fatura || item.codigo_numero)} />
+                                        {item.codigo_fatura && item.codigo_fatura !== item.codigo_numero && (
+                                          <div className="text-[10px] font-normal text-gray-500" title="Código atual deste contrato">atual: <CodigoCopiavel texto={registroCasan(item.codigo_numero)} /></div>
+                                        )}
                                       </td>
                                       <td className="px-3 py-2 text-right font-mono font-bold text-blue-400">
                                         R$ {(parseFloat(item.valor_total) || 0).toFixed(2)}
