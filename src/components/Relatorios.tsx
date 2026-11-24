@@ -5,6 +5,7 @@ import { compararComHistorico, TEXTO_ALERTA, ResultadoVariacao, Comparacao } fro
 import GraficoComparativo from "./GraficoComparativo";
 import { buscaBate } from "../utils/busca";
 import { useApelidos } from "../hooks/useApelidos";
+import ExportarPlanilha from "./ExportarPlanilha";
 import { PREMISSAS, Contrato12, agregarContratos, precoMedioB, candidatosSolar, candidatosCapacitor, candidatosBOptante, mercadoLivre, CandidatoSolar, CandidatoCapacitor, CandidatoBOptante } from "../utils/oportunidades";
 
 type Linha = {
@@ -470,9 +471,11 @@ const rodapeResumo = (rs: Resumo[]) => [
 
 // ---------------------------------------------------------------------------------------------
 // Painel de uma unidade: abre por cima da lista, com período próprio (meses ou anos).
-function PainelUnidade({ unidadeId, todas, deInicial, ateInicial, onClose }: {
+function PainelUnidade({ unidadeId, todas, deInicial, ateInicial, onClose, opcoesUnidades, relatorio }: {
   unidadeId: string; todas: Linha[]; deInicial: string; ateInicial: string; onClose: () => void;
+  opcoesUnidades: { id: string; nome: string; secretaria: string; endereco?: string }[]; relatorio: () => any;
 }) {
+  const [exportar, setExportar] = useState(false);
   const daUnidade: Linha[] = useMemo(() => todas.filter(l => l.unidade_id === unidadeId), [todas, unidadeId]);
   const mesesDisp: string[] = useMemo(() => [...new Set(daUnidade.map(l => l.mes))].sort(), [daUnidade]);
   const [escala, setEscala] = useState<"meses" | "anos">("meses");
@@ -499,6 +502,7 @@ function PainelUnidade({ unidadeId, todas, deInicial, ateInicial, onClose }: {
 
   if (!l0) return null;
   const sel = "bg-[#141414] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white";
+  if (exportar) return <ExportarPlanilha meses={mesesDisp} deInicial={de} ateInicial={ate} unidades={opcoesUnidades} unidadesIniciais={[unidadeId]} relatorio={relatorio} onFechar={() => setExportar(false)} />;
   return (
     <div className="fixed inset-0 bg-black/70 z-50 flex items-start justify-center p-4 overflow-y-auto" onClick={onClose}>
       <div className="bg-[#0f0f0f] border border-white/10 rounded-2xl p-6 max-w-6xl w-full shadow-2xl space-y-5 my-6" onClick={e => e.stopPropagation()}>
@@ -509,6 +513,7 @@ function PainelUnidade({ unidadeId, todas, deInicial, ateInicial, onClose }: {
             <div className="text-[11px] text-gray-500 font-mono mt-0.5">{contratos.map(c => `${c.concessionaria === "CASAN" ? "💧" : "⚡"} ${c.codigo}${c.grupo_tensao ? ` (${c.grupo_tensao})` : ""}`).join("   ")}</div>
           </div>
           <div className="flex items-center gap-2 print:hidden">
+            <button type="button" onClick={() => setExportar(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs"><Download className="h-3.5 w-3.5" /> Exportar planilha</button>
             <button type="button" onClick={() => imprimir(`SisPu.JP — ${l0.unidade_nome}`, "painel-unidade")} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-gray-300 hover:bg-white/5 text-xs"><Printer className="h-3.5 w-3.5" /> Imprimir / PDF</button>
             <button type="button" onClick={onClose} className="text-gray-400 hover:text-white"><X className="h-5 w-5" /></button>
           </div>
@@ -774,6 +779,7 @@ export default function Relatorios({ versao }: { versao: number }) {
   const [tensao, setTensao] = useState<"" | "A" | "B">("");
   const [busca, setBusca] = useState("");
   const [exportando, setExportando] = useState(false);
+  const [exportarAberto, setExportarAberto] = useState(false);
   const apelidos = useApelidos(versao);
   const [unidadeAberta, setUnidadeAberta] = useState<string | null>(null);
   const [acomps, setAcomps] = useState<Record<string, Acompanhamento>>({});
@@ -910,23 +916,20 @@ export default function Relatorios({ versao }: { versao: number }) {
 
   // Planilha completa: o servidor monta os cadastros e as faturas; daqui vão as contas que só a
   // tela faz (ações, alertas e oportunidades), para a aba Relatórios sair igual ao que se vê.
-  const exportarTudo = async () => {
-    setExportando(true);
-    try {
-      const relatorio = {
-        acoes,
-        alertas: avaliados.map(({ l, r }) => ({ unidade: l.unidade_nome, codigo: l.codigo, concessionaria: l.concessionaria, mes: l.mes, alerta: TEXTO_ALERTA[r.alerta!], motivo: r.motivo,
-          consumo: l.consumo, ref_mensal: r.mensal?.ref_consumo_30d ?? null, ref_anual: r.anual?.ref_consumo_30d ?? null, impacto: r.impacto_valor })),
-        solar, capacitores: caps, b_optante: bopt, mercado_livre: ml,
-      };
-      const res = await fetch("/api/exportar/tudo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ de: deSel, ate: ateSel, relatorio }) });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Não foi possível gerar a planilha.");
-      const url = URL.createObjectURL(await res.blob());
-      const a = document.createElement("a");
-      a.href = url; a.download = `sispu_completo_${deSel}_a_${ateSel}.xlsx`; a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-    } catch (e: any) { alert(e.message); } finally { setExportando(false); }
-  };
+  // O que só a tela calcula (ações, alertas, oportunidades): vai junto na planilha completa.
+  const relatorioAtual = () => ({
+    acoes,
+    alertas: avaliados.map(({ l, r }) => ({ unidade_id: l.unidade_id, unidade: l.unidade_nome, codigo: l.codigo, concessionaria: l.concessionaria, mes: l.mes, alerta: TEXTO_ALERTA[r.alerta!], motivo: r.motivo,
+      consumo: l.consumo, ref_mensal: r.mensal?.ref_consumo_30d ?? null, ref_anual: r.anual?.ref_consumo_30d ?? null, impacto: r.impacto_valor })),
+    solar, capacitores: caps, b_optante: bopt, mercado_livre: ml,
+  });
+  // Unidades para escolher na exportação (a busca também acha pelos códigos e pelos nomes da aba Informações).
+  const opcoesUnidades = (base?.unidades || []).map(u => {
+    const cods = [...new Set(todas.filter(l => l.unidade_id === u.id).map(l => `${l.codigo} ${apelidos.contratos[l.contrato_id] || ""}`))].join(" ");
+    return { id: u.id, nome: nomeDaUnidade(u.nome, u.endereco), secretaria: base?.secretarias.find(sc => sc.id === u.secretaria_id)?.nome || "", endereco: `${u.endereco} ${cods}` };
+  }).sort((x, y) => x.nome.localeCompare(y.nome));
+  // Filtro de secretaria/busca na tela: a exportação já abre com essas unidades escolhidas.
+  const unidadesDoFiltro = secretariaId || busca ? [...new Set(filtradasTodas.map(l => l.unidade_id))] : [];
 
   if (erro) return <div className="bg-[#0f0f0f] p-6 rounded-xl border border-rose-500/30 text-rose-300 text-sm">{erro}</div>;
   if (!base) return <div className="bg-[#0f0f0f] p-6 rounded-xl border border-white/10 text-gray-400 text-sm">Carregando relatórios…</div>;
@@ -1422,9 +1425,9 @@ export default function Relatorios({ versao }: { versao: number }) {
             </button>
           ))}
         </div>
-        <button type="button" disabled={exportando} onClick={exportarTudo} title="Uma planilha com Resumo, Relatórios, Faturas, Contratos, Unidades, Secretarias, Edifícios e Informações, no período escolhido"
-          className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs disabled:opacity-50">
-          <Download className="h-3.5 w-3.5" /> {exportando ? "Gerando planilha…" : "Exportar tudo (.xlsx)"}
+        <button type="button" onClick={() => setExportarAberto(true)} title="Planilha por período, unidade(s), água/luz; simples (consumo e valor) ou completa"
+          className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs">
+          <Download className="h-3.5 w-3.5" /> Exportar planilha (.xlsx)
         </button>
         <button type="button" onClick={() => imprimir(`SisPu.JP — ${tituloAba} ${tituloPeriodo}`, "relatorios-conteudo")} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-gray-300 hover:bg-white/5 text-xs">
           <Printer className="h-3.5 w-3.5" /> Imprimir / PDF
@@ -1438,7 +1441,8 @@ export default function Relatorios({ versao }: { versao: number }) {
         <div className="hidden print-titulo text-sm font-bold">{tituloAba} — {tituloPeriodo}</div>
         {conteudo}
       </div>
-      {unidadeAberta && <PainelUnidade unidadeId={unidadeAberta} todas={todas} deInicial={deSel} ateInicial={ateSel} onClose={() => setUnidadeAberta(null)} />}
+      {unidadeAberta && <PainelUnidade unidadeId={unidadeAberta} todas={todas} deInicial={deSel} ateInicial={ateSel} onClose={() => setUnidadeAberta(null)} opcoesUnidades={opcoesUnidades} relatorio={relatorioAtual} />}
+      {exportarAberto && <ExportarPlanilha meses={mesesDisp} deInicial={deSel} ateInicial={ateSel} unidades={opcoesUnidades} unidadesIniciais={unidadesDoFiltro} concInicial={conc} relatorio={relatorioAtual} onFechar={() => setExportarAberto(false)} />}
     </div>
   );
 }

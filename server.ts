@@ -2217,7 +2217,14 @@ app.get("/api/relatorios/base", (req, res) => {
 // calculou (ações, alertas, oportunidades), mandado no corpo do pedido.
 app.post("/api/exportar/tudo", async (req, res) => {
   const mesOk = (v: any) => (typeof v === "string" && /^\d{4}-\d{2}$/.test(v) ? v : "");
-  const todas = linhasDosRelatorios();
+  // Filtros: unidades escolhidas e concessionária. Sem filtro = tudo.
+  const unidadesSel = new Set<string>((Array.isArray(req.body?.unidade_ids) ? req.body.unidade_ids : []).map(String));
+  const concSel: "CELESC" | "CASAN" | "" = req.body?.concessionaria === "CELESC" || req.body?.concessionaria === "CASAN" ? req.body.concessionaria : "";
+  const tipo: "simples" | "completo" = req.body?.tipo === "simples" ? "simples" : "completo";
+  const filtrado = unidadesSel.size > 0 || !!concSel;
+  const contratoPassa = (it: ItemDespesa) => (!unidadesSel.size || unidadesSel.has(String(it.unidade_id))) && (!concSel || concessionariaDoContrato(it) === concSel);
+  const unidadePassa = (id: string) => !unidadesSel.size || unidadesSel.has(String(id));
+  const todas = linhasDosRelatorios().filter(l => unidadePassa(l.unidade_id) && (!concSel || l.concessionaria === concSel));
   const mesesTodos = [...new Set(todas.map(l => l.mes).filter(Boolean))].sort();
   const ate = mesOk(req.body?.ate) || mesesTodos[mesesTodos.length - 1] || "";
   const de = mesOk(req.body?.de) || mesesTodos.find(m => m.startsWith(ate.substring(0, 4))) || "";
@@ -2304,21 +2311,22 @@ app.post("/api/exportar/tudo", async (req, res) => {
   const trib = (k: string) => r2(soma(e, l => (l.tributos as any)?.[k] || 0));
   const irCasan = r2(soma(faturas.filter(f => f[1] === "CASAN"), f => Number(f[33]) || 0));
   const acompanhamento = new Map((db.acompanhamentos || []).map(a => [a.id, a]));
-  const acoes = lista(rel.acoes).map((a: any) => {
+  const relPassa = (x: any) => !filtrado || ((!unidadesSel.size || unidadesSel.has(String(x?.unidade_id))) && (!concSel || !x?.concessionaria || x.concessionaria === concSel));
+  const acoes = lista(rel.acoes).filter((a: any) => !filtrado || (a.unidade_id && relPassa({ ...a, concessionaria: /💧/.test(a.codigo || "") ? "CASAN" : "CELESC" }))).map((a: any) => {
     const ac = acompanhamento.get(a.id);
     return [a.quando === "agora" ? "Agora" : "Economia", a.tipo, a.unidade, a.endereco, String(a.codigo || "").replace(/^[^\d.]+/, ""), a.titulo, a.detalhe,
       r2(a.valor), a.valor_texto || a.rotulo_valor, r2(a.investimento), ac?.status || "novo", ac?.responsavel || "", ac?.prazo || "", ac?.observacao || ""] as Celula[];
   });
-  const alertas = lista(rel.alertas).map((a: any) => [a.unidade, a.codigo, a.concessionaria, mesBR(a.mes), a.alerta, a.motivo, r2(a.consumo), r2(a.ref_mensal), r2(a.ref_anual), r2(a.impacto)] as Celula[]);
-  const solar = lista(rel.solar).map((c: any) => [c.unidade, c.codigo, r2(c.kwh), r2(c.kwp), r2(c.investimento), r2(c.economia), r2(c.payback), r2(c.area_m2)] as Celula[]);
-  const caps = lista(rel.capacitores).map((c: any) => [c.unidade, c.codigo, r2(c.reativo), r2(c.limite_investimento), c.solucao, `${r2(c.custo?.[0])} a ${r2(c.custo?.[1])}`] as Celula[]);
-  const bopt = lista(rel.b_optante).map((c: any) => [c.unidade, c.codigo, r2(c.custo_a), r2(c.custo_b), r2(c.economia)] as Celula[]);
-  const ml = rel.mercado_livre && typeof rel.mercado_livre === "object" ? [[rel.mercado_livre.ucs, r2(rel.mercado_livre.kwh), r2(rel.mercado_livre.base), r2(rel.mercado_livre.economia?.[0]), r2(rel.mercado_livre.economia?.[1])] as Celula[]] : [];
+  const alertas = lista(rel.alertas).filter((x: any) => relPassa(x.concessionaria ? x : { ...x, concessionaria: "CELESC" })).map((a: any) => [a.unidade, a.codigo, a.concessionaria, mesBR(a.mes), a.alerta, a.motivo, r2(a.consumo), r2(a.ref_mensal), r2(a.ref_anual), r2(a.impacto)] as Celula[]);
+  const solar = lista(rel.solar).filter((x: any) => relPassa(x.concessionaria ? x : { ...x, concessionaria: "CELESC" })).map((c: any) => [c.unidade, c.codigo, r2(c.kwh), r2(c.kwp), r2(c.investimento), r2(c.economia), r2(c.payback), r2(c.area_m2)] as Celula[]);
+  const caps = lista(rel.capacitores).filter((x: any) => relPassa(x.concessionaria ? x : { ...x, concessionaria: "CELESC" })).map((c: any) => [c.unidade, c.codigo, r2(c.reativo), r2(c.limite_investimento), c.solucao, `${r2(c.custo?.[0])} a ${r2(c.custo?.[1])}`] as Celula[]);
+  const bopt = lista(rel.b_optante).filter((x: any) => relPassa(x.concessionaria ? x : { ...x, concessionaria: "CELESC" })).map((c: any) => [c.unidade, c.codigo, r2(c.custo_a), r2(c.custo_b), r2(c.economia)] as Celula[]);
+  const ml = !filtrado && rel.mercado_livre && typeof rel.mercado_livre === "object" ? [[rel.mercado_livre.ucs, r2(rel.mercado_livre.kwh), r2(rel.mercado_livre.base), r2(rel.mercado_livre.economia?.[0]), r2(rel.mercado_livre.economia?.[1])] as Celula[]] : [];
 
   // ---- Cadastros (estado atual)
   const ultimoMesDe = (id: string) => db.lancamentos.filter(l => l.item_despesa_id === id).map(l => (l.mes_ano || "").substring(0, 7)).sort();
   const ini12 = mesesTodos[Math.max(0, mesesTodos.length - 12)] || "";
-  const contratos = db.itens_despesas.map(it => {
+  const contratos = db.itens_despesas.filter(contratoPassa).map(it => {
     const u = unidadePorId.get(String(it.unidade_id)), sc = u ? secretariaPorId.get(String(u.secretaria_id)) : undefined;
     const h = historicoDoContrato(it, mapa), meses = ultimoMesDe(it.id);
     const salvos = it.medidores_fisicos || [];
@@ -2329,14 +2337,14 @@ app.post("/api/exportar/tudo", async (req, res) => {
       it.ativo === false ? "Inativo" : "Ativo", it.situacao_motivo || "", med, mesBR(meses[0] || ""), mesBR(meses[meses.length - 1] || ""), meses.length,
       r2(soma(db.lancamentos.filter(l => l.item_despesa_id === it.id && (l.mes_ano || "") >= ini12), l => Number(l.valor_total)))] as Celula[];
   });
-  const unidades = db.unidades.map(u => {
-    const cs = db.itens_despesas.filter(it => String(it.unidade_id) === String(u.id));
+  const unidades = db.unidades.filter(u => unidadePassa(u.id) && (!concSel || db.itens_despesas.some(it => String(it.unidade_id) === String(u.id) && contratoPassa(it)))).map(u => {
+    const cs = db.itens_despesas.filter(it => String(it.unidade_id) === String(u.id) && contratoPassa(it));
     return [u.nome, secretariaPorId.get(String(u.secretaria_id))?.nome || "", u.concessionaria || "", u.endereco || "", u.ativo === false ? "Inativa" : "Ativa",
       u.situacao_motivo || "", cs.length, cs.map(c => c.codigo_numero).join(", "), [...new Set(cs.map(c => edificioDoContrato.get(c.id)).filter(Boolean))].join(", ")] as Celula[];
   });
   const secretarias = db.secretarias.map(sc => {
-    const us = db.unidades.filter(u => String(u.secretaria_id) === String(sc.id));
-    const cs = db.itens_despesas.filter(it => us.some(u => String(u.id) === String(it.unidade_id)));
+    const us = db.unidades.filter(u => String(u.secretaria_id) === String(sc.id) && unidadePassa(u.id));
+    const cs = db.itens_despesas.filter(it => us.some(u => String(u.id) === String(it.unidade_id)) && contratoPassa(it));
     const xs = ls.filter(l => l.secretaria_id === sc.id);
     return [sc.nome, us.length, cs.filter(c => c.ativo !== false).length, cs.length,
       r2(soma(xs.filter(l => l.concessionaria === "CASAN"), l => l.valor_total)), r2(soma(xs.filter(l => l.concessionaria === "CELESC"), l => l.valor_total))] as Celula[];
@@ -2344,11 +2352,12 @@ app.post("/api/exportar/tudo", async (req, res) => {
   const ed = resumirEdificios({ edificios: db.edificios || [], contratos: db.itens_despesas, unidades: db.unidades, secretarias: db.secretarias, despesas: db.despesas, lancamentos: db.lancamentos });
   const inv = resumoInventario();
   const setoresDe = (id: string) => inv.filter(i => i.edificio_id === id).map(i => i.nome).join("; ");
-  const edificios = ed.edificios.map(x => [x.nome, x.endereco || "", x.observacao || "", x.agua.n, x.luz.n, r2(x.agua.valor_12m), r2(x.agua.consumo_12m),
+  const contratosSel = new Set(db.itens_despesas.filter(contratoPassa).map(it => it.id));
+  const edificios = ed.edificios.filter(x => !filtrado || x.ligacoes.some(l => contratosSel.has(l.id))).map(x => [x.nome, x.endereco || "", x.observacao || "", x.agua.n, x.luz.n, r2(x.agua.valor_12m), r2(x.agua.consumo_12m),
     r2(x.luz.valor_12m), r2(x.luz.consumo_12m), r2(x.agua.valor_12m + x.luz.valor_12m), r2(x.agua.valor_ultimo + x.luz.valor_ultimo), r2(x.economia_estimada),
     x.ligacoes.map(l => `${l.tipo === "AGUA" ? "Água" : "Luz"} ${l.codigo}${l.ativo ? "" : " (inativa)"}`).join("; "), setoresDe(x.id)] as Celula[]);
-  const informacoes = inv.map(i => [...COLUNAS_INVENTARIO.map(c => i[c.campo] || ""), i.situacao_sistema, i.edificio || "", i.avisos.join(" | ")] as Celula[]);
-  const tipos = db.despesas.map(d => [d.descricao, db.itens_despesas.filter(it => String(it.despesa_id) === String(d.id)).length] as Celula[]);
+  const informacoes = inv.filter(i => !filtrado || i.ligacoes.some(l => l.contrato_id && contratosSel.has(l.contrato_id))).map(i => [...COLUNAS_INVENTARIO.map(c => i[c.campo] || ""), i.situacao_sistema, i.edificio || "", i.avisos.join(" | ")] as Celula[]);
+  const tipos = db.despesas.filter(d => !concSel || (concSel === "CASAN") === /CASAN|ÁGUA|AGUA/i.test(d.descricao)).map(d => [d.descricao, db.itens_despesas.filter(it => String(it.despesa_id) === String(d.id)).length] as Celula[]);
 
   const R = "rs" as const, N = "num" as const, N1 = "num1" as const, T = "texto" as const;
   const col = (titulo: string, formato?: "rs" | "num" | "num1" | "texto", largura?: number) => ({ titulo, formato, largura });
@@ -2394,10 +2403,43 @@ app.post("/api/exportar/tudo", async (req, res) => {
     { nome: "Informações", tabela: { colunas: [...COLUNAS_INVENTARIO.map(c => col(c.rotulo, T, c.campo === "nome" || c.campo === "endereco" ? 35 : undefined)), col("Situação no sistema", T), col("Edifício", T, 30), col("Avisos", T, 50)], linhas: informacoes } },
     { nome: "Tipos de Conta", tabela: { colunas: [col("Tipo de conta", T, 35), col("Contratos", N)], linhas: tipos } },
   ];
+  // Descrição dos filtros, no topo da primeira aba.
+  const nomesUnidades = [...unidadesSel].map(id => unidadePorId.get(id)?.nome || id);
+  const descFiltro = `Filtro: ${concSel ? (concSel === "CASAN" ? "só água (CASAN)" : "só luz (CELESC)") : "água e luz"} · ${unidadesSel.size ? `${unidadesSel.size} unidade(s): ${nomesUnidades.slice(0, 5).join("; ")}${nomesUnidades.length > 5 ? "…" : ""}` : "todas as unidades"}`;
+  if (abas[0].cabecalho) abas[0].cabecalho.splice(2, 0, descFiltro);
+  if (filtrado) {
+    const sec = abas.find(a => a.nome === "Secretarias");
+    if (sec?.tabela) sec.tabela.linhas = sec.tabela.linhas.filter(l => Number(l[1]) > 0);
+  }
+
+  // Simples: só consumo e valor pago, mês a mês (lista e duas tabelas cruzadas).
+  let saida = abas;
+  if (tipo === "simples") {
+    const contratosNoPeriodo = [...new Map(ls.map(l => [l.contrato_id, l])).values()]
+      .sort((a, b) => a.secretaria_nome.localeCompare(b.secretaria_nome) || a.unidade_nome.localeCompare(b.unidade_nome) || a.codigo.localeCompare(b.codigo));
+    const antigos = (id: string) => (itemPorId.get(String(id))?.codigos_numero_anteriores || []).join(", ");
+    const lista = [...ls].sort((a, b) => a.mes.localeCompare(b.mes) || a.unidade_nome.localeCompare(b.unidade_nome))
+      .map(l => [mesBR(l.mes), l.concessionaria === "CASAN" ? "Água (CASAN)" : "Luz (CELESC)", l.codigo, antigos(l.contrato_id), l.unidade_nome, l.secretaria_nome,
+        edificioDoContrato.get(String(l.contrato_id)) || "", r2(l.consumo), l.concessionaria === "CASAN" ? "m³" : "kWh", r2(l.valor_total)] as Celula[]);
+    const cruzada = (f: (l: any) => number) => contratosNoPeriodo.map(c => {
+      const xs = ls.filter(l => l.contrato_id === c.contrato_id);
+      const porMes = periodo.map(m => { const v = xs.filter(l => l.mes === m); return v.length ? r2(soma(v, f)) : null; });
+      return [c.unidade_nome, c.codigo, c.concessionaria === "CASAN" ? "Água" : "Luz", c.secretaria_nome, ...porMes, r2(soma(xs, f))] as Celula[];
+    });
+    const colsMes = (fmt: "rs" | "num1") => periodo.map(m => ({ titulo: mesBR(m), formato: fmt }));
+    const base = [{ titulo: "Unidade", formato: "texto" as const, largura: 40 }, { titulo: "Matrícula/UC", formato: "texto" as const, largura: 18 }, { titulo: "Tipo", formato: "texto" as const }, { titulo: "Secretaria", formato: "texto" as const, largura: 30 }];
+    saida = [
+      { nome: "Consumo e valores", cabecalho: [`SisPu.JP — consumo e valores pagos`, `Período: ${mesBR(de)} a ${mesBR(ate)} · gerada em ${new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}`, descFiltro, `${ls.length} faturas.`],
+        tabela: { total: true, colunas: [{ titulo: "Mês", formato: "texto" }, { titulo: "Tipo", formato: "texto", largura: 14 }, { titulo: "Matrícula/UC", formato: "texto", largura: 18 }, { titulo: "Código antigo", formato: "texto", largura: 16 },
+          { titulo: "Unidade", formato: "texto", largura: 40 }, { titulo: "Secretaria", formato: "texto", largura: 30 }, { titulo: "Edifício", formato: "texto", largura: 28 }, { titulo: "Consumo", formato: "num1" }, { titulo: "Medida", formato: "texto" }, { titulo: "Valor pago R$", formato: "rs" }], linhas: lista } },
+      { nome: "Valor por mês", tabela: { total: true, colunas: [...base, ...colsMes("rs"), { titulo: "Total R$", formato: "rs" }], linhas: cruzada(l => l.valor_total) } },
+      { nome: "Consumo por mês", tabela: { colunas: [...base, ...colsMes("num1"), { titulo: "Total", formato: "num1" }], linhas: cruzada(l => l.consumo) } },
+    ];
+  }
   try {
-    const buf = await montarPlanilhaCompleta(ExcelJS, abas);
+    const buf = await montarPlanilhaCompleta(ExcelJS, saida);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", `attachment; filename="sispu_completo_${de}_a_${ate}.xlsx"`);
+    res.setHeader("Content-Disposition", `attachment; filename="sispu_${tipo}_${de}_a_${ate}.xlsx"`);
     res.send(buf);
   } catch (err: any) {
     res.status(500).json({ error: `Não foi possível montar a planilha: ${err?.message || err}` });
